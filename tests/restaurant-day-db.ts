@@ -8,15 +8,26 @@
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import postgres from "postgres";
 import { connect, tenant, type Tx } from "../server/db.js";
+import { exceptionRows } from "../server/reports/exceptions.js";
+import type { Session } from "../shared/domain.js";
 import {
   DATABASE,
+  OUT,
   STATE_FILE,
   runUrls,
   type RunState,
 } from "./restaurant-day/env.js";
+import { EXPECTED_P } from "./restaurant-day/expected-p.js";
 import {
+  ORDERS_P,
+  PAYMENTS_P,
+  RESTAURANT_P,
+} from "./restaurant-day/scenario-p.js";
+import {
+  mxn,
   oracleA,
   oracleB,
   oracleL,
@@ -93,6 +104,389 @@ const expectedA = oracleA();
 const expectedB = oracleB();
 const expectedL = oracleL();
 const inL = <T>(fn: (tx: Tx) => Promise<T>) => inT(L, fn);
+
+// ---------------------------------------------------------------- branch P
+// Payments spec §12.4 (LD-80): the restaurant-day-payments job plays Restaurant P alone against
+// the payments fake. Its rows are reconciled with the hand-typed table (expected-p.ts); A, B and
+// L do not exist in that run, so their checks (D1-D23) belong to the A/B job.
+if (state.branch === "P") {
+  const P = state.tenantP!;
+  const inP = <T>(fn: (tx: Tx) => Promise<T>) => inT(P, fn);
+  const staffId = async (key: string) => {
+    const name = RESTAURANT_P.staff.find((p) => p.key === key)!.name;
+    const [e] = await inP(
+      (tx) => tx`select id from employees where name=${name}`,
+    );
+    return e!.id as string;
+  };
+  const orderOf = (n: number) => ORDERS_P.find((o) => o.number === n)!;
+
+  await check(
+    "DP1",
+    "Restaurant P: folios P-000001..8 with their totals and IVA, and one tender per order (method, amount, tip, terminal, card, platform, fee and its source, reference) equal branch P's book",
+    async () => {
+      const tickets = await inP(
+        (tx) =>
+          tx`select t.series||'-'||lpad(t.number::text,6,'0') as folio, o.number::int as n, t.gross::int as gross,
+            o.total::int as total, t.business_date::text as d,
+            (select json_build_object('base',x.base::int,'tax',x.tax::int) from fiscal_ticket_taxes x
+              where x.ticket_id=t.id and x.category='iva16') as iva16,
+            (select count(*)::int from fiscal_ticket_taxes x where x.ticket_id=t.id) as categories
+          from fiscal_tickets t join orders o on o.id=t.order_id order by t.number`,
+      );
+      for (const t of tickets) {
+        assert.equal(
+          t.gross,
+          t.total,
+          `${t.folio}: gross is the order's total`,
+        );
+        assert.equal(t.d, state.businessDateP, `${t.folio}: business date`);
+        assert.equal(t.categories, 1, `${t.folio}: IVA 16 % only`);
+      }
+      assert.deepEqual(
+        tickets.map((t) => ({
+          folio: t.folio,
+          number: t.n,
+          total: mxn(t.total),
+          base: mxn(t.iva16.base),
+          tax: mxn(t.iva16.tax),
+        })),
+        EXPECTED_P.tickets,
+      );
+      const tenders = await inP(
+        (tx) =>
+          tx`select o.number::int as n, x.method, x.amount::int as amount, x.tip::int as tip,
+            x.terminal_label, x.platform, x.card_brand, x.card_type, x.card_last4, x.fee::int as fee,
+            x.fee_source, x.provider, x.provider_reference, x.attempt_id, x.external_reference as ref,
+            x.session_id is not null as drawer
+          from tenders x join orders o on o.id=x.order_id order by o.number, x.created_at`,
+      );
+      assert.deepEqual(
+        tenders.map((x) => ({
+          order: orderOf(x.n).id,
+          method: x.method,
+          amount: mxn(x.amount),
+          tip: mxn(x.tip),
+          terminal: x.terminal_label,
+          platform: x.platform,
+          card: x.card_brand
+            ? `${x.card_brand} ${x.card_type} ${x.card_last4}`
+            : null,
+          fee: x.fee === null ? null : mxn(x.fee),
+          feeSource: x.fee_source,
+        })),
+        EXPECTED_P.tenders,
+      );
+      for (const x of tenders) {
+        const o = orderOf(x.n);
+        const p = o.payment;
+        assert.equal(x.drawer, true, `${o.id}: on the drawer`);
+        if (p.kind === "integrated" || p.kind === "unknown") {
+          // Integrated: provider, attempt and the provider's reference (the manager's on P5).
+          const t = PAYMENTS_P.terminals[p.terminal];
+          assert.equal(x.provider, t.provider, `${o.id} provider`);
+          assert.ok(x.attempt_id, `${o.id}: the tender names its attempt`);
+          if (p.kind === "unknown") {
+            assert.equal(
+              x.provider_reference,
+              p.reference,
+              `${o.id} reference`,
+            );
+            assert.equal(x.ref, p.reference, `${o.id} external reference`);
+          } else
+            assert.ok(
+              x.provider_reference,
+              `${o.id}: the provider's reference`,
+            );
+        } else {
+          assert.equal(x.provider, null, `${o.id}: no provider`);
+          assert.equal(x.attempt_id, null, `${o.id}: no attempt`);
+        }
+        if (p.kind === "manual")
+          assert.equal(x.ref, p.reference, `${o.id} approval reference`);
+        if (p.kind === "platform")
+          assert.equal(x.ref, p.orderNumber, `${o.id} platform order number`);
+      }
+    },
+  );
+
+  await check(
+    "DP2",
+    "Restaurant P's terminal charges: one attempt per integrated charge, each final; the settled ones carry their order's tender, the declined one none, the unknown one recorded by Ulises with his reason; nothing live",
+    async () => {
+      const attempts = await inP(
+        (tx) =>
+          tx`select o.number::int as n, a.state, a.provider, a.terminal_label, a.error_code, a.resolution,
+            a.resolution_note, a.resolved_by, a.amount::int as amount, a.tip::int as tip,
+            a.tender_id, (select x.id from tenders x where x.attempt_id=a.id) as tender_of,
+            (select array_agg(e.kind order by e.created_at, e.id) from payment_attempt_events e
+              where e.attempt_id=a.id) as events
+          from payment_attempts a join orders o on o.id=a.order_id order by a.created_at`,
+      );
+      const name = (k: "mp" | "clip") => PAYMENTS_P.terminals[k].name;
+      assert.deepEqual(
+        attempts.map((a) => ({
+          order: orderOf(a.n).id,
+          terminal:
+            a.terminal_label === name("mp")
+              ? "mp"
+              : a.terminal_label === name("clip")
+                ? "clip"
+                : a.terminal_label,
+          state: a.state,
+          errorCode: a.error_code,
+          resolution: a.resolution,
+        })),
+        EXPECTED_P.attempts,
+      );
+      const ulises = await staffId("ulises");
+      for (const a of attempts) {
+        const o = orderOf(a.n);
+        const p = o.payment;
+        assert.equal(
+          a.tip,
+          p.kind === "integrated" ? (p.tip ?? 0) : 0,
+          `${o.id} tip`,
+        );
+        if (a.state === "settled")
+          assert.equal(
+            a.tender_id,
+            a.tender_of,
+            `${o.id}: the attempt's tender`,
+          );
+        else
+          assert.equal(
+            a.tender_id,
+            null,
+            `${o.id}: a declined charge has no tender`,
+          );
+        assert.ok(
+          a.events.includes("created") && a.events.includes("sent"),
+          `${o.id} events ${a.events}`,
+        );
+        if (p.kind === "unknown") {
+          assert.equal(
+            a.resolved_by,
+            ulises,
+            `${o.id}: resolved by the manager`,
+          );
+          assert.equal(
+            a.resolution_note,
+            p.note,
+            `${o.id}: the manager's reason`,
+          );
+          assert.ok(
+            a.events.includes("unknown") && a.events.includes("settled"),
+            `${o.id} events ${a.events}`,
+          );
+        } else
+          assert.equal(a.resolved_by, null, `${o.id}: no manager resolution`);
+        if (p.kind === "declinedThenCash")
+          assert.ok(
+            a.events.includes("declined"),
+            `${o.id} events ${a.events}`,
+          );
+      }
+      const [live] = await inP(
+        (tx) =>
+          tx`select count(*)::int as n from payment_attempts
+            where state in ('created','sending','pending','unknown','approved','review')`,
+      );
+      assert.equal(live.n, 0, "no charge left live");
+    },
+  );
+
+  await check(
+    "DP3",
+    "Restaurant P's Excepciones for the day: exactly the charge Ulises recorded (who started it, who resolved it, the amount, the terminal and the reason); no charge in review or unconfirmed",
+    async () => {
+      const [restaurant] = await inP(
+        (tx) => tx`select name,currency,timezone,cutoff from restaurants`,
+      );
+      const owner = await staffId("rebeca");
+      const session = {
+        id: "00000000-0000-4000-8000-0000000000d1",
+        tenantId: P,
+        employeeId: owner,
+        name: RESTAURANT_P.owner.name,
+        role: "owner",
+        deviceId: "00000000-0000-4000-8000-000000000000",
+        expiresAt: "",
+        offlineUntil: "",
+        csrf: "",
+        restaurant,
+      } as unknown as Session;
+      const page = await inP((tx) =>
+        exceptionRows(tx, session, {
+          from: state.businessDateP,
+          to: state.businessDateP,
+          limit: "500",
+        }),
+      );
+      const resolved = ORDERS_P.find((o) => o.payment.kind === "unknown")!;
+      const p = resolved.payment as Extract<
+        (typeof resolved)["payment"],
+        { kind: "unknown" }
+      >;
+      assert.deepEqual(
+        page.rows.map((r) => ({
+          kind: r.kind,
+          order: r.orderNumber,
+          actor: r.actorName,
+          approver: r.approverName,
+          amount: mxn(r.amount),
+          note: r.note,
+          terminal: r.detail.terminal,
+          resolution: r.detail.resolution,
+        })),
+        [
+          {
+            kind: "terminal_attempt_dismissed",
+            order: EXPECTED_P.exception.number,
+            actor: RESTAURANT_P.staff.find((s) => s.key === "ximena")!.name,
+            approver: RESTAURANT_P.staff.find((s) => s.key === "ulises")!.name,
+            amount: EXPECTED_P.exception.amount,
+            note: p.note,
+            terminal: EXPECTED_P.exception.terminal,
+            resolution: "recorded",
+          },
+        ],
+      );
+    },
+  );
+
+  await check(
+    "DP4",
+    "Restaurant P's drawer: closed by Ulises with the exact count; expected cash is cash only (platform money apart); one batch count per terminal equal to its net",
+    async () => {
+      const [drawer] = await inP(
+        (tx) =>
+          tx`select count(*) over ()::int as drawers, c.opening::int as opening, c.counted::int as counted,
+            c.expected::int as expected, c.closed_at is not null as closed, c.closed_by
+          from cash_sessions c`,
+      );
+      const z = EXPECTED_P.corteZ;
+      assert.deepEqual(
+        {
+          drawers: drawer.drawers,
+          opening: mxn(drawer.opening),
+          counted: mxn(drawer.counted),
+          expected: mxn(drawer.expected),
+          closed: drawer.closed,
+          closedBy: drawer.closed_by,
+        },
+        {
+          drawers: 1,
+          opening: z.cash.opening,
+          counted: z.cash.counted,
+          expected: z.cash.expected,
+          closed: true,
+          closedBy: await staffId("ulises"),
+        },
+      );
+      const counts = await inP(
+        (tx) =>
+          tx`select t.name, c.expected::int as expected, c.reported::int as reported
+          from drawer_terminal_counts c left join payment_terminals t on t.id=c.terminal_id order by t.name`,
+      );
+      const want = Object.entries(z.terminal.byTerminal).map(([label, v]) => ({
+        name: label.replace(/ \(\d+\)$/, ""),
+        expected: v.net,
+        reported: v.batch,
+      }));
+      assert.deepEqual(
+        counts.map((c) => ({
+          name: c.name,
+          expected: mxn(c.expected),
+          reported: mxn(c.reported),
+        })),
+        want.sort((a, b) => a.name.localeCompare(b.name)),
+      );
+    },
+  );
+
+  await check(
+    "DP5",
+    "Restaurant P's provider credentials are sealed and nowhere else: no credential in an audit detail, job payload, operation result, attempt event, account row or sealed box, nor in the web, worker or fake logs",
+    async () => {
+      const c = PAYMENTS_P.credentials;
+      const secrets = [
+        c.mercadopago.token,
+        c.mercadopago.secret,
+        c.clip.key,
+        c.clip.secret,
+      ];
+      for (const value of secrets) {
+        const like = `%${value}%`;
+        const [row] = await meta(
+          (tx) =>
+            tx`select
+              (select count(*)::int from audit where tenant_id=${P} and detail::text like ${like}) as audit,
+              (select count(*)::int from jobs where tenant_id=${P} and payload::text like ${like}) as jobs,
+              (select count(*)::int from operations where tenant_id=${P} and (result::text like ${like} or hash like ${like})) as operations,
+              (select count(*)::int from payment_attempt_events where tenant_id=${P} and detail::text like ${like}) as events,
+              (select count(*)::int from payment_provider_accounts where tenant_id=${P}
+                and concat_ws(' ',account_label,provider_account_id,hook_hash,error_code) like ${like}) as accounts,
+              (select count(*)::int from payment_secrets where tenant_id=${P} and payload_secret like ${like}) as secrets`,
+        );
+        assert.deepEqual(
+          row,
+          {
+            audit: 0,
+            jobs: 0,
+            operations: 0,
+            events: 0,
+            accounts: 0,
+            secrets: 0,
+          },
+          "a credential value reached a table",
+        );
+        for (const file of ["server.log", "worker.log", "payments-fake.log"])
+          assert.equal(
+            readFileSync(resolve(OUT, file), "utf8").includes(value),
+            false,
+            `${file} holds a credential`,
+          );
+      }
+      // Both accounts are active with their sealed credentials (the upload boxes were wiped).
+      const [accounts] = await meta(
+        (tx) =>
+          tx`select (select array_agg(provider||':'||state order by provider) from payment_provider_accounts where tenant_id=${P}) as accounts,
+            (select array_agg(purpose order by purpose) from payment_secrets where tenant_id=${P} and wiped_at is null) as sealed`,
+      );
+      assert.deepEqual(accounts, {
+        accounts: ["clip:active", "mercadopago:active"],
+        sealed: ["clip_credentials", "mp_credentials"],
+      });
+    },
+  );
+
+  await check(
+    "DP6",
+    "Restaurant P's jobs: nothing dead, every payments job finished or waiting on nothing live",
+    async () => {
+      const [r] = await meta(
+        (tx) =>
+          tx`select (select count(*)::int from jobs where tenant_id=${P} and state='dead') as dead,
+            (select count(*)::int from jobs where tenant_id=${P} and kind like 'payments\\_%' and state='running') as running`,
+      );
+      assert.deepEqual(r, { dead: 0, running: 0 });
+    },
+  );
+
+  await sql.end();
+  await admin.end();
+  if (failed) {
+    console.error(
+      `Restaurant-day DB reconciliation (branch P): ${failed} check(s) failed.`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `Restaurant-day DB reconciliation passed (${passed} checks, branch P).`,
+  );
+  process.exit(0);
+}
 
 await check(
   "D1",

@@ -7,7 +7,12 @@
 import { test, expect } from "@playwright/test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { OUT, STATE_FILE, type RunState } from "../restaurant-day/env.js";
+import {
+  OUT,
+  STATE_FILE,
+  runBranch,
+  type RunState,
+} from "../restaurant-day/env.js";
 import { oracle } from "../restaurant-day/oracle.js";
 import { expectedDay, oracleDay } from "../restaurant-day/self-check.js";
 import {
@@ -21,7 +26,12 @@ import {
   type DeviceName,
   type Devices,
 } from "../restaurant-day/ui.js";
-import { setupA, setupB, setupL } from "../restaurant-day/setup-flows.js";
+import {
+  setupA,
+  setupB,
+  setupL,
+  setupP,
+} from "../restaurant-day/setup-flows.js";
 import { preflight } from "../restaurant-day/preflight.js";
 import { serviceB } from "../restaurant-day/service-b.js";
 import { crossRestaurant } from "../restaurant-day/cross.js";
@@ -34,12 +44,22 @@ import {
 import { serviceA4, serviceA5 } from "../restaurant-day/close-a.js";
 import { serviceA3 } from "../restaurant-day/outage.js";
 import { serviceL } from "../restaurant-day/club-l.js";
+import { serviceP } from "../restaurant-day/payments-p.js";
+import { EXPECTED_P } from "../restaurant-day/expected-p.js";
+import { oracleP } from "../restaurant-day/oracle-p.js";
 
 test.skip(
   process.env.RD_ACCEPTANCE !== "1",
   "Runs only via playwright.restaurant-day.config.ts (npm run test:acceptance:day)",
 );
 test.describe.configure({ mode: "serial" });
+
+/**
+ * Branch P (payments spec §12.4, LD-80) is its own CI job (restaurant-day-payments): it runs G1
+ * and Restaurant P alone against the payments fake; the A/B job never runs P.
+ */
+const BRANCH_P = runBranch() === "P";
+const ONLY_P = "branch P runs Restaurant P alone (LD-80)";
 
 const devices: Partial<Record<DeviceName, Device>> = {};
 let state: RunState;
@@ -96,6 +116,7 @@ test.describe("restaurant day", () => {
   });
 
   test.describe("A: Taquería Nopal Azul", () => {
+    test.skip(BRANCH_P, ONLY_P);
     test("A setup (A1–A9)", async () => {
       test.setTimeout(8 * 60_000);
       await setupA(dev, state, saveState);
@@ -137,6 +158,7 @@ test.describe("restaurant day", () => {
   });
 
   test.describe("B: Restaurante Casa Jacaranda", () => {
+    test.skip(BRANCH_P, ONLY_P);
     test("B setup (B1–B5)", async () => {
       test.setTimeout(8 * 60_000);
       await setupB(dev, state, saveState);
@@ -148,6 +170,7 @@ test.describe("restaurant day", () => {
   });
 
   test("X1 cross-restaurant isolation", async () => {
+    test.skip(BRANCH_P, ONLY_P);
     test.setTimeout(3 * 60_000);
     await crossRestaurant(dev, state);
   });
@@ -155,6 +178,7 @@ test.describe("restaurant day", () => {
   // Branch L (loyalty spec §9.4, LD-80): the club runs in its own restaurant, so
   // A's and B's sales, tables and literal tables never meet it.
   test.describe("L: Tortas El Mezquite", () => {
+    test.skip(BRANCH_P, ONLY_P);
     test("L setup (L1–L2)", async () => {
       test.setTimeout(5 * 60_000);
       await setupL(dev, state, saveState);
@@ -162,6 +186,25 @@ test.describe("restaurant day", () => {
     test("L club day (L3–L8)", async () => {
       test.setTimeout(6 * 60_000);
       await serviceL(dev, state);
+    });
+  });
+
+  // Branch P (payments spec §12.4, LD-80): integrated card charging in its own restaurant, against
+  // the payments fake, with its own hand-typed table (expected-p.ts) and DB checks (DP1-DP6).
+  test.describe("P: Fonda La Ceiba", () => {
+    test.skip(
+      !BRANCH_P,
+      "branch P runs only in the restaurant-day-payments job",
+    );
+    test("P setup (P1–P2) and the P oracle self-check", async () => {
+      test.setTimeout(6 * 60_000);
+      run.step = "P0";
+      expect(oracleP(), "oracle P vs expected-p.ts").toEqual(EXPECTED_P);
+      await setupP(dev, state, saveState);
+    });
+    test("P payments day (P3–P6)", async () => {
+      test.setTimeout(12 * 60_000);
+      await serviceP(dev, state);
     });
   });
 });

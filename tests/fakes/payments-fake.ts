@@ -30,7 +30,8 @@
  * --port): the same scripting through POST /__fake/{next,approve,decline,expire,cancelOnTerminal,
  * atTerminalUncancellable} with a JSON body ({provider, behaviour} for next; {ref} or {device}
  * — the newest charge waiting on that device — plus the approval fields for the others) and
- * GET /__fake/charges. Every default credential is obviously fictional ("...-not-real").
+ * GET /__fake/charges. Every default credential is obviously fictional ("...-not-real");
+ * PAYMENTS_FAKE_MP_TOKEN replaces the MP access token (as fictional) for a production-mode web.
  *
  * It never answers like a real provider beyond what the adapters read (server/payments/worker/
  * {mercadopago,clip}.ts), and it never leaves loopback.
@@ -755,7 +756,10 @@ if (invokedDirectly()) {
     );
     process.exit(2);
   }
-  const fake = await startPaymentsFake({ port, control: true });
+  // The restaurant-day gate's branch P (LD-80) types a non-test MP token: its web runs as
+  // production, which refuses "TEST-" access tokens for Point (server/payments/providers.ts).
+  const mpToken = process.env.PAYMENTS_FAKE_MP_TOKEN?.trim() || undefined;
+  const fake = await startPaymentsFake({ port, control: true, mpToken });
   console.log(
     JSON.stringify({
       level: "info",

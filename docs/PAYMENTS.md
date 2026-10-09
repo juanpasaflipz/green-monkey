@@ -157,6 +157,7 @@ Every outcome writes an attempt event and an audit row, and Excepciones lists it
 - `tests/payments-p2-db.ts` (in `test:db:qualification`): start, settle exactly once under races, review and resolution, the worker against the HTTP fake (`tests/fakes/payments-fake.ts`), notifications through the real route, credentials and leaks, capabilities, devices, disconnect, rekey across two restaurants, a dead push (both dead paths) and the lock-order burst.
 - `tests/drain-http.ts`: the worker's `POST /wake` on the compiled build.
 - `tests/browser/payments.spec.ts`: Configuración connects both providers and adds their devices; a charge waits and settles; a decline retries; an unknown outcome is resolved by a manager (CI starts `npm run dev:payments-fake` and the worker with the fake's API bases).
+- The restaurant-day gate's branch P (spec §12.4, LD-80; CI job `restaurant-day-payments`): Restaurant P's whole payments day through the UI against the fake, held to a hand-typed table (`tests/restaurant-day/expected-p.ts`) and reconciled by DP1–DP6 in `tests/restaurant-day-db.ts` ([acceptance status](ACCEPTANCE_STATUS.md)). Its platform part has no partial refund and it checks no CFDI global FormaPago (spec §12.4 lists both; branch K covers CFDI against Facturapi).
 - The fake's credentials, cards (`visa` / `4242`) and devices are fictional and obviously so.
 
 ### Still open

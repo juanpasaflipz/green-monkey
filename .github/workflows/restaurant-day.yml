@@ -205,3 +205,84 @@ jobs:
           path: |
             playwright-report/restaurant-day/
             test-results/restaurant-day/
+
+  # Branch P (payments spec §12.4, LD-80): Restaurant P alone, integrated card charging against the
+  # payments fake (tests/fakes/payments-fake.ts: Mercado Pago Point + Clip, fictional credentials
+  # only, loopback only). RD_PAYMENTS_FAKE_PORT makes global setup start the fake and run the
+  # worker with PAYMENTS_PROVIDERS=mercadopago,clip, MERCADOPAGO_API_URL and CLIP_API_URL on the
+  # fake (APP_ENV=test, the only place server/payments/config.ts accepts a loopback base) and a
+  # CREDENTIAL_ENCRYPTION_KEY it generates per run and holds in memory, like SIGNING_KEYS; the
+  # web stays production. Acceptance §3's env table governs the A/B job only; P deviates by
+  # design (LD-80). G1 and Restaurant P, then the DB reconciliation DP1-DP6. The lead adds
+  # restaurant-day-payments to ops/github/main-ruleset.json once it is green on main.
+  day-payments:
+    name: restaurant-day-payments
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: gm_provisioner
+          POSTGRES_PASSWORD: local-only-provisioner
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gm_provisioner -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGPASSWORD: local-only-provisioner
+      RD_ACCEPTANCE: "1"
+      TEST_BASE_URL: http://127.0.0.1:3390
+      APP_URL: https://127.0.0.1:3390
+      RD_PAYMENTS_FAKE_PORT: "4899"
+      RD_LEGAL_ENTITY_NAME: ${{ vars.RD_LEGAL_ENTITY_NAME }}
+      RD_LEGAL_ENTITY_ADDRESS: ${{ vars.RD_LEGAL_ENTITY_ADDRESS }}
+      RD_LEGAL_ENTITY_RFC: ${{ vars.RD_LEGAL_ENTITY_RFC }}
+      RD_LEGAL_PRIVACY_CONTACT_EMAIL: ${{ vars.RD_LEGAL_PRIVACY_CONTACT_EMAIL }}
+      RD_LEGAL_JURISDICTION: ${{ vars.RD_LEGAL_JURISDICTION }}
+      RD_SUPPORT_EMAIL: ${{ vars.RD_SUPPORT_EMAIL }}
+      RD_SUPPORT_PHONE: ${{ vars.RD_SUPPORT_PHONE }}
+      RD_SUPPORT_HOURS: ${{ vars.RD_SUPPORT_HOURS }}
+      RD_WAIVE: ${{ vars.RD_WAIVE }}
+      WAIVER_APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'go-live-waiver-approved') }}
+    steps:
+      - name: Waivers on a release PR need the product owner's label (§13.5)
+        if: github.event_name == 'pull_request'
+        run: |
+          if [ -n "$(printf '%s' "${RD_WAIVE:-}" | tr -d ' ,')" ] && [ "${WAIVER_APPROVED:-false}" != "true" ]; then
+            echo "::error::RD_WAIVE=$RD_WAIVE on a release PR needs the go-live-waiver-approved label (specs/acceptance.md §13.5)"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && vars.RD_NIGHTLY_REF || '' }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Cluster roles
+        run: |
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -f scripts/provision-local.sql
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -f scripts/ops/sql/globals.sql
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -c "GRANT gm_jobs_worker TO gm_worker"
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 \
+            -c "ALTER ROLE gm_migrator LOGIN PASSWORD 'local-only-migrator'"
+      - name: Stamp the build (G1.2)
+        run: |
+          commit="$(git rev-parse HEAD)"
+          node scripts/ops/stamp-build.mjs "$commit"
+          echo "RD_BUILD_COMMIT=$commit" >> "$GITHUB_ENV"
+      - name: Restaurant day, branch P
+        run: npm run test:acceptance:day
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: restaurant-day-payments
+          path: |
+            playwright-report/restaurant-day/
+            test-results/restaurant-day/
