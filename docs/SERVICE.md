@@ -372,6 +372,15 @@ refetched when the dialog opens, and neither **Confirmar cobro** nor
 **Enviar ronda y dividir por productos** sends anything to the kitchen unless
 the drawer is open.
 
+**Payments 037 (phase P1, [Payments](PAYMENTS.md)).** A third method, **Plataforma**
+("Pagado por plataforma"), shows while at least one delivery platform is enabled: chips of the
+platforms ("Otra" asks for a name), the platform's order number (optional), **La plataforma ya
+cobró este pedido**; the amount is the whole balance and there is no tip. An order rung at a
+platform's prices («Precios» in the cart, shown once a product has a platform price) opens on
+that platform. **Terminal externa** lists the restaurant's named terminals (this device's
+default preselected, "Otra terminal" last, **Usar siempre en este dispositivo**). A successful
+server payment ends in Selling's `onPaymentSettled(order)`, whatever the method (critic R18).
+
 - **One payment at a time.** The tap sets an in-flight flag synchronously and
   it clears only when the whole collect (round send, payment, recovery)
   settles. Confirm stays disabled ("Cargando…") and the "retry is safe" hint is

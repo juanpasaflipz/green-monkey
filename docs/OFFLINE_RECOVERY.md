@@ -74,6 +74,13 @@ backup download of every unsynced record without a session.
 | Settle several orders together, voids, refunds, discounts, drawer open/close/paid-out                                                 | no: unavailable offline (they need the server and fail with a connection message)                      |
 | Integrated card charges, invoicing                                                                                                    | no                                                                                                     |
 
+**Payments 037.** A platform tender ("Pagado por plataforma") and a card record that names a
+terminal are saved offline under the same rule as the separate card terminal (`allowPlatform`
+follows `allowExternal`). The records carry `terminalId`, `platform` and `platformLabel` only
+when present, so older records fingerprint as before. At sync an archived terminal is accepted
+and an unknown one is dropped (noted `payments_terminal_unknown` on the payment's audit row); the
+money always applies (OFF-8), even while the order has a live terminal attempt.
+
 Open-price lines are allowed offline (wave contract D11): the server re-prices them
 with the same staff rule at sync.
 

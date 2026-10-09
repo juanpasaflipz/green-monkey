@@ -73,6 +73,16 @@ request id; a failed check logs `report_check_failed` with that id and never thr
 batchless refund recorded by the previous revision during a deploy overlap has no fiscal
 adjustment and fails `refunds_vs_fiscal` for that day on purpose (a real IVA gap).
 
+**Payments 037.** Tender methods are cash, external and platform (`TENDER_METHODS` from
+`shared/payments.ts`; `methodOf` throws `report_method_unknown` instead of defaulting to cash),
+so `byMethod` has three rows. `byTerminal` and `byPlatform` (statements S6/S7, one grouped
+statement) split card money by terminal (fees: provider and estimated) and platform money by
+platform (estimated commission); `methods_sum` also fails when either split differs from its
+method. `MarginMetrics` adds `processorFees`, `platformCommissions`, `feesEstimated` and
+`marginAfterFees`. Drawer rows, cortes X/Z and the corte del día carry terminals (with the batch
+total typed at the close) and «Pagado por plataformas» apart from cash. See
+[Payments](PAYMENTS.md#reports-and-the-corte).
+
 Reports run in one `REPEATABLE READ, READ ONLY` transaction (`snapshotTenant`) whose first
 statement sets the tenant, `statement_timeout` 30 s, `lock_timeout` 8 s and the idle timeout
 15 s, so a payment committing half way never breaks a summary's checks. A statement timeout

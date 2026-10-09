@@ -224,6 +224,12 @@ reason "Otro" with their original text.
 **Who:** any operator; cashiers and servers with a manager's approval (before
 028 only managers refunded).
 
+**Payments 037.** A refund of a platform tender ("Pagado por plataforma") is a `platform`
+portion of the batch: no drawer, no terminal confirmation, and the batch records it in
+`refund_batches.platform_amount` (the split check and the reconcile trigger count it). The
+dialog's result and the refund slip show «Reembolso por plataforma (sin efectivo)». The legacy
+`POST /refunds` refuses platform tenders (`payments_platform_refund_requires_batch`).
+
 **Refunds need a paid (or ticketed) check.** While a check without a ticket has
 a balance due the dialog shows only "Esta cuenta tiene saldo pendiente y aún no
 tiene ticket: cobra el saldo o anula las líneas en lugar de reembolsar." and

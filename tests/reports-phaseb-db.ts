@@ -583,6 +583,8 @@ try {
     total: 4500,
     cash: 4500,
     external: 0,
+    // payments (037): the refund metrics carry the platform part (none here).
+    platform: 0,
     restockedCost: 1500,
   });
   const cashM = summary.collections.byMethod.find(
