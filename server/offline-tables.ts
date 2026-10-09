@@ -367,7 +367,7 @@ export async function openOrdersSnapshot(tx: Tx, s: Session) {
   const rows =
     await tx`select o.id,o.number,o.version,o.mode,o.table_id,t.name as table_name,
       o.name,o.note,o.total,o.state,o.created_at,o.business_date::text as business_day,
-      o.service_version,o.paid,
+      o.service_version,o.paid,o.price_platform,
       o.tender_ids,o.offline_operation_ids,
       (select coalesce(jsonb_agg(jsonb_build_object(
           'id',l.id,'productId',l.product_id,'round',l.round,
@@ -419,6 +419,9 @@ export async function openOrdersSnapshot(tx: Tx, s: Session) {
       // LD-29 / POL-R3-1: a device names yesterday's #10 "#10 · 5 oct".
       businessDate: o.business_day as string,
       serviceVersion: o.service_version,
+      // payments (037, LD-72): the order's price list, so an offline round prices at it as the
+      // server's round applier will (PAYMENTS-MONEY-1).
+      pricePlatform: (o.price_platform as string | null) ?? null,
       lines: o.lines,
       roundNotes: o.round_notes as { number: number; note: string }[],
       // Exactly what this copy already contains, so a device never counts one

@@ -925,6 +925,38 @@ async function onlineCreateTarget(
   };
 }
 
+/**
+ * payments (037, LD-72; PAYMENTS-MONEY-3): the price list a record's lines sync at: an order or
+ * sale record's own, a round's target order's (read as the round applier reads it); null = POS
+ * prices, also while a round's parent has not synced yet.
+ */
+async function reviewPriceList(
+  tx: Tx,
+  p: Record<string, unknown>,
+): Promise<PricePlatform | null> {
+  if ("order" in p)
+    return (
+      (p.order as { pricePlatform?: PricePlatform | null }).pricePlatform ??
+      null
+    );
+  const target = p.target as
+    { orderId: string } | { localOrderOperationId: string } | undefined;
+  if (!target) return null;
+  let orderId: string | null;
+  if ("orderId" in target) orderId = target.orderId;
+  else {
+    const [parent] =
+      await tx`select result from operations where id=${target.localOrderOperationId} and kind='offline_sync'`;
+    orderId = parent
+      ? (parent.result.orderId ?? parent.result.id ?? null)
+      : null;
+  }
+  if (!orderId) return null;
+  const [order] =
+    await tx`select price_platform from orders where id=${orderId}`;
+  return (order?.price_platform as PricePlatform | null) ?? null;
+}
+
 /** Manager review. Throws only invalid_input or forbidden, never for evidence. */
 export async function reviewOfflineRecord(tx: Tx, s: Session, raw: unknown) {
   permit(s, managers);
@@ -945,8 +977,15 @@ export async function reviewOfflineRecord(tx: Tx, s: Session, raw: unknown) {
   let currentTotal: number | null = null;
   if (lines)
     try {
+      // PAYMENTS-MONEY-3: priced at the list the sync would use (verifyLines).
       currentTotal = sum(
-        quote(lines, await catalog(tx), true).map((line) => line.total),
+        quote(
+          lines,
+          await catalog(tx),
+          true,
+          undefined,
+          await reviewPriceList(tx, p),
+        ).map((line) => line.total),
       );
     } catch {
       /* Unavailable/deleted menu is explicitly unknown. */
