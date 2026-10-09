@@ -36,6 +36,7 @@ import {
   getPinPadPayment,
   listPinPadDevices,
   mapClipPayment,
+  type CancelResult,
   type ClipClient,
 } from "./clip.js";
 import {
@@ -94,15 +95,31 @@ function isoMinutes(text: string): number {
   const m = /^PT(\d+)M$/.exec(text);
   return m ? Number(m[1]) * 60_000 : 10 * 60_000;
 }
-/** When an attempt with no final status becomes unknown (spec §2.4 step 7). */
+/**
+ * When an attempt with no final status stops waiting (spec §2.4 step 7), counted from the latest
+ * send: MP's order expires (expiration_time) and 2 minutes later the attempt is unknown. A Clip
+ * request has no expiry (R10; P2-PROVIDERS-3): at its own deadline the worker withdraws it
+ * (clipDeadline), and only a request the reader already holds becomes unknown.
+ */
 function deadline(a: WorkerAttempt): number {
   const start = new Date(a.sent_at ?? a.created_at).getTime();
+  if (a.provider === "clip")
+    return start + PAYMENTS_LIMITS.clipDeadlineMs[a.origin];
   return (
     start +
     isoMinutes(PAYMENTS_LIMITS.mpExpiration[a.origin]) +
     PAYMENTS_LIMITS.unknownAfterExpiryMs
   );
 }
+/**
+ * A Clip request the reader held at its deadline: unknown (payments_attempt_timeout), and still
+ * read every clipWatchMs, so a payment or a cancel on the reader settles it by itself.
+ */
+const clipWatch = (a: WorkerAttempt) =>
+  a.provider === "clip" &&
+  a.state === "unknown" &&
+  a.error_code === "payments_attempt_timeout" &&
+  Boolean(a.provider_reference);
 
 type Loaded = {
   attempt: WorkerAttempt;
@@ -278,6 +295,18 @@ async function applyRead(
   if (!a || (a.state !== "pending" && a.state !== "unknown")) return "stop";
   const status = read.providerStatus || null;
   if (read.outcome === "pending") {
+    if (clipWatch(a)) {
+      // The reader still holds it past its deadline: stays unknown (no flip back to pending).
+      if (status !== a.provider_status) {
+        await tx`update payment_attempts set provider_status=${status},version=version+1
+          where id=${attemptId}`;
+        await workerEvent(tx, tenantId, attemptId, "provider_status", {
+          status,
+          source,
+        });
+      }
+      return "continue";
+    }
     const restart = a.state === "unknown";
     if (restart || status !== a.provider_status) {
       await tx`update payment_attempts set state='pending',provider_status=${status},version=version+1
@@ -859,24 +888,98 @@ async function withdrawBySerial(
   a: WorkerAttempt,
   account: ActiveAccount,
 ) {
-  let cancelled: boolean | null = null;
-  let providerCode: string | null = null;
+  let r: CancelResult | null = null;
   try {
-    const r = await cancelBySerial(
+    r = await cancelBySerial(
       clipClient(rt, account, ctx.signal),
       a.provider_device_id,
     );
-    cancelled = r.cancelled;
-    providerCode = r.cancelled ? null : r.code;
   } catch {
-    cancelled = null;
+    r = null;
   }
-  await ctx.tenant((tx) =>
-    workerEvent(tx, ctx.job.tenantId, a.id, "cancel_by_serial", {
-      cancelled,
-      providerCode,
-    }),
-  );
+  const tenantId = ctx.job.tenantId;
+  await ctx.tenant(async (tx) => {
+    await workerEvent(tx, tenantId, a.id, "cancel_by_serial", {
+      cancelled: r ? r.cancelled : null,
+      providerCode: r && !r.cancelled ? r.code : null,
+    });
+    const now = await lockAttempt(tx, a.id);
+    if (!r || now?.state !== "unknown" || now.provider_reference) return;
+    // The evidence «No se cobró» needs for a Clip request with no id (P2-MONEY-3): Clip withdrew
+    // this attempt's own request (its 200 body names it) → cancelled, nothing was charged; the
+    // reader holds a payment (400 PAYMENT_PENDING) → it may still charge; anything else → nothing
+    // of this attempt waits on the reader.
+    if (r.cancelled && r.reference === a.id && r.pinpadRequestId) {
+      const [taken] =
+        await tx`select id from payment_attempts where provider='clip'
+        and lower(provider_reference)=lower(${r.pinpadRequestId}) limit 1`;
+      if (!taken) {
+        await tx`update payment_attempts set state='cancelled',provider_reference=${r.pinpadRequestId},
+            provider_status='serial_withdrawn',error_code=null,decided_at=now(),version=version+1
+          where id=${a.id}`;
+        await workerEvent(tx, tenantId, a.id, "cancelled", {
+          source: "serial",
+          reference: r.pinpadRequestId,
+        });
+        return;
+      }
+    }
+    const status =
+      !r.cancelled && r.code === "PAYMENT_PENDING"
+        ? "serial_pending"
+        : "serial_clear";
+    await tx`update payment_attempts set provider_status=${status},version=version+1
+      where id=${a.id}`;
+  });
+}
+
+/**
+ * A pending Clip request past its deadline (P2-PROVIDERS-3): withdraw it (DELETE /payment/{id},
+ * which works until the reader picks it up). Withdrawn → cancelled. Refused (the reader holds it)
+ * or unreachable → unknown (payments_attempt_timeout), alerted, and watched: read every
+ * clipWatchMs until the reader settles it either way.
+ */
+async function clipDeadline(ctx: JobContext, rt: PaymentsRuntime, l: Usable) {
+  const tenantId = ctx.job.tenantId;
+  const attemptId = l.attempt.id;
+  let r: CancelResult | null = null;
+  try {
+    r = await cancelPinPadPayment(
+      clipClient(rt, l.account, ctx.signal),
+      l.attempt.provider_reference!,
+    );
+  } catch {
+    r = null;
+  }
+  const unknown = await ctx.tenant(async (tx) => {
+    const a = await lockAttempt(tx, attemptId);
+    if (a?.state !== "pending") return false;
+    if (r?.cancelled) {
+      await tx`update payment_attempts set state='cancelled',error_code=null,decided_at=now(),
+          version=version+1 where id=${attemptId}`;
+      await workerEvent(tx, tenantId, attemptId, "cancelled", {
+        source: "deadline",
+      });
+      return false;
+    }
+    await tx`update payment_attempts set state='unknown',error_code='payments_attempt_timeout',
+        version=version+1 where id=${attemptId}`;
+    await workerEvent(tx, tenantId, attemptId, "unknown", {
+      code: "payments_attempt_timeout",
+      providerCode: r && !r.cancelled ? r.code : null,
+      source: "deadline",
+    });
+    await schedulePoll(
+      tx,
+      tenantId,
+      attemptId,
+      newChain(),
+      1,
+      PAYMENTS_LIMITS.clipWatchMs,
+    );
+    return true;
+  });
+  if (unknown) raise(rt, unknownAlert(tenantId, "no_final_status"));
 }
 
 /** payments_poll: one read of a pending attempt, then the next link of its chain. */
@@ -905,8 +1008,14 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
   // which would end the chain with the attempt pending).
   const loaded = await load(ctx, rt, attemptId);
   const a = loaded?.attempt;
-  if (!loaded || !a || a.state !== "pending" || !a.provider_reference)
+  if (
+    !loaded ||
+    !a ||
+    (a.state !== "pending" && !clipWatch(a)) ||
+    !a.provider_reference
+  )
     return { status: "done" };
+  let withdraw = false;
   /** The chain's next link, or `unknown` once the deadline passed (the only pending → unknown). */
   const next = async (
     afterMs: number,
@@ -914,8 +1023,27 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
   ) =>
     ctx.tenant(async (tx) => {
       const now = await readAttempt(tx, attemptId);
+      if (now && clipWatch(now)) {
+        await schedulePoll(
+          tx,
+          tenantId,
+          attemptId,
+          chain,
+          seq + 1,
+          PAYMENTS_LIMITS.clipWatchMs,
+        );
+        return;
+      }
       if (now?.state !== "pending") return;
       if (Date.now() > deadline(now)) {
+        if (
+          now.provider === "clip" &&
+          timeoutCode === "payments_attempt_timeout"
+        ) {
+          // Withdraw it first (outside this transaction: a provider call).
+          withdraw = true;
+          return;
+        }
         const locked = await lockAttempt(tx, attemptId);
         if (locked?.state !== "pending") return;
         await tx`update payment_attempts set state='unknown',error_code=${timeoutCode},
@@ -967,6 +1095,7 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
     applyRead(tx, rt, tenantId, attemptId, read, "poll"),
   );
   if (outcome === "continue" || outcome === "restart") await next(cadence);
+  if (withdraw) await clipDeadline(ctx, rt, loaded);
   return { status: "done" };
 }
 

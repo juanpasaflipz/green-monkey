@@ -261,7 +261,8 @@ export async function failAccount(
   code: string,
   secretId: string,
 ): Promise<boolean> {
-  const rows = await tx`update payment_provider_accounts set state='failed',error_code=${code},
+  const rows =
+    await tx`update payment_provider_accounts set state='failed',error_code=${code},
       version=version+1,updated_at=now()
     where provider=${provider} and state='active' and credential_secret_id=${secretId}
     returning provider`;

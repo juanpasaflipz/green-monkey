@@ -48,6 +48,13 @@ export const PAYMENTS_LIMITS = {
   pollFastForMs: 180_000,
   pollSlowMs: 10_000,
   unknownAfterExpiryMs: 120_000,
+  /**
+   * Clip requests never expire (developer.clip.mx documents no lifetime; wave4 R10): after this
+   * long the worker withdraws the request (DELETE /payment/{id}); if the reader already holds it,
+   * the attempt is unknown and read every clipWatchMs until the reader settles it.
+   */
+  clipDeadlineMs: { pos: 600_000, kiosk: 300_000 },
+  clipWatchMs: 60_000,
   dialogSyncMs: 1500,
   webhookPerIpPerMinute: 120,
   webhookPerHookPerMinute: 600,

@@ -80,6 +80,7 @@ export type AttemptRow = {
   tender_id: string | null;
   resolution: string | null;
   created_at: Date;
+  sent_at: Date | null;
   decided_at: Date | null;
   version: number;
 };
@@ -94,6 +95,34 @@ const FLAGGED = new Set([
   "payments_provider_mismatch",
   "payments_refunded_before_settle",
 ]);
+
+/** "PT10M" in milliseconds (MP's expiration_time as PAYMENTS_LIMITS spells it). */
+const isoMinutes = (text: string) => {
+  const m = /^PT(\d+)M$/.exec(text);
+  return m ? Number(m[1]) * 60_000 : 10 * 60_000;
+};
+
+/**
+ * Whether the provider may still take this unknown charge (P2-MONEY-3, P2-PROVIDERS-3; the fix
+ * round's invariant): «No se cobró» needs a provider answer that it cannot, or the expiry margin.
+ * - MP: until its order's expiration_time plus the 2-minute margin, counted from the latest send
+ *   (a lost create answer or a re-POST may have put an order on the device).
+ * - Clip with a request id: its requests never expire, so the reader may still take it until a
+ *   read or a withdrawal says it cannot (that moves the attempt to cancelled or declined itself).
+ * - Clip without an id: until the worker's delete by serial number said nothing of it waits on
+ *   the reader (provider_status serial_clear).
+ */
+export function providerMayStillCharge(a: AttemptRow, now = Date.now()) {
+  if (a.provider === "mercadopago")
+    return (
+      now <
+      new Date(a.sent_at ?? a.created_at).getTime() +
+        isoMinutes(PAYMENTS_LIMITS.mpExpiration[a.origin]) +
+        PAYMENTS_LIMITS.unknownAfterExpiryMs
+    );
+  if (a.provider_reference) return true;
+  return a.provider_status !== "serial_clear";
+}
 
 /** The attempt as the dialog, banner and resolve dialog see it (never secrets or raw data). */
 export function attemptView(
@@ -776,7 +805,8 @@ export function settleAttemptEntry(
  * - retry (operators, no step-up; R13): from review with provider data, when the checks pass now.
  * - record (managers, step-up): from unknown or review; from unknown without a provider reference
  *   the typed reference is required. The tender takes the estimate as its fee.
- * - not_charged (managers, step-up): unknown → dismissed; refused if the provider last said paid.
+ * - not_charged (managers, step-up): unknown → dismissed; refused if the provider last said paid,
+ *   or while it may still take the charge (providerMayStillCharge).
  * - refunded_at_provider (managers, step-up): review → dismissed; the note names the refund.
  * Record and retry run the settle sequence under the settle key (no second operation key).
  */
@@ -863,6 +893,8 @@ export async function resolveAttempt(
           a.provider_status?.startsWith("processed")
         )
           throw new DomainError("payments_provider_says_paid", 409);
+        if (providerMayStillCharge(a))
+          throw new DomainError("payments_provider_may_charge", 409);
       } else if (a.state !== "review")
         throw new DomainError("payments_not_approved", 409);
       const resolution =

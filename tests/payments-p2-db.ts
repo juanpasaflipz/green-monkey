@@ -1505,7 +1505,9 @@ try {
 
   await test("13. Clip create timeout → unknown (never re-sent) with a withdraw by serial number; the manager records it with a typed reference (step-up) → one tender without card data", async () => {
     const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
-    fake.next("clip", "timeout");
+    // The reader took the request before the withdrawal (a request it had not taken is withdrawn
+    // and cancelled: the Clip deadline test).
+    fake.next("clip", "timeoutTaken");
     const view = await start(cashier, o.id, terminals.clip, o.total);
     assert.equal(
       await drive(view.id, ["unknown", "pending", "declined"]),
@@ -1575,6 +1577,83 @@ try {
       ["AUT123456", null, null, 162, "estimated"],
     );
     assert.equal(recorded.order?.paid, o.total);
+    // The reader completes the payment the manager recorded (the fake's reader is free again).
+    fake.approve(fake.chargeFor(view.id)!.id, { ...TEST_CARD });
+  });
+
+  await test("Clip's own deadline and «No se cobró» (P2-MONEY-3, P2-PROVIDERS-3): a request the reader never took is withdrawn at its deadline (cancelled, the order is free); one the reader holds becomes unknown, is still read, and «No se cobró» is refused until the reader settles it, which records it by itself; a lost create the reader never took is withdrawn by serial and cancelled", async () => {
+    const mgr = fresh(A, ids.manager, "manager");
+    const age = (attemptId: string) =>
+      asOwner(
+        A,
+        (
+          tx,
+        ) => tx`update payment_attempts set sent_at = now() - interval '11 minutes'
+          where id=${attemptId}`,
+      );
+    // (a) The diner walked away before the reader took it: withdrawn at the deadline.
+    const o1 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const c1 = await pending(o1, terminals.clip);
+    await age(c1.id);
+    assert.equal(await drive(c1.id, ["cancelled", "unknown"]), "cancelled");
+    assert.equal(fake.charges.get(c1.ref)!.status, "canceled");
+    assert.ok(
+      fake.requests.some(
+        (r) => r.method === "DELETE" && r.path === `/clip/payment/${c1.ref}`,
+      ),
+    );
+    // (b) The reader holds it (the diner is still paying): unknown, alerted, still read.
+    const o2 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const c2 = await pending(o2, terminals.clip);
+    fake.atTerminalUncancellable(c2.ref);
+    await age(c2.id);
+    assert.equal(await drive(c2.id, ["unknown", "cancelled"]), "unknown");
+    assert.equal(
+      (await attemptRow(c2.id)).error_code,
+      "payments_attempt_timeout",
+    );
+    // «No se cobró» is refused: the reader may still take it (before: dismissed, and a later
+    // payment on the reader was never recorded).
+    await rejects(
+      resolve(mgr, c2.id, {
+        outcome: "not_charged",
+        note: NOTE,
+        confirmed: true,
+      }),
+      "payments_provider_may_charge",
+    );
+    await round(A);
+    await round(A);
+    assert.equal(await stateOf(c2.id), "unknown", "no flip back to pending");
+    assert.equal(
+      await count(
+        A,
+        (
+          tx,
+        ) => tx`select count(*)::int as n from jobs where kind='payments_poll'
+          and state in ('queued','available','running') and payload->>'attemptId'=${c2.id}`,
+      ),
+      1,
+      "still watched",
+    );
+    fake.approve(c2.ref, { ...TEST_CARD });
+    assert.equal(await drive(c2.id, ["settled"]), "settled");
+    // (c) A lost create the reader never took: the delete by serial withdraws it, and Clip's
+    // answer names the attempt → cancelled, with its id (never a second create).
+    const o3 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    fake.next("clip", "timeout");
+    const v3 = await start(cashier, o3.id, terminals.clip, o3.total);
+    assert.equal(await drive(v3.id, ["cancelled", "unknown"]), "cancelled");
+    const row3 = await attemptRow(v3.id);
+    assert.deepEqual(
+      [row3.provider_reference, row3.provider_status],
+      [fake.chargeFor(v3.id)!.id, "serial_withdrawn"],
+    );
+    assert.equal(
+      [...fake.charges.values()].filter((c) => c.reference === v3.id).length,
+      1,
+      "one create",
+    );
   });
 
   await test("13. MP create with a lost answer is retried with the same idempotency key (one order at MP); a 429 on create backs off and retries; «No se cobró» dismisses an unknown outcome only when MP never said paid", async () => {
@@ -1629,6 +1708,23 @@ try {
     assert.equal(
       (await attemptRow(v3.id)).error_code,
       "payments_provider_unreachable",
+    );
+    // MP may still hold an order made by a lost send until it expires: «No se cobró» waits for
+    // the expiry margin (P2-MONEY-3); a manager tries now and is refused with the reason.
+    await rejects(
+      resolve(fresh(A, ids.manager, "manager"), v3.id, {
+        outcome: "not_charged",
+        note: NOTE,
+        confirmed: true,
+      }),
+      "payments_provider_may_charge",
+    );
+    await asOwner(
+      A,
+      (
+        tx,
+      ) => tx`update payment_attempts set sent_at = now() - interval '13 minutes'
+        where id=${v3.id}`,
     );
     const done = await resolve(fresh(A, ids.manager, "manager"), v3.id, {
       outcome: "not_charged",
@@ -1760,7 +1856,23 @@ try {
     );
     // Excepciones lists an unknown outcome only after 10 minutes.
     assert.equal(await listed("terminal_attempt_unknown_open", view.id), false);
-    // The manager resolves it with the existing outcomes: «No se cobró» (step-up, note).
+    // The manager resolves it with the existing outcomes: «No se cobró» (step-up, note), once
+    // MP's order (if a send made one) has expired (P2-MONEY-3).
+    await rejects(
+      resolve(fresh(A, ids.manager, "manager"), view.id, {
+        outcome: "not_charged",
+        note: NOTE,
+        confirmed: true,
+      }),
+      "payments_provider_may_charge",
+    );
+    await asOwner(
+      A,
+      (
+        tx,
+      ) => tx`update payment_attempts set sent_at = now() - interval '13 minutes'
+        where id=${view.id}`,
+    );
     const done = await resolve(fresh(A, ids.manager, "manager"), view.id, {
       outcome: "not_charged",
       note: NOTE,
@@ -1832,6 +1944,25 @@ try {
       true,
       "Excepciones lists it once it is older than 10 minutes",
     );
+    // «No se cobró» needs the reader's answer first (P2-MONEY-3): the recovery's delete by serial
+    // number finds nothing of this attempt waiting on the reader.
+    await rejects(
+      resolve(fresh(A, ids.manager, "manager"), clipAttempt, {
+        outcome: "not_charged",
+        note: NOTE,
+        confirmed: true,
+      }),
+      "payments_provider_may_charge",
+    );
+    await round(A);
+    assert.deepEqual(
+      [
+        await stateOf(clipAttempt),
+        (await attemptRow(clipAttempt)).provider_status,
+      ],
+      ["unknown", "serial_clear"],
+    );
+    assert.equal(clipCreates(), clipBefore, "Clip is never sent again");
     const doneClip = await resolve(
       fresh(A, ids.manager, "manager"),
       clipAttempt,

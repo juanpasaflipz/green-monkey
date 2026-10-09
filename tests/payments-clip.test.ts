@@ -196,6 +196,8 @@ describe("cancelPinPadPayment: never claims success Clip did not give", () => {
     const fetchMock = mockFetch(200, { pinpad_request_id: "pinpad-1" });
     expect(await cancelPinPadPayment(client, "pinpad-1")).toEqual({
       cancelled: true,
+      pinpadRequestId: "pinpad-1",
+      reference: null,
     });
     const [url, init] = call(fetchMock);
     expect(url).toBe(`${BASE}/payment/pinpad-1`);
@@ -214,6 +216,17 @@ describe("cancelPinPadPayment: never claims success Clip did not give", () => {
     });
   });
 
+  it("delete by serial: 400 PAYMENT_PENDING (the reader holds a payment) → not cancelled, with code", async () => {
+    mockFetch(400, {
+      code: "PAYMENT_PENDING",
+      message: "El dispositivo tiene un pago pendiente en curso",
+    });
+    expect(await cancelBySerial(client, "P8220724FAKE42")).toEqual({
+      cancelled: false,
+      code: "PAYMENT_PENDING",
+    });
+  });
+
   it("5xx throws so the caller keeps the attempt pending", async () => {
     mockFetch(503, { code: "UNAVAILABLE" });
     await expect(
@@ -222,9 +235,18 @@ describe("cancelPinPadPayment: never claims success Clip did not give", () => {
   });
 
   it("delete by serial number uses /payment/serial-number/{serial} (documented for an unknown create)", async () => {
-    const fetchMock = mockFetch(200, { pinpad_request_id: "pinpad-9" });
+    // developer.clip.mx: the 200 body names the withdrawn request (id and reference), which tells
+    // the worker whether it was this attempt's (P2-MONEY-3).
+    const fetchMock = mockFetch(200, {
+      pinpad_request_id: "pinpad-9",
+      reference: "6f1c1a52-8d0e-4c1e-9b0a-3a3c1d2e4f50",
+      serial_number_pos: "P8220724FAKE42",
+      current_payment_on_transaction: null,
+    });
     expect(await cancelBySerial(client, "P8220724FAKE42")).toEqual({
       cancelled: true,
+      pinpadRequestId: "pinpad-9",
+      reference: "6f1c1a52-8d0e-4c1e-9b0a-3a3c1d2e4f50",
     });
     const [url, init] = call(fetchMock);
     expect(url).toBe(`${BASE}/payment/serial-number/P8220724FAKE42`);

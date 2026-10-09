@@ -141,8 +141,14 @@ export async function getPinPadPayment(
   return obj(stripNulChars(r.body));
 }
 
-type CancelResult =
-  { cancelled: true } | { cancelled: false; code: string | null };
+export type CancelResult =
+  | {
+      cancelled: true;
+      /** The withdrawn request (Clip's 200 body: pinpad_request_id, reference); null if absent. */
+      pinpadRequestId: string | null;
+      reference: string | null;
+    }
+  | { cancelled: false; code: string | null };
 
 async function cancel(c: ClipClient, path: string): Promise<CancelResult> {
   const r = await providerRequest({
@@ -151,7 +157,15 @@ async function cancel(c: ClipClient, path: string): Promise<CancelResult> {
     headers: auth(c),
     signal: c.signal,
   });
-  if (r.status >= 200 && r.status <= 299) return { cancelled: true };
+  if (r.status >= 200 && r.status <= 299) {
+    const b = obj(r.body);
+    const id = str(b.pinpad_request_id);
+    return {
+      cancelled: true,
+      pinpadRequestId: id && /^[A-Za-z0-9_-]{1,100}$/.test(id) ? id : null,
+      reference: str(b.reference),
+    };
+  }
   if (r.status === 400 || r.status === 404)
     return { cancelled: false, code: clipCode(r) };
   throw failure(r);
@@ -168,7 +182,12 @@ export function cancelPinPadPayment(
   return cancel(c, `/payment/${encodeURIComponent(pinpadRequestId)}`);
 }
 
-/** DELETE /payment/serial-number/{serial}: withdraws a request whose id is unknown (spec §2.5). */
+/**
+ * DELETE /payment/serial-number/{serial}: withdraws a request whose id is unknown (spec §2.5).
+ * developer.clip.mx reference: 200 {pinpad_request_id, reference, amount, serial_number_pos,
+ * current_payment_on_transaction}; 400 PAYMENT_PENDING "El dispositivo tiene un pago pendiente en
+ * curso" when the reader already holds a payment.
+ */
 export function cancelBySerial(
   c: ClipClient,
   serial: string,

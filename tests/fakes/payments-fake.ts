@@ -9,7 +9,9 @@
  *     name for the old 2205 "queued intent"; the R10 name stays), "busy" (Clip: reader offline),
  *     "rateLimit429",
  *     "server5xx", "timeout" (the connection drops with no answer: a lost create),
- *     "clipCreateTimeout" (alias of timeout for Clip), "belowMin", "reusedOrderId" (MP: 201 with
+ *     "clipCreateTimeout" (alias of timeout for Clip), "timeoutTaken" (Clip: the answer is lost and
+ *     the reader has already taken the request, so a delete by serial answers 400 PAYMENT_PENDING),
+ *     "belowMin", "reusedOrderId" (MP: 201 with
  *     the id of the fake's newest MP order, an answer the restaurant cannot record twice, so the
  *     push fails on every claim; the same key keeps getting that answer), "terminalNotOwned" (MP:
  *     403 forbidden_checking_terminal_owner, a device linked to another account; the token is fine)
@@ -50,7 +52,8 @@ export type Behaviour =
   | "belowMin"
   | "reusedOrderId"
   | "terminalNotOwned"
-  | "idempotencyKeyUsed";
+  | "idempotencyKeyUsed"
+  | "timeoutTaken";
 type Approval = {
   paid?: number;
   tip?: number;
@@ -484,8 +487,13 @@ export async function startPaymentsFake(
             "clip create carried an idempotency key Clip does not document",
           );
         const behaviour = queue.clip.shift() ?? "ok";
-        if (behaviour === "timeout" || behaviour === "clipCreateTimeout") {
-          newCharge("clip", body, null);
+        if (
+          behaviour === "timeout" ||
+          behaviour === "clipCreateTimeout" ||
+          behaviour === "timeoutTaken"
+        ) {
+          const c = newCharge("clip", body, null);
+          if (behaviour === "timeoutTaken") c.status = "at_terminal";
           req.socket.destroy();
           return;
         }
@@ -517,12 +525,16 @@ export async function startPaymentsFake(
       }
       const bySerial = /^\/payment\/serial-number\/([^/]+)$/.exec(path);
       if (req.method === "DELETE" && bySerial) {
-        const c = [...charges.values()].find(
-          (x) =>
-            x.provider === "clip" &&
-            x.device === bySerial[1] &&
-            x.status === "created",
+        const onReader = [...charges.values()].filter(
+          (x) => x.provider === "clip" && x.device === bySerial[1],
         );
+        // developer.clip.mx: 400 PAYMENT_PENDING when the device already holds a payment.
+        if (onReader.some((x) => x.status === "at_terminal"))
+          return send(res, 400, {
+            code: "PAYMENT_PENDING",
+            message: "El dispositivo tiene un pago pendiente en curso",
+          });
+        const c = onReader.find((x) => x.status === "created");
         if (!c)
           return send(res, 400, {
             code: "PAYMENT_REQUEST_ISSUE",
