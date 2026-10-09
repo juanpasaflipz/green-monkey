@@ -275,7 +275,12 @@ export function PaymentSettings({
 
       <h3>{t("payTerminals")}</h3>
       {view.terminals.length ? (
-        <div className="data-table">
+        <div
+          className="data-table"
+          role="region"
+          aria-label={t("payTerminals")}
+          tabIndex={0}
+        >
           <table>
             <thead>
               <tr>
@@ -350,7 +355,7 @@ export function PaymentSettings({
         <p className="muted">{t("payTerminalsEmpty")}</p>
       )}
       <div className="payment-terminal-form row wrap">
-        <Field label={t("payTerminalName")}>
+        <Field label={t("payTerminalNameField")}>
           <input
             value={name}
             maxLength={40}
@@ -372,7 +377,7 @@ export function PaymentSettings({
           disabled={busy || !online || !name.trim()}
           onClick={saveTerminal}
         >
-          {editing ? t("paySave") : t("payAddTerminal")}
+          {editing ? t("paySaveTerminal") : t("payAddTerminal")}
         </Button>
         {editing && (
           <Button
@@ -453,12 +458,12 @@ export function PaymentSettings({
       </div>
       <p className="muted tiny">{t("payCommissionHint")}</p>
       <Button disabled={busy || !online} onClick={savePlatforms}>
-        {t("paySave")}
+        {t("paySavePlatforms")}
       </Button>
 
       <h3>{t("payPlatformPrices")}</h3>
       <p className="muted">{t("payPlatformPricesHint")}</p>
-      {enabledPlatforms.length ? (
+      {enabledPlatforms.length && catalog.length ? (
         <>
           <Field label={t("payPlatformPricesSearch")}>
             <input
@@ -467,7 +472,13 @@ export function PaymentSettings({
               onChange={(e) => setQuery(e.target.value)}
             />
           </Field>
-          <div className="data-table payment-prices">
+          {/* A scrolling region is keyboard-reachable (axe scrollable-region-focusable). */}
+          <div
+            className="data-table payment-prices"
+            role="region"
+            aria-label={t("payPlatformPrices")}
+            tabIndex={0}
+          >
             <table>
               <thead>
                 <tr>
@@ -511,7 +522,7 @@ export function PaymentSettings({
             </table>
           </div>
           <Button disabled={busy || !online} onClick={savePrices}>
-            {t("paySave")}
+            {t("paySavePrices")}
           </Button>
         </>
       ) : (

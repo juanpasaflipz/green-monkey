@@ -266,7 +266,12 @@ export function DrawerPanel({
               </dl>
               <p className="muted tiny">{t("discountsDrawerCardHint")}</p>
               {(data.byTerminal ?? []).some((r) => r.terminalId) && (
-                <div className="data-table">
+                <div
+                  className="data-table"
+                  role="region"
+                  aria-label={t("cashCardByTerminal")}
+                  tabIndex={0}
+                >
                   <table aria-label={t("cashCardByTerminal")}>
                     <caption>{t("cashCardByTerminal")}</caption>
                     <thead>

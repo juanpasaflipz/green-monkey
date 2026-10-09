@@ -65,6 +65,10 @@ export default defineArea({
     payIntegratedSoon:
       "Mercado Pago Point y Clip integrados llegan en la siguiente fase; mientras tanto regístralas como terminales manuales.",
     paySave: "Guardar",
+    paySaveTerminal: "Guardar terminal",
+    paySavePlatforms: "Guardar plataformas",
+    paySavePrices: "Guardar precios",
+    payTerminalNameField: "Nombre de la terminal",
     paySaved: "Guardado",
     payPlatforms: "Plataformas de entrega",
     payPlatformsHint:
@@ -192,6 +196,10 @@ export default defineArea({
     payIntegratedSoon:
       "Integrated Mercado Pago Point and Clip arrive in the next phase; meanwhile record them as manual terminals.",
     paySave: "Save",
+    paySaveTerminal: "Save terminal",
+    paySavePlatforms: "Save platforms",
+    paySavePrices: "Save prices",
+    payTerminalNameField: "Terminal name",
     paySaved: "Saved",
     payPlatforms: "Delivery platforms",
     payPlatformsHint:

@@ -75,7 +75,9 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
   const panel = page.locator("section.payment-settings");
   await expect(panel).toContainText("Pagos con tarjeta y plataformas");
   // A manual bank terminal with its fee (1.75 %).
-  await panel.getByLabel("Nombre", { exact: true }).fill(terminal);
+  await panel
+    .getByLabel("Nombre de la terminal", { exact: true })
+    .fill(terminal);
   await panel.getByLabel("Comisión (% con IVA)", { exact: true }).fill("1.75");
   await panel
     .getByRole("button", { name: "Agregar terminal", exact: true })
@@ -88,8 +90,7 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
     .getByLabel("Comisión estimada (%) · DiDi Food", { exact: true })
     .fill("25");
   await panel
-    .getByRole("button", { name: "Guardar", exact: true })
-    .first()
+    .getByRole("button", { name: "Guardar plataformas", exact: true })
     .click();
   await expect(panel.getByRole("status")).toContainText("Guardado");
   // Taco de hongos sells at $59.00 on Uber Eats.
@@ -100,8 +101,7 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
     .getByLabel("Taco de hongos · Uber Eats", { exact: true })
     .fill("59");
   await panel
-    .getByRole("button", { name: "Guardar", exact: true })
-    .last()
+    .getByRole("button", { name: "Guardar precios", exact: true })
     .click();
   await expect(panel.getByRole("status")).toContainText("Guardado");
   for (const width of [1440, 1024, 768, 390]) {
