@@ -263,6 +263,70 @@ test("returning member with a reward: Canjear premio after Enviar productos prim
   await page.getByRole("button", { name: "Siguiente venta", exact: true }).click();
 });
 
+test("walk-in and moves: a Sin club sale's Vender receipt shows and prints the join QR; a member picked for a new cart does not follow it to another check and comes back with its parked cart (LOYALTY-OPS-1, UX-1, UX-2)", async ({
+  page,
+}) => {
+  await login(page);
+  await openDrawer(page);
+  const catalog = await call(page, "/catalog");
+  const taco = catalog.find((p: any) => p.name.es === "Taco de hongos");
+  await call(page, "/orders", {
+    operationId: uuid(),
+    lines: [{ id: uuid(), productId: taco.id, quantity: 1, options: [], note: "" }],
+    mode: "takeaway",
+    tableId: null,
+    name: "Cuenta sin club",
+    note: "",
+    channel: "pos",
+  });
+  await sell(page);
+  // A walk-in: Sin club, cash. The receipt reads its own club block and prints it.
+  await product(page, "Taco de hongos").click();
+  await page.getByRole("dialog", { name: "Cliente del club" }).getByRole("button", { name: "Sin club", exact: true }).click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await page.getByRole("button", { name: "Confirmar cobro", exact: true }).click();
+  const receipt = page.locator(".receipt");
+  await expect(receipt).toContainText("Cobrado");
+  const block = receipt.locator(".loyalty-receipt-block");
+  await expect(block).toContainText("Únete a");
+  await expect(block.getByRole("img")).toBeVisible();
+  await stubPrint(page);
+  await page.getByRole("button", { name: "Imprimir recibo", exact: true }).click();
+  await expect
+    .poll(() => page.evaluate(() => ((window as any).__printed as string[]).join("\n")))
+    .toContain("Únete a");
+  await page.getByRole("button", { name: "Siguiente venta", exact: true }).click();
+  // Ana in a new cart, then another check from Órdenes: the check starts without her.
+  await product(page, "Taco de hongos").click();
+  const dialog = page.getByRole("dialog", { name: "Cliente del club" });
+  await dialog.getByLabel("Teléfono (10 dígitos)").fill(memberPhone);
+  await dialog.getByRole("button", { name: "Buscar", exact: true }).first().click();
+  await dialog.getByRole("button", { name: "Usar", exact: true }).click();
+  await expect(page.locator(".loyalty-chip")).toContainText("Ana");
+  await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+  await page
+    .locator(".order-summary")
+    .filter({ hasText: "Cuenta sin club" })
+    .first()
+    .getByRole("button", { name: "Abrir orden" })
+    .click();
+  await expect(page.getByLabel("Nombre para llamar")).toHaveValue("Cuenta sin club");
+  await expect(page.locator(".loyalty-chip")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Canjear premio", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Club", exact: true })).toBeVisible();
+  // Ana's parked cart comes back with her.
+  await page.getByRole("button", { name: "Borradores", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Borradores" })
+    .getByRole("button")
+    .filter({ hasText: "Ana · 1 producto" })
+    .first()
+    .click();
+  await expect(page.locator(".loyalty-chip")).toContainText("Ana");
+  await page.getByRole("button", { name: "Nueva orden", exact: true }).click();
+  await expect(page.locator(".loyalty-chip")).toHaveCount(0);
+});
+
 test("offline: the Club button is disabled with its hint and the sale completes", async ({ page }) => {
   await login(page);
   await openDrawer(page);

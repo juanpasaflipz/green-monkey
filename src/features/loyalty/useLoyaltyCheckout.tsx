@@ -13,11 +13,18 @@ import {
   forgetLoyaltyReceipt,
   loyaltyApi,
   prefetchLoyaltyReceipt,
+  trackLoyaltyReceiptWork,
   useLoyaltyClub,
 } from "./loyaltyApi";
 import { fill, tr } from "./format";
 
 const LINK_BUDGET_MS = 3000;
+
+/**
+ * The member of each unsent cart, by its draft's operationId (§2.5: a parked draft keeps its
+ * member). In memory only: after a reload a restored cart starts without one.
+ */
+const draftMembers = new Map<string, MemberSummary>();
 
 export function useLoyaltyCheckout({
   session,
@@ -25,6 +32,8 @@ export function useLoyaltyCheckout({
   online,
   lines,
   current,
+  context,
+  draftId,
 }: {
   session: Session;
   locale: Locale;
@@ -32,6 +41,10 @@ export function useLoyaltyCheckout({
   /** Lines in the cart (unsent). */
   lines: number;
   current: Order | null;
+  /** Selling's replaceContext count: the cart moved to another order or a new cart. */
+  context: number;
+  /** The cart's draft (its operationId). */
+  draftId: string;
 }) {
   const t = tr(locale);
   const club = useLoyaltyClub(session, online);
@@ -43,13 +56,23 @@ export function useLoyaltyCheckout({
   /** Orders this cart linked to its member (id → member id). */
   const linked = useRef(new Map<string, string>());
   const currentId = current && isServerOrder(current) ? current.id : null;
-  const previous = useRef<string | null>(null);
+  const previous = useRef<{ id: string | null; context: number }>({
+    id: currentId,
+    context,
+  });
   // A new cart (no order, no lines) starts a new cycle; a resumed order shows its member. The
-  // cart's member stays when its first send creates the order; another order starts without one.
+  // cart's member stays when its first send creates the order; any other move (a resumed check,
+  // Borradores, Nueva orden, a table, send as new) starts without it, or with the member the
+  // restored draft was parked with (LOYALTY-UX-2).
   useEffect(() => {
     const before = previous.current;
-    previous.current = currentId;
-    if (before && before !== currentId) setMember(null);
+    previous.current = { id: currentId, context };
+    if (before.context !== context) {
+      const parked = currentId ? null : (draftMembers.get(draftId) ?? null);
+      setMember(parked);
+      // A restored cart with lines was prompted when it was rung.
+      prompted.current = lines > 0;
+    } else if (before.id && before.id !== currentId) setMember(null);
     if (!currentId) {
       if (lines === 0) {
         prompted.current = false;
@@ -72,7 +95,7 @@ export function useLoyaltyCheckout({
     return () => {
       live = false;
     };
-  }, [currentId, club?.enabled, online, lines === 0]);
+  }, [currentId, context, club?.enabled, online, lines === 0]);
   // The automatic prompt: once per cart cycle, at the first line of a new cart with no member.
   useEffect(() => {
     if (
@@ -118,11 +141,13 @@ export function useLoyaltyCheckout({
       setPrompt(false);
       setNotice("");
       if (currentId) void link(currentId, m, LINK_BUDGET_MS);
+      else draftMembers.set(draftId, m);
     },
     /** "Quitar cliente": before sending, just the cart; on an open check, the link too. */
     remove() {
       const was = member;
       setMember(null);
+      draftMembers.delete(draftId);
       if (currentId && was && linked.current.get(currentId) === was.id)
         void loyaltyApi
           .change(currentId, null, was.id)
@@ -140,12 +165,22 @@ export function useLoyaltyCheckout({
      */
     async afterPayment(o: Order): Promise<string> {
       if (!club || !online || !isServerOrder(o)) return "";
+      // A walk-in's receipt reads its own block (the join QR); a member's receipt waits for the
+      // link and the reconcile, then reads the counts they left (LOYALTY-OPS-1/UX-1).
+      if (!member && !linked.current.has(o.id)) return "";
       let view: OrderLoyaltyView;
-      try {
-        if (member && !(await link(o.id, member))) return t("loyaltyLinkFailed");
-        if (!member && !linked.current.has(o.id)) return "";
-        view = await loyaltyApi.reconcile(o.id);
+      const work = (async () => {
+        if (member && !(await link(o.id, member))) return null;
+        const v = await loyaltyApi.reconcile(o.id);
+        forgetLoyaltyReceipt(o.id);
         void prefetchLoyaltyReceipt(o.id);
+        return v;
+      })();
+      trackLoyaltyReceiptWork(o.id, work);
+      try {
+        const v = await work;
+        if (!v) return t("loyaltyLinkFailed");
+        view = v;
       } catch {
         return "";
       }

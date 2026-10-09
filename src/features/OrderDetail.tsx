@@ -23,6 +23,7 @@ import {
   auditPrint,
   checkStateOf,
   noteEditableOf,
+  prepareReceipt,
 } from "./Receipt";
 import { KitchenTicketDocument, ticketsForOpenRounds } from "./KitchenTicket";
 import { DiscountDialog } from "./discounts/DiscountDialog";
@@ -534,8 +535,9 @@ export function OrderDetail({
             )}
             {order.paid > 0 && (
               <Button
-                onClick={() => {
+                onClick={async () => {
                   void auditPrint(order.id, "receipt", true);
+                  await prepareReceipt(order, "receipt");
                   void printDocument(
                     <ReceiptDocument
                       order={order}

@@ -93,8 +93,11 @@ installFiscalReceipt();
 import { clearCfdiStatus, prefetchCfdiStatus } from "./features/cfdi/status";
 import { cfdiReceiptExtra } from "./features/cfdi/CfdiReceiptBlock";
 import { setFiscalFooterExtra } from "./features/fiscal/FiscalReceipt";
-import { setReceiptExtra } from "./features/Receipt";
-import { loyaltyReceiptExtra } from "./features/loyalty/LoyaltyReceiptBlock";
+import { setReceiptExtra, setReceiptPrepare } from "./features/Receipt";
+import {
+  loyaltyReceiptExtra,
+  loyaltyReceiptPrepare,
+} from "./features/loyalty/LoyaltyReceiptBlock";
 import {
   useLoyaltyClub,
   useLoyaltyCustomers,
@@ -105,6 +108,7 @@ setFiscalFooterExtra((p) => cfdiReceiptExtra(p));
 // loyalty (038): the club block after the footer (its own slot: it prints with or without a
 // fiscal ticket and never replaces fiscal's or cfdi's lines).
 setReceiptExtra("loyalty", loyaltyReceiptExtra);
+setReceiptPrepare("loyalty", loyaltyReceiptPrepare);
 type StepUpRequest = {
   sessionId: string;
   resolve: () => void;

@@ -2,7 +2,9 @@
  * Loyalty club client calls (038, specs/loyalty-w4.md §5). Every call is online-only: the club
  * never blocks a sale (offline, the buttons are disabled with "El club requiere conexión.").
  * Lookups by phone or name are POST bodies, never URLs. The receipt block reads a per-order
- * in-memory cache filled before printing (printDocument renders into its own root).
+ * in-memory cache that it fills itself when it renders (every receipt, walk-ins included,
+ * LOYALTY-OPS-1/UX-1); printing waits briefly for it (prepareLoyaltyReceipt), because
+ * printDocument renders into its own root.
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { api } from "../../api";
@@ -196,23 +198,66 @@ export function useLoyaltyClub(
 // ---- receipt cache -------------------------------------------------------------------------
 
 const receipts = new Map<string, ReceiptLoyaltyView>();
+const receiptReads = new Map<string, Promise<ReceiptLoyaltyView | null>>();
+/** Bumped by forgetLoyaltyReceipt: a read that started before it never fills the cache. */
+const receiptEpoch = new Map<string, number>();
+/** Club work in flight for an order (Vender's after-payment link and reconcile). */
+const receiptWork = new Map<string, Promise<unknown>>();
 const receiptListeners = new Set<() => void>();
-/** Fetches (once) the receipt block of an order; failures leave no block (never throws). */
-export async function prefetchLoyaltyReceipt(orderId: string) {
-  if (receipts.has(orderId)) return receipts.get(orderId)!;
-  try {
-    const v = await loyaltyApi.receipt(orderId);
-    receipts.set(orderId, v);
-    receiptListeners.forEach((l) => l());
-    return v;
-  } catch {
-    return null;
-  }
+const receiptChanged = () => receiptListeners.forEach((l) => l());
+/**
+ * Fetches the receipt block of an order once (one read in flight per order); failures leave no
+ * block and are not cached (never throws). With the club known to be off, nothing is fetched.
+ */
+export function prefetchLoyaltyReceipt(
+  orderId: string,
+): Promise<ReceiptLoyaltyView | null> {
+  const cached = receipts.get(orderId);
+  if (cached) return Promise.resolve(cached);
+  if (club && !club.view) return Promise.resolve(null);
+  const inFlight = receiptReads.get(orderId);
+  if (inFlight) return inFlight;
+  const epoch = receiptEpoch.get(orderId) ?? 0;
+  const read: Promise<ReceiptLoyaltyView | null> = loyaltyApi
+    .receipt(orderId)
+    .then(
+      (v) => {
+        if ((receiptEpoch.get(orderId) ?? 0) === epoch) {
+          receipts.set(orderId, v);
+          receiptChanged();
+        }
+        return v;
+      },
+      () => null,
+    )
+    .finally(() => {
+      if (receiptReads.get(orderId) === read) receiptReads.delete(orderId);
+    });
+  receiptReads.set(orderId, read);
+  return read;
 }
-/** Drops a cached block (the member changed, so the counts did). */
+/** Drops a cached block (the member or the counts changed); the block reads it again. */
 export function forgetLoyaltyReceipt(orderId: string) {
+  receiptEpoch.set(orderId, (receiptEpoch.get(orderId) ?? 0) + 1);
   receipts.delete(orderId);
-  receiptListeners.forEach((l) => l());
+  receiptReads.delete(orderId);
+  receiptChanged();
+}
+/** Records club work on an order that its receipt should wait for before printing. */
+export function trackLoyaltyReceiptWork(orderId: string, work: Promise<unknown>) {
+  const tracked = work.catch(() => undefined);
+  receiptWork.set(orderId, tracked);
+  void tracked.finally(() => {
+    if (receiptWork.get(orderId) === tracked) receiptWork.delete(orderId);
+  });
+}
+/**
+ * Before a receipt prints: the club work in flight for the order, then its block (the caller
+ * bounds the wait: prepareReceipt in Receipt.tsx).
+ */
+export async function prepareLoyaltyReceipt(orderId: string) {
+  await receiptWork.get(orderId);
+  await prefetchLoyaltyReceipt(orderId);
 }
 export const cachedLoyaltyReceipt = (orderId: string) =>
   receipts.get(orderId) ?? null;

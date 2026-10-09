@@ -217,6 +217,8 @@ export function Selling({
    * answers after a move never writes its order into the new cart.
    */
   const contextEpoch = useRef(0);
+  /** The same count as state: the club's member follows the cart (LOYALTY-UX-2). */
+  const [contextCount, setContextCount] = useState(0);
   const activeRef = useRef(active);
   activeRef.current = active;
   /** SVC-R10: a switch from Mesas or Órdenes is waiting for a request. */
@@ -237,6 +239,8 @@ export function Selling({
     online,
     lines: draft.lines.length,
     current,
+    context: contextCount,
+    draftId: draft.operationId,
   });
   /**
    * R18: the single "payment settled" exit payments P1 introduces (stubbed until it merges). The
@@ -353,6 +357,7 @@ export function Selling({
    */
   function replaceContext(order: Order | null, next: OrderInput) {
     contextEpoch.current++;
+    setContextCount(contextEpoch.current);
     unseenFailure.current = false;
     switchDeferred.current = false;
     currentRef.current = order;
