@@ -497,8 +497,9 @@ export function PaymentDialog({
             )}
           </div>
           <div className="row wrap">
+            {/* While a terminal charge is shown, what it charges cannot change here (P2-UX-8). */}
             <Button
-              disabled={busy}
+              disabled={busy || !!attempt}
               onClick={() => {
                 setSplitItems(false);
                 setSelected([]);
@@ -512,7 +513,9 @@ export function PaymentDialog({
             <Button
               // SVC-R8: "Enviar y dividir" sends to the kitchen, so it needs the
               // same open drawer as Confirmar cobro.
-              disabled={busy || !online || pendingPayment || !drawerOpen}
+              disabled={
+                busy || !online || pendingPayment || !drawerOpen || !!attempt
+              }
               onClick={async () => {
                 setLocalError("");
                 try {
@@ -544,7 +547,7 @@ export function PaymentDialog({
                 <label className="option" key={unit.key}>
                   <input
                     type="checkbox"
-                    disabled={busy || unit.due === 0}
+                    disabled={busy || unit.due === 0 || !!attempt}
                     checked={selected.includes(unit.key)}
                     onChange={() => {
                       const next = selected.includes(unit.key)

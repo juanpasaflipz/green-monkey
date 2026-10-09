@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   currencyExponent,
   type Locale,
@@ -57,6 +57,8 @@ export function PaymentSettings({
       currency: session.restaurant.currency,
     }).format(n / scale);
   const [view, setView] = useState<PaymentSettingsView | null>(null);
+  /** «Agregar como terminal» fills the form above: its name field takes the focus (P2-UX-10). */
+  const nameField = useRef<HTMLInputElement>(null);
   const [catalog, setCatalog] = useState<Product[]>([]);
   // PAYMENTS-UX-6: one status or error at a time, shown under the section that was saved (and
   // naming the field at fault), not at the end of a long price table.
@@ -426,6 +428,7 @@ export function PaymentSettings({
       <div className="payment-terminal-form row wrap">
         <Field label={t("payTerminalNameField")}>
           <input
+            ref={nameField}
             value={name}
             maxLength={40}
             disabled={busy || !online}
@@ -501,6 +504,8 @@ export function PaymentSettings({
             `${PROVIDER_NAMES[kind === "clip_pinpad" ? "clip" : "mercadopago"]} ${providerDeviceId.slice(-4)}`,
           );
           setFee("");
+          // Scrolls the form into view on a phone, next to the device the owner picked.
+          requestAnimationFrame(() => nameField.current?.focus());
         }}
         onTestCharge={navigate ? () => navigate("sell") : undefined}
       />

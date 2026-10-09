@@ -281,6 +281,10 @@ export default defineArea({
     payModePdv: "Integrado (PDV)",
     payModeStandalone: "Independiente",
     payModeChange: "Cambiar modo",
+    payModeToStandalone: "Cambiar a Independiente",
+    payModeToPdv: "Cambiar a Integrado (PDV)",
+    payWebhookClipNoPaste:
+      "Clip la recibe con cada cobro: no tienes que pegarla en ningún lado.",
     payModeRestart: "Reinicia la terminal para aplicar el cambio.",
     payOpTerminalStarted: "Cobro enviado a la terminal",
     payOpTerminalCancelRequested: "Cancelación de cobro en terminal",
@@ -587,6 +591,10 @@ export default defineArea({
     payModePdv: "Integrated (PDV)",
     payModeStandalone: "Standalone",
     payModeChange: "Change mode",
+    payModeToStandalone: "Switch to Standalone",
+    payModeToPdv: "Switch to Integrated (PDV)",
+    payWebhookClipNoPaste:
+      "Clip receives it with every charge: there is nowhere to paste it.",
     payModeRestart: "Restart the terminal to apply the change.",
     payOpTerminalStarted: "Charge sent to the terminal",
     payOpTerminalCancelRequested: "Terminal charge cancellation",

@@ -410,6 +410,11 @@ test("integrated charging: the owner connects Mercado Pago and Clip (the URL sho
       "Cópiala ahora: se muestra una sola vez.",
     );
     await expect(page.locator("input[type=password]")).toHaveCount(0);
+    // Clip takes the URL with every charge: the panel says there is nowhere to paste it.
+    if (provider === "clip")
+      await expect(panel).toContainText(
+        "Clip la recibe con cada cobro: no tienes que pegarla en ningún lado.",
+      );
     await panel.getByRole("button", { name: "Cerrar", exact: true }).click();
     await expect(url).toHaveCount(0);
     await expect(section).toContainText(account, { timeout: 30_000 });
@@ -422,6 +427,10 @@ test("integrated charging: the owner connects Mercado Pago and Clip (the URL sho
     await found
       .getByRole("button", { name: "Agregar como terminal", exact: true })
       .click();
+    // The form above takes the focus (and scrolls into view on a phone).
+    await expect(
+      panel.getByLabel("Nombre de la terminal", { exact: true }),
+    ).toBeFocused();
     await panel.getByLabel("Nombre de la terminal", { exact: true }).fill(name);
     await panel.getByLabel("Comisión (% con IVA)", { exact: true }).fill("3.5");
     await panel
@@ -466,6 +475,10 @@ test("integrated charging: the owner connects Mercado Pago and Clip (the URL sho
   await expect(dialog.getByRole("status").first()).toContainText(
     `Esperando el pago en ${names.mp}…`,
   );
+  // What the terminal charges cannot change while it waits: the split controls are off.
+  await expect(
+    dialog.getByRole("button", { name: "Dividir por importe", exact: true }),
+  ).toBeDisabled();
   await axe(page, "dialog");
   await fake("approve", {
     device: "NEWLAND_N950__FAKE0001",

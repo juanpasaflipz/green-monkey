@@ -183,6 +183,10 @@ export function ProviderAccounts({
             <input readOnly value={saved.webhookUrl} />
           </Field>
           <p>{t("payWebhookUrlOnce")}</p>
+          {saved.provider === "clip" && (
+            // Clip takes the URL with every charge (webhook_url): nothing to paste (P2-UX-11).
+            <p>{t("payWebhookClipNoPaste")}</p>
+          )}
           <div className="row wrap">
             <Button
               onClick={() => {
@@ -430,8 +434,12 @@ export function ProviderAccounts({
                                   d.operatingMode && (
                                     <Button
                                       disabled={busy || !online}
-                                      aria-label={`${t("payModeChange")} · ${d.deviceId}`}
+                                      aria-label={`${t(d.operatingMode === "PDV" ? "payModeToStandalone" : "payModeToPdv")} · ${d.deviceId}`}
                                       onClick={() =>
+                                        // The target is named, and the restart asked for first (P2-UX-10).
+                                        window.confirm(
+                                          `${t(d.operatingMode === "PDV" ? "payModeToStandalone" : "payModeToPdv")}? ${t("payModeRestart")}`,
+                                        ) &&
                                         void run(
                                           () =>
                                             api(
@@ -452,7 +460,11 @@ export function ProviderAccounts({
                                         )
                                       }
                                     >
-                                      {t("payModeChange")}
+                                      {t(
+                                        d.operatingMode === "PDV"
+                                          ? "payModeToStandalone"
+                                          : "payModeToPdv",
+                                      )}
                                     </Button>
                                   )}
                               </div>
