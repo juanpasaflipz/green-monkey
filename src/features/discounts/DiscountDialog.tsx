@@ -8,7 +8,7 @@ import {
 import { parseMoneyInput } from "../../../shared/service";
 import {
   balanceDue,
-  DISCOUNT_REASONS,
+  SELECTABLE_DISCOUNT_REASONS,
   discountClosesCheck,
   discountExpectation,
   discountIssuesTicket,
@@ -439,7 +439,7 @@ export function DiscountDialog({
             onChange={(e) => setReasonCode(e.target.value as DiscountReason)}
           >
             <option value="">—</option>
-            {DISCOUNT_REASONS.map((code) => (
+            {SELECTABLE_DISCOUNT_REASONS.map((code) => (
               <option key={code} value={code}>
                 {t(DISCOUNT_REASON_LABELS[code])}
               </option>

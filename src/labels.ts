@@ -138,6 +138,16 @@ const operations: Record<string, Key> = {
   "public.resumed": "publicOpResumed",
   "public.hold_accepted": "publicOpHoldAccepted",
   "public.hold_rejected": "publicOpHoldRejected",
+  // loyalty (038)
+  "loyalty.settings.saved": "loyaltyOpSettings",
+  "loyalty.member.enrolled": "loyaltyOpEnrolled",
+  "loyalty.member.updated": "loyaltyOpUpdated",
+  "loyalty.member.deleted": "loyaltyOpDeleted",
+  "loyalty.stamps.adjusted": "loyaltyOpAdjusted",
+  "loyalty.order.linked": "loyaltyOpLinked",
+  "loyalty.order.relinked": "loyaltyOpRelinked",
+  "loyalty.reward.redeemed": "loyaltyOpRedeemed",
+  "loyalty.import.page": "loyaltyOpImport",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",

@@ -44,6 +44,8 @@ export const DISCOUNT_REASON_LABELS: Record<DiscountReason, Key> = {
   promotion: "discountsReasonPromotion",
   regular_customer: "discountsReasonRegularCustomer",
   other: "discountsReasonOther",
+  // loyalty (038 §2.6): recorded by "Canjear premio" only; prints "Recompensa del club".
+  loyalty_reward: "discountsReasonLoyaltyReward",
 };
 /** Refund reason labels (see DISCOUNT_REASON_LABELS). */
 export const REFUND_REASON_LABELS: Record<RefundReason, Key> = {

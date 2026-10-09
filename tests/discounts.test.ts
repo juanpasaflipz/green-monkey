@@ -30,6 +30,9 @@ import {
   discountPlanMatches,
   itemRefundsBlocked,
   REFUND_REASONS,
+  DISCOUNT_REASONS,
+  RESERVED_DISCOUNT_REASON,
+  SELECTABLE_DISCOUNT_REASONS,
   unapprovedDiscounts,
   formatPercentBps,
   itemRefundExpectation,
@@ -1557,6 +1560,45 @@ describe("inputs and helpers", () => {
     expect(reasonLabel("discount", "quality", "es")).toBe(
       "Producto con defecto",
     );
+  });
+
+  it("28. loyalty (038 §2.6): the club reward is a reason Descuento never offers, labelled 'Recompensa del club', and it never counts against a cashier's limit", () => {
+    expect(DISCOUNT_REASONS as readonly string[]).toContain("loyalty_reward");
+    expect(RESERVED_DISCOUNT_REASON).toBe("loyalty_reward");
+    expect(SELECTABLE_DISCOUNT_REASONS as readonly string[]).not.toContain(
+      "loyalty_reward",
+    );
+    expect(SELECTABLE_DISCOUNT_REASONS).toEqual(
+      DISCOUNT_REASONS.filter((r) => r !== "loyalty_reward"),
+    );
+    expect(reasonLabel("discount", "loyalty_reward", "es")).toBe(
+      "Recompensa del club",
+    );
+    expect(reasonLabel("discount", "loyalty_reward", "en")).toBe(
+      "Loyalty reward",
+    );
+    const reward = {
+      id: randomUUID(),
+      scope: "line" as const,
+      lineId: "l",
+      kind: "comp" as const,
+      percentBps: null,
+      base: 8500,
+      amount: 8500,
+      units: 1,
+      activeAmount: 8500,
+      releasedAmount: 0,
+      allocations: [],
+      reasonCode: "loyalty_reward",
+      note: "",
+      actorName: "Dani Demo",
+      approverName: null,
+      createdAt: "2026-10-05T12:00:00.000Z",
+      reversal: null,
+    };
+    const staff = { ...reward, id: randomUUID(), reasonCode: "courtesy", base: 4500, amount: 4500, activeAmount: 4500 };
+    expect(unapprovedDiscounts({ discounts: [reward] })).toEqual({ amount: 0, count: 0 });
+    expect(unapprovedDiscounts({ discounts: [reward, staff] })).toEqual({ amount: 4500, count: 1 });
   });
 });
 
