@@ -358,10 +358,19 @@ test("manager in Clientes: search, detail, Ajustar, Imprimir datos del cliente, 
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.getByRole("button", { name: "Ajustar sellos o premios", exact: true }).click();
   const adjust = page.getByRole("dialog", { name: "Ajustar sellos o premios" });
-  await adjust.getByLabel("Sellos (+ o −)").fill("2");
+  // A refusal shows inside the dialog, not behind it (LOYALTY-UX-6).
+  await adjust.getByLabel("Sellos (+ o −)").fill("-50");
   await adjust.getByLabel("Motivo (sin datos personales)").fill("Corrección de caja");
   await adjust.getByRole("button", { name: "Confirmar", exact: true }).click();
+  await expect(adjust.getByRole("alert")).toContainText("El ajuste dejaría la tarjeta en negativo.");
+  // A double tap is one adjustment: one operationId per dialog and one request at a time.
+  const adjustments = async () =>
+    (await call(page, `/loyalty/members/${memberId}`)).history.filter((h: any) => h.kind === "adjustment").length;
+  const before = await adjustments();
+  await adjust.getByLabel("Sellos (+ o −)").fill("2");
+  await adjust.getByRole("button", { name: "Confirmar", exact: true }).dblclick();
   await expect(adjust).toBeHidden();
+  expect(await adjustments()).toBe(before + 1);
   await expect(page.locator(".loyalty-card")).toContainText(/de 10 sellos/);
   await expect(page.getByRole("list", { name: "Movimientos" })).toContainText("Ajuste manual");
   await stubPrint(page);
@@ -376,6 +385,26 @@ test("manager in Clientes: search, detail, Ajustar, Imprimir datos del cliente, 
   await remove.getByRole("button", { name: "Eliminar datos del cliente" }).click();
   await expect(page.getByRole("heading", { name: "Datos eliminados", exact: true })).toBeVisible();
   expect(await call(page, "/loyalty/members/lookup", { phone: memberPhone, country: "MX" })).toBeNull();
+});
+
+test("club off: Clientes stays for ARCO while members' data is held, with a note and no Ajustar (LOYALTY-PRIVACY-3)", async ({
+  page,
+  baseURL,
+}) => {
+  await inTenant(baseURL, (tx) => tx`update loyalty_settings set enabled=false where tenant_id=${tenantId}`);
+  try {
+    await login(page);
+    const clientes = page.locator("nav.rail").getByRole("button", { name: "Clientes", exact: true });
+    await clientes.click();
+    await expect(page.getByText("El club está desactivado. Aquí puedes consultar, corregir o eliminar los datos de los clientes (derechos ARCO).")).toBeVisible();
+    await page.locator("table.loyalty-table tbody tr").first().getByRole("button").click();
+    await expect(page.getByRole("button", { name: "Editar datos", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Imprimir datos del cliente", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Eliminar datos del cliente", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Ajustar sellos o premios", exact: true })).toHaveCount(0);
+  } finally {
+    await inTenant(baseURL, (tx) => tx`update loyalty_settings set enabled=true where tenant_id=${tenantId}`);
+  }
 });
 
 test("Finanzas › Club de lealtad shows the period's figures", async ({ page }) => {

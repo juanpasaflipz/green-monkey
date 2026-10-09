@@ -20,7 +20,11 @@ import {
 import { TENDER_METHODS } from "../shared/payments";
 import { planDiscount } from "../shared/discounts";
 import type { PayableUnit } from "../shared/settlement";
-import { joinDoneText } from "../src/features/loyalty/format";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { consentText, dateOnly, joinDoneText } from "../src/features/loyalty/format";
+import { MemberSheet } from "../src/features/loyalty/Members";
+import { customersVisible, type MemberDetail } from "../shared/loyalty";
 
 describe("parsePhone", () => {
   it("accepts Mexican numbers as +52 and 10 digits, with or without prefixes and separators", () => {
@@ -388,5 +392,103 @@ describe("the /club result text (LOYALTY-UX-7, UX-8)", () => {
   it("a purchase that earned nothing never says Sumaste 0 sellos; an unpaid one is pending", () => {
     expect(joinDoneText({ ...done, stampsAdded: 0 }, "es")).toBe("Esta compra no suma sellos.");
     expect(joinDoneText({ ...done, stampsAdded: 0, pending: true }, "es")).toBe("¡Listo! Tus sellos se sumarán cuando se pague esta orden.");
+  });
+});
+
+describe("Clientes and the ARCO sheet (LOYALTY-PRIVACY-3, PRIVACY-5, UX-12)", () => {
+  it("Clientes shows while the club is on, or while a member's data is held with the club off", () => {
+    expect(customersVisible({ enabled: true })).toBe(true);
+    expect(customersVisible({ enabled: false, hasMembers: true })).toBe(true);
+    expect(customersVisible({ enabled: false, hasMembers: false })).toBe(false);
+    expect(customersVisible({ enabled: false })).toBe(false);
+  });
+  it("dates without the time are whole in both languages (never a slice of a date-time)", () => {
+    const at = "2026-10-07T20:32:00Z";
+    expect(dateOnly(at, "America/Mexico_City", "es")).toBe("07/10/2026");
+    expect(dateOnly(at, "America/Mexico_City", "en")).toBe("Oct 7, 2026");
+    expect(dateOnly("2026-10-17T05:00:00Z", "America/Mexico_City", "en")).toBe("Oct 16, 2026");
+  });
+  const imported: MemberDetail = {
+    id: "00000000-0000-4000-8000-000000000001",
+    firstName: "Ana",
+    maskedPhone: "···· 9933",
+    stamps: 3,
+    required: 10,
+    rewards: 0,
+    deleted: false,
+    name: "Ana López",
+    phone: "+525550000001",
+    country: "MX",
+    version: 2,
+    joinedAt: "2024-03-01T18:00:00Z",
+    joinedVia: "import",
+    joinedByName: null,
+    consentChannel: "pos_lite_import",
+    consentAt: "2024-03-01T18:00:00Z",
+    consentNoticeUrl: null,
+    marketingOptIn: false,
+    marketingChangedAt: "2026-10-05T16:00:00Z",
+    lifetimeStamps: 3,
+    rewardsEarned: 0,
+    rewardsRedeemed: 0,
+    lastVisitAt: "2026-10-06T19:00:00Z",
+    legacy: { visits: 12, spend: 345000, lastVisitAt: "2026-09-30T19:00:00Z", smsOptIn: true },
+    redactedAt: null,
+    redactionReason: null,
+    history: [
+      {
+        id: "00000000-0000-4000-8000-000000000002",
+        kind: "adjustment",
+        stampsDelta: 2,
+        rewardsDelta: 0,
+        orderId: null,
+        orderNumber: null,
+        orderBusinessDate: null,
+        discountId: null,
+        reason: "goodwill",
+        note: "Cortesía por la espera",
+        actorName: "Gerente Uno",
+        createdAt: "2026-10-05T16:00:00Z",
+      },
+    ],
+    orders: [
+      {
+        orderId: "00000000-0000-4000-8000-000000000003",
+        number: 42,
+        businessDate: "2026-10-06",
+        total: 18500,
+        stamps: 1,
+        linkedAt: "2026-10-06T19:00:00Z",
+      },
+    ],
+  };
+  it("an imported member's consent line says pos-lite showed no notice", () => {
+    expect(consentText(imported, "America/Mexico_City", "es")).toBe(
+      "Importado de POS Lite el 01/03/2024 12:00; sin aviso registrado en POS Lite",
+    );
+    expect(consentText({ ...imported, consentChannel: "staff_attested" }, "America/Mexico_City", "es")).toMatch(
+      /^Aceptó el aviso en caja el /,
+    );
+  });
+  it("the printed sheet holds every stored field: pos-lite figures and SMS flag, marketing change, notes, linked orders", () => {
+    const html = renderToStaticMarkup(
+      createElement(MemberSheet, { m: imported, locale: "es", tz: "America/Mexico_City", currency: "MXN" }),
+    );
+    for (const text of [
+      "Ana López",
+      "+52 55 5000 0001",
+      "Importado de POS Lite el 01/03/2024",
+      "sin aviso registrado en POS Lite",
+      "cambiado el 05/10/2026",
+      "Última visita en POS Lite",
+      "30/09/2026",
+      "Sí (pre-marcado en POS Lite; no es consentimiento)",
+      "Cortesía por la espera",
+      "Gerente Uno",
+      "#42",
+      "$185.00",
+    ])
+      expect(html).toContain(text);
+    expect(html).not.toContain("Aceptó el aviso");
   });
 });

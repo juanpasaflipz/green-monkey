@@ -95,7 +95,10 @@ import { cfdiReceiptExtra } from "./features/cfdi/CfdiReceiptBlock";
 import { setFiscalFooterExtra } from "./features/fiscal/FiscalReceipt";
 import { setReceiptExtra } from "./features/Receipt";
 import { loyaltyReceiptExtra } from "./features/loyalty/LoyaltyReceiptBlock";
-import { useLoyaltyClub } from "./features/loyalty/loyaltyApi";
+import {
+  useLoyaltyClub,
+  useLoyaltyCustomers,
+} from "./features/loyalty/loyaltyApi";
 import { Members } from "./features/loyalty/Members";
 // cfdi (030): the printed self-invoicing block in fiscal's footer `extra` slot.
 setFiscalFooterExtra((p) => cfdiReceiptExtra(p));
@@ -118,8 +121,10 @@ export default function App() {
   const net = useConnectivity();
   const online = net.canUseServer;
   const inbox = usePublicInbox(session, online);
-  // loyalty (038): Clientes shows only while the club is on (Pro and enabled).
-  const club = useLoyaltyClub(session, online);
+  // loyalty (038): the club for Vender; Clientes shows while the club is on, or while any member's
+  // data is held (ARCO on every plan and with the club off, LOYALTY-PRIVACY-3).
+  useLoyaltyClub(session, online);
+  const customers = useLoyaltyCustomers(session);
   const [error, setError] = useState("");
   const [ticketsOpen, setTicketsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -643,7 +648,7 @@ export default function App() {
             ["operation", ShoppingBag],
             ["inventory", Package],
             ["finance", ChartNoAxesCombined],
-            ...(club ? [["customers", HeartHandshake]] : []),
+            ...(customers ? [["customers", HeartHandshake]] : []),
             ["team", Users],
             ["settings", Settings],
           ]
@@ -874,6 +879,7 @@ export default function App() {
               session={session}
               locale={locale}
               online={online}
+              clubOn={customers?.clubOn ?? false}
             />
           ) : (
             <Operations

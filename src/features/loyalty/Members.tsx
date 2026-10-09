@@ -4,7 +4,7 @@
  * Ajustar sellos o premios, Imprimir datos del cliente (ARCO access) and Eliminar datos del cliente
  * (ARCO cancellation). Every write asks for step-up on a shared terminal (the server decides).
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Locale, Session } from "../../../shared/domain";
 import {
   ADJUST_REASONS,
@@ -18,9 +18,10 @@ import { errorNotice, type Key } from "../../i18n";
 import { dateTime } from "../../datetime";
 import { printDocument } from "../../print";
 import { Button, Field, Modal } from "../../components/ui";
-import { loyaltyApi } from "./loyaltyApi";
+import { loyaltyApi, refreshClub } from "./loyaltyApi";
 import {
-  consentChannelLabel,
+  consentText,
+  dateOnly,
   dayText,
   fill,
   ledgerKindLabel,
@@ -36,10 +37,13 @@ export function Members({
   session,
   locale,
   online,
+  clubOn = true,
 }: {
   session: Session;
   locale: Locale;
   online: boolean;
+  /** False while the club is off or the plan is Free: read and ARCO actions only (PRIVACY-3). */
+  clubOn?: boolean;
 }) {
   const t = tr(locale);
   const [q, setQ] = useState("");
@@ -72,6 +76,7 @@ export function Members({
         session={session}
         locale={locale}
         online={online}
+        clubOn={clubOn}
         memberId={open}
         onBack={() => setOpen(null)}
       />
@@ -79,6 +84,7 @@ export function Members({
   return (
     <section className="panel loyalty-members" aria-labelledby="loyalty-members-title">
       <h1 id="loyalty-members-title">{t("loyaltyMembersTitle")}</h1>
+      {!clubOn && <p className="notice">{t("loyaltyClubOffArco")}</p>}
       {!online && <p className="muted">{t("loyaltyOfflineHint")}</p>}
       <form
         className="row wrap"
@@ -132,7 +138,7 @@ export function Members({
                   <td className={m.stamps < 0 ? "loyalty-negative" : ""}>{stampsText(m, locale)}</td>
                   <td>{m.rewards}</td>
                   <td>{m.lastVisitAt ? dateTime(m.lastVisitAt, tz, locale) : "—"}</td>
-                  <td>{dateTime(m.joinedAt, tz, locale).slice(0, 10)}</td>
+                  <td>{dateOnly(m.joinedAt, tz, locale)}</td>
                   <td>
                     <Button onClick={() => setOpen(m.id)} aria-label={`${t("loyaltyOpen")} ${m.name}`}>
                       {t("loyaltyOpen")}
@@ -164,12 +170,14 @@ function MemberDetailView({
   session,
   locale,
   online,
+  clubOn,
   memberId,
   onBack,
 }: {
   session: Session;
   locale: Locale;
   online: boolean;
+  clubOn: boolean;
   memberId: string;
   onBack: () => void;
 }) {
@@ -194,6 +202,14 @@ function MemberDetailView({
       setError(errorNotice(e, locale));
     }
   };
+  /** A dialog's save: a refusal stays in the dialog, which shows it (LOYALTY-UX-6). */
+  const save = async (fn: () => Promise<MemberDetail>) => {
+    const next = await fn();
+    setM(next);
+    setDialog(null);
+    // The last member deleted while the club is off hides Clientes (PRIVACY-3).
+    if (next.deleted) void refreshClub(session);
+  };
   if (!m)
     return (
       <section className="panel">
@@ -208,15 +224,12 @@ function MemberDetailView({
       {!m.deleted && <p>{formatPhone(m.phone)}</p>}
       <p className="muted">
         {fill(t("loyaltyMemberJoined"), {
-          date: dateTime(m.joinedAt, tz, locale).slice(0, 10),
+          date: dateOnly(m.joinedAt, tz, locale),
           via: viaLabel(m.joinedVia, locale),
         })}
       </p>
       <p className="muted">
-        {fill(t("loyaltyConsentLine"), {
-          channel: consentChannelLabel(m.consentChannel, locale),
-          date: dateTime(m.consentAt, tz, locale),
-        })}
+        {consentText(m, tz, locale)}
         {m.joinedByName ? fill(t("loyaltyConsentBy"), { name: m.joinedByName }) : ""}
       </p>
       {!m.deleted && (
@@ -266,9 +279,11 @@ function MemberDetailView({
           <Button onClick={() => setDialog("edit")} disabled={!online}>
             {t("loyaltyEdit")}
           </Button>
-          <Button onClick={() => setDialog("adjust")} disabled={!online}>
-            {t("loyaltyAdjust")}
-          </Button>
+          {clubOn && (
+            <Button onClick={() => setDialog("adjust")} disabled={!online}>
+              {t("loyaltyAdjust")}
+            </Button>
+          )}
           <Button
             onClick={async () => {
               try {
@@ -332,26 +347,61 @@ function MemberDetailView({
           m={m}
           locale={locale}
           onClose={() => setDialog(null)}
-          onSave={(body) => act(() => loyaltyApi.update(m.id, { expectedVersion: m.version, ...body }))}
+          onSave={(body, op) =>
+            save(() => loyaltyApi.update(m.id, { expectedVersion: m.version, ...body }, op))
+          }
         />
       )}
       {dialog === "adjust" && (
         <AdjustDialog
           locale={locale}
           onClose={() => setDialog(null)}
-          onSave={(body) => act(() => loyaltyApi.adjust(m.id, body))}
+          onSave={(body, op) => save(() => loyaltyApi.adjust(m.id, body, op))}
         />
       )}
       {dialog === "delete" && (
         <DeleteMemberDialog
           locale={locale}
           onClose={() => setDialog(null)}
-          onConfirm={() => act(() => loyaltyApi.remove(m.id, m.version))}
+          onConfirm={(op) => save(() => loyaltyApi.remove(m.id, m.version, op))}
         />
       )}
     </section>
   );
 }
+
+/**
+ * A member dialog's submit (LOYALTY-UX-6): one operationId made when the dialog opens (a second
+ * tap or a retry replays), one request at a time, and the refusal shown inside the dialog.
+ */
+function useDialogSubmit(locale: Locale) {
+  const [operationId] = useState(() => crypto.randomUUID());
+  const inFlight = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const submit = async (fn: (operationId: string) => Promise<void>) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      await fn(operationId);
+    } catch (e) {
+      setError(errorNotice(e, locale));
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  };
+  const alert = error ? (
+    <p role="alert" className="error">
+      {error}
+    </p>
+  ) : null;
+  return { busy, alert, submit };
+}
+
+type DialogSave = (body: Record<string, unknown>, operationId: string) => Promise<void>;
 
 function EditMemberDialog({
   m,
@@ -362,9 +412,10 @@ function EditMemberDialog({
   m: MemberDetail;
   locale: Locale;
   onClose: () => void;
-  onSave: (body: Record<string, unknown>) => Promise<void>;
+  onSave: DialogSave;
 }) {
   const t = tr(locale);
+  const { busy, alert, submit } = useDialogSubmit(locale);
   const [name, setName] = useState(m.name);
   const [country, setCountry] = useState<LoyaltyCountry>(m.phone ? phoneCountry(m.phone) : "MX");
   const [phone, setPhone] = useState(m.phone ? m.phone.replace(/^\+(52|1)/, "") : "");
@@ -378,7 +429,8 @@ function EditMemberDialog({
           <Button onClick={onClose}>{t("loyaltyCancel")}</Button>
           <Button
             variant="primary"
-            onClick={() => void onSave({ name, phone, country })}
+            disabled={busy}
+            onClick={() => void submit((op) => onSave({ name, phone, country }, op))}
           >
             {t("loyaltySave")}
           </Button>
@@ -400,6 +452,7 @@ function EditMemberDialog({
       <Field label={t("loyaltyPhoneLabel")}>
         <input inputMode="numeric" value={phone} maxLength={20} onChange={(e) => setPhone(e.target.value)} />
       </Field>
+      {alert}
     </Modal>
   );
 }
@@ -411,9 +464,10 @@ function AdjustDialog({
 }: {
   locale: Locale;
   onClose: () => void;
-  onSave: (body: Record<string, unknown>) => Promise<void>;
+  onSave: DialogSave;
 }) {
   const t = tr(locale);
+  const { busy, alert, submit } = useDialogSubmit(locale);
   const [stamps, setStamps] = useState("0");
   const [rewards, setRewards] = useState("0");
   const [reason, setReason] = useState<(typeof ADJUST_REASONS)[number]>("correction");
@@ -428,9 +482,11 @@ function AdjustDialog({
           <Button onClick={onClose}>{t("loyaltyCancel")}</Button>
           <Button
             variant="primary"
-            disabled={note.trim().length < 3 || (Number(stamps) === 0 && Number(rewards) === 0)}
+            disabled={busy || note.trim().length < 3 || (Number(stamps) === 0 && Number(rewards) === 0)}
             onClick={() =>
-              void onSave({ stamps: Number(stamps), rewards: Number(rewards), reason, note: note.trim() })
+              void submit((op) =>
+                onSave({ stamps: Number(stamps), rewards: Number(rewards), reason, note: note.trim() }, op),
+              )
             }
           >
             {t("loyaltyConfirm")}
@@ -456,6 +512,7 @@ function AdjustDialog({
       <Field label={t("loyaltyAdjustNote")}>
         <input value={note} maxLength={200} onChange={(e) => setNote(e.target.value)} />
       </Field>
+      {alert}
     </Modal>
   );
 }
@@ -467,10 +524,11 @@ function DeleteMemberDialog({
 }: {
   locale: Locale;
   onClose: () => void;
-  onConfirm: () => Promise<void>;
+  onConfirm: (operationId: string) => Promise<void>;
 }) {
   const t = tr(locale);
   const [typed, setTyped] = useState("");
+  const { busy, alert, submit } = useDialogSubmit(locale);
   return (
     <Modal
       title={t("loyaltyDelete")}
@@ -479,7 +537,11 @@ function DeleteMemberDialog({
       footer={
         <div className="row wrap">
           <Button onClick={onClose}>{t("loyaltyCancel")}</Button>
-          <Button variant="danger" disabled={typed !== "ELIMINAR"} onClick={() => void onConfirm()}>
+          <Button
+            variant="danger"
+            disabled={busy || typed !== "ELIMINAR"}
+            onClick={() => void submit(onConfirm)}
+          >
             {t("loyaltyDelete")}
           </Button>
         </div>
@@ -489,11 +551,16 @@ function DeleteMemberDialog({
       <Field label={t("loyaltyDeleteType")}>
         <input value={typed} onChange={(e) => setTyped(e.target.value)} autoComplete="off" />
       </Field>
+      {alert}
     </Modal>
   );
 }
 
-/** The printable ARCO access sheet: every stored field, consent and history. */
+/**
+ * The printable ARCO access sheet: every stored field, consent and history (LOYALTY-PRIVACY-5):
+ * the pos-lite figures (its pre-checked SMS opt-in is evidence, not consent), the marketing change
+ * date, the managers' adjustment notes and the linked orders with their totals.
+ */
 export function MemberSheet({
   m,
   locale,
@@ -517,22 +584,28 @@ export function MemberSheet({
         <dt>{t("loyaltyColSince")}</dt>
         <dd>
           {dateTime(m.joinedAt, tz, locale)} · {viaLabel(m.joinedVia, locale)}
+          {m.joinedByName ? fill(t("loyaltyConsentBy"), { name: m.joinedByName }) : ""}
         </dd>
         <dt>{t("loyaltyNoticeQrTitle")}</dt>
         <dd>
-          {fill(t("loyaltyConsentLine"), {
-            channel: consentChannelLabel(m.consentChannel, locale),
-            date: dateTime(m.consentAt, tz, locale),
-          })}
+          {consentText(m, tz, locale)}
           {m.consentNoticeUrl ? ` · ${m.consentNoticeUrl}` : ""}
         </dd>
         <dt>{t("loyaltyMarketingToggle")}</dt>
-        <dd>{m.marketingOptIn ? "✓" : "—"}</dd>
+        <dd>
+          {m.marketingOptIn ? "✓" : "—"}
+          {m.marketingChangedAt
+            ? ` · ${fill(t("loyaltyMarketingChanged"), { date: dateTime(m.marketingChangedAt, tz, locale) })}`
+            : ""}
+        </dd>
         <dt>{t("loyaltyCard")}</dt>
         <dd>
           {fill(t("loyaltyCardProgress"), { stamps: m.stamps, required: m.required })} ·{" "}
-          {rewardsText(m.rewards, locale)}
+          {rewardsText(m.rewards, locale)} · {fill(t("loyaltyLifetime"), { n: m.lifetimeStamps })} ·{" "}
+          {fill(t("loyaltyRewardsTotals"), { earned: m.rewardsEarned, redeemed: m.rewardsRedeemed })}
         </dd>
+        <dt>{t("loyaltyColLastVisit")}</dt>
+        <dd>{m.lastVisitAt ? dateTime(m.lastVisitAt, tz, locale) : "—"}</dd>
         {m.legacy && (
           <>
             <dt>POS Lite</dt>
@@ -542,6 +615,10 @@ export function MemberSheet({
                 spend: money(m.legacy.spend, locale, currency),
               })}
             </dd>
+            <dt>{t("loyaltyLegacyLastVisit")}</dt>
+            <dd>{m.legacy.lastVisitAt ? dateTime(m.legacy.lastVisitAt, tz, locale) : "—"}</dd>
+            <dt>{t("loyaltyLegacySms")}</dt>
+            <dd>{m.legacy.smsOptIn ? t("loyaltyLegacySmsYes") : t("loyaltyLegacySmsNo")}</dd>
           </>
         )}
       </dl>
@@ -552,6 +629,21 @@ export function MemberSheet({
             {dateTime(h.createdAt, tz, locale)} · {ledgerKindLabel(h.kind, locale)} · {h.stampsDelta} /{" "}
             {h.rewardsDelta}
             {h.orderNumber !== null ? ` · #${h.orderNumber}` : ""}
+            {h.actorName ? ` · ${h.actorName}` : ""}
+            {h.note ? ` · ${h.note}` : ""}
+          </li>
+        ))}
+      </ul>
+      <h2>{t("loyaltyOrders")}</h2>
+      <ul>
+        {m.orders.map((o) => (
+          <li key={o.orderId}>
+            {fill(t("loyaltyOrderLine"), {
+              n: o.number,
+              date: dayText(o.businessDate, locale),
+              total: money(o.total, locale, currency),
+              stamps: o.stamps,
+            })}
           </li>
         ))}
       </ul>

@@ -324,7 +324,15 @@ export type LoyaltySettingsView = LoyaltyProgram & {
   /** The import is offered only while the club is off. */
   importAllowed: boolean;
   canEdit: boolean;
+  /**
+   * A member who is not deleted exists: Clientes (ARCO access, rectification, cancellation) stays
+   * reachable on every plan and with the club off (LOYALTY-PRIVACY-3).
+   */
+  hasMembers: boolean;
 };
+/** Clientes is shown while the club is on, or while any member's data is still held (ARCO). */
+export const customersVisible = (v: { enabled: boolean; hasMembers?: boolean }) =>
+  v.enabled || v.hasMembers === true;
 /** What operators read (Vender's prompt, chips, receipts). */
 export type LoyaltyClubView = {
   enabled: boolean;

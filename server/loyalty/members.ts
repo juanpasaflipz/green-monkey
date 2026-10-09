@@ -3,6 +3,8 @@
  * (or by name, ≥ 3 characters, 10 rows, masked phones) and enroll them at the counter with the
  * staff consent attestation; owners and managers see the full detail, rectify (Editar datos),
  * adjust (Ajustar sellos o premios), print the ARCO data sheet and delete (ARCO cancellation).
+ * The ARCO paths (list, detail, sheet, Editar datos, the marketing toggle, delete) need no Pro and
+ * no club: they stay open while any member's data is held (LOYALTY-PRIVACY-3).
  *
  * Lock order (ARCHITECTURE rows 50 and 51): adjust, update and delete are 1 → 2 → 3 (the member
  * FOR NO KEY UPDATE) → update / ledger insert; enrollment is 1 → 2 → member insert, arbitrated by
@@ -200,7 +202,7 @@ export async function updateMember(
     "loyalty.member.update",
     { memberId, ...p },
     async () => {
-      await requireClubOrOff(tx);
+      // ARCO rectification and opposition: every plan, club on or off (LOYALTY-PRIVACY-3).
       const m = await lockMember(tx, memberId);
       if (m.redacted_at) throw new DomainError("loyalty_member_deleted", 409);
       if (m.version !== p.expectedVersion)
@@ -240,10 +242,6 @@ export async function updateMember(
   return memberDetail(tx, s, memberId);
 }
 
-/** Members can be rectified, adjusted or deleted (ARCO) whether or not the club is on; Pro is required. */
-async function requireClubOrOff(tx: Tx) {
-  await requirePro(tx);
-}
 
 /**
  * POST /members/:id/delete (row 50): ARCO cancellation. Redaction in place (name, phone, notice
@@ -267,7 +265,7 @@ export async function deleteMember(
     "loyalty.member.delete",
     { memberId, ...p },
     async () => {
-      await requireClubOrOff(tx);
+      // ARCO cancellation: every plan, club on or off (LOYALTY-PRIVACY-3).
       const m = await lockMember(tx, memberId);
       if (m.redacted_at) throw new DomainError("loyalty_member_deleted", 409);
       if (m.version !== p.expectedVersion)
@@ -309,7 +307,8 @@ export async function adjustMember(
     "loyalty.member.adjust",
     { memberId, ...p },
     async () => {
-      await requireClubOrOff(tx);
+      // Adjusting balances is the club's (Pro), with the club on or off.
+      await requirePro(tx);
       const program = await loadProgram(tx);
       const m = await lockMember(tx, memberId);
       if (m.redacted_at) throw new DomainError("loyalty_member_deleted", 409);

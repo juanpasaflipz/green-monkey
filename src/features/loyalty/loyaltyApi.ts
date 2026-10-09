@@ -7,17 +7,18 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { api } from "../../api";
 import type { Order, Session } from "../../../shared/domain";
-import type {
-  EnrollResult,
-  LoyaltyClubView,
-  LoyaltyCountry,
-  LoyaltyReport,
-  LoyaltySettingsView,
-  MemberDetail,
-  MemberListResponse,
-  MemberSummary,
-  OrderLoyaltyView,
-  ReceiptLoyaltyView,
+import {
+  customersVisible,
+  type EnrollResult,
+  type LoyaltyClubView,
+  type LoyaltyCountry,
+  type LoyaltyReport,
+  type LoyaltySettingsView,
+  type MemberDetail,
+  type MemberListResponse,
+  type MemberSummary,
+  type OrderLoyaltyView,
+  type ReceiptLoyaltyView,
 } from "../../../shared/loyalty";
 import type { ImportStatus } from "../../../shared/loyalty-import";
 
@@ -58,22 +59,36 @@ export const loyaltyApi = {
     api<MemberListResponse>("/loyalty/members/list", body),
   member: (id: string) => api<MemberDetail>(`/loyalty/members/${id}`),
   sheet: (id: string) => api<MemberDetail>(`/loyalty/members/${id}/sheet`),
-  update: (id: string, body: Record<string, unknown>) =>
+  // A dialog passes the operationId it made when it opened: a second tap or a retry replays
+  // (LOYALTY-UX-6).
+  update: (
+    id: string,
+    body: Record<string, unknown>,
+    operationId: string = crypto.randomUUID(),
+  ) =>
     api<MemberDetail>(
       `/loyalty/members/${id}/update`,
-      { operationId: crypto.randomUUID(), ...body },
+      { operationId, ...body },
       { idempotent: true },
     ),
-  adjust: (id: string, body: Record<string, unknown>) =>
+  adjust: (
+    id: string,
+    body: Record<string, unknown>,
+    operationId: string = crypto.randomUUID(),
+  ) =>
     api<MemberDetail>(
       `/loyalty/members/${id}/adjust`,
-      { operationId: crypto.randomUUID(), ...body },
+      { operationId, ...body },
       { idempotent: true },
     ),
-  remove: (id: string, expectedVersion: number) =>
+  remove: (
+    id: string,
+    expectedVersion: number,
+    operationId: string = crypto.randomUUID(),
+  ) =>
     api<MemberDetail>(
       `/loyalty/members/${id}/delete`,
-      { operationId: crypto.randomUUID(), expectedVersion, confirm: "ELIMINAR" },
+      { operationId, expectedVersion, confirm: "ELIMINAR" },
       { idempotent: true },
     ),
   order: (orderId: string) =>
@@ -114,18 +129,49 @@ export const loyaltyApi = {
 
 // ---- the club as Vender and the navigation see it ------------------------------------------
 
-let club: { tenant: string; view: LoyaltyClubView | null } | null = null;
+type ClubState = {
+  tenant: string;
+  view: LoyaltyClubView | null;
+  /** Clientes: the club is on, or a member's data is still held (ARCO, LOYALTY-PRIVACY-3). */
+  customers: { clubOn: boolean } | null;
+};
+let club: ClubState | null = null;
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
-/** Re-reads the club (after saving settings). */
+/** Re-reads the club (after saving settings, or after an ARCO deletion). */
 export async function refreshClub(session: Session) {
   try {
-    const v = (await loyaltyApi.settings()) as LoyaltyClubView;
-    club = { tenant: session.tenantId, view: v.enabled ? v : null };
+    const v = (await loyaltyApi.settings()) as LoyaltyClubView &
+      Partial<LoyaltySettingsView>;
+    club = {
+      tenant: session.tenantId,
+      view: v.enabled ? v : null,
+      customers: customersVisible(v)
+        ? { clubOn: v.enabled && v.plan !== "free" }
+        : null,
+    };
   } catch {
-    club = { tenant: session.tenantId, view: null };
+    club = { tenant: session.tenantId, view: null, customers: null };
   }
   emit();
+}
+const useClubState = () =>
+  useSyncExternalStore(
+    (l) => {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+    () => club,
+  );
+/**
+ * Clientes for owners and managers: shown while the club is on and, with the club off or on Free,
+ * while any member who is not deleted exists (read and ARCO actions only). Null hides it.
+ */
+export function useLoyaltyCustomers(session: Session | null) {
+  const snapshot = useClubState();
+  return snapshot && snapshot.tenant === session?.tenantId
+    ? snapshot.customers
+    : null;
 }
 /**
  * The club when it is on (Pro and enabled) for this session's restaurant, else null. Fetched
@@ -136,13 +182,7 @@ export function useLoyaltyClub(
   session: Session | null,
   online: boolean,
 ): LoyaltyClubView | null {
-  const snapshot = useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    () => club,
-  );
+  const snapshot = useClubState();
   const tenant = session?.tenantId ?? "";
   const role = session?.role ?? "";
   useEffect(() => {

@@ -199,8 +199,13 @@ Arts. 28–34) arrive at `LEGAL_PRIVACY_CONTACT_EMAIL`:
   the owner export (the four `loyalty_*` tables), rectification with "Editar
   datos", opposition with the marketing toggle, cancellation with "Eliminar
   datos del cliente" (step-up; name, phone, notice snapshot and opt-in are
-  blanked at once and for good; ledger, links and sales stay). Record each
-  cancellation in the cancellation register with the member id only. Members
+  blanked at once and for good; ledger, links and sales stay). Clientes and
+  these actions stay available on every plan and with the club off while any
+  member's data is held (Ajustar alone needs Pro). Record each cancellation in
+  the cancellation register with the member id only. For a member imported
+  from pos-lite ("Importados de POS Lite"), until the pos-lite copy is purged
+  after cutover (LOYALTY.md runbook), also delete the person in pos-lite (its
+  `loyalty_customers` row for that phone) and note it in the register. Members
   with no activity for 24 months are redacted by the daily retention pass;
 - **held QR/kiosk orders** (public ordering, 032-034): a diner who typed a
   name or a note on a QR or kiosk order can have the hold's copy blanked.

@@ -125,6 +125,9 @@ export async function getLoyaltySettings(
     plan,
     importAllowed: !p.enabled,
     canEdit: true,
+    hasMembers: (
+      await tx`select exists (select 1 from loyalty_members where redacted_at is null) as held`
+    )[0].held,
   };
 }
 

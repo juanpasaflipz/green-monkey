@@ -440,6 +440,10 @@ El club de Juanberto's pasa de POS Lite a Green Monkey el día de cambio
   club. Importa los socios de POS Lite (Configuración › Club de lealtad ›
   Importar socios de POS Lite) y solo activa el club cuando la pantalla dice
   «Verificado: los totales coinciden con POS Lite.».
+- **Después del cambio.** Cuando Juanberto's deja de usar POS Lite, borra (o
+  anonimiza) los socios del restaurante en POS Lite (`loyalty_customers`) y
+  anótalo en la bitácora del cambio. Mientras siga ahí, borrar a un socio
+  importado también se hace en POS Lite.
 - **En caja.** Al agregar el primer producto se abre «Cliente del club».
   Escribe el teléfono y toca Usar. Si no existe, lee al cliente el texto en
   pantalla, muéstrale el aviso (QR) y marca «Le informé al cliente el aviso de
@@ -456,3 +460,5 @@ El club de Juanberto's pasa de POS Lite a Green Monkey el día de cambio
   confirmar» y, si procede, el gerente lo da con Ajustar › Saldo de POS Lite.
 - **Datos personales.** Si un cliente pide sus datos o que se borren,
   Clientes › Imprimir datos del cliente o Eliminar datos del cliente (gerente).
+  Clientes sigue disponible aunque el club esté desactivado o el plan sea
+  Gratis, mientras haya socios con datos.

@@ -68,6 +68,7 @@ import { clubRouter, register as registerLoyalty } from "../server/routes/loyalt
 import { type Order, type Session } from "../shared/domain.js";
 import { discountExpectation, planDiscount } from "../shared/discounts.js";
 import {
+  customersVisible,
   JOIN_HEADER,
   LOYALTY_DEFAULTS,
   rewardDiscountRequest,
@@ -1134,6 +1135,31 @@ try {
     assert.deepEqual([replayLink.member?.id, replayLink.member?.firstName, replayLink.member?.maskedPhone], [ana.id, "", ""]);
     const replayRedeem = await run(f.s.cashier, (tx) => redeemReward(tx, f.s.cashier, o.id, redeemBody));
     assert.deepEqual([replayRedeem.order.id, replayRedeem.loyalty.member?.firstName], [o.id, ""]);
+  });
+
+  await test("L24. ARCO on every plan with the club off (LOYALTY-PRIVACY-3): on Free with the club off a manager still lists, reads, prints, rectifies, opts out and deletes a member; adjusting stays Pro; the settings report hasMembers until the last member is deleted", async () => {
+    const f = await clubTenant("arco-free");
+    const ana = await enroll(f, { name: "Ana Libre", marketing: true });
+    await giveStamps(f, ana.id, 2);
+    await saveSettings(f, { enabled: false });
+    await asAdmin(f.tenantId, (tx) => tx`update restaurant_entitlements set status='free',access_until=null where tenant_id=${f.tenantId}`);
+    const view = (await run(f.s.manager, (tx) => getLoyaltySettings(tx, f.s.manager))) as LoyaltySettingsView;
+    assert.deepEqual([view.enabled, view.plan, view.hasMembers, customersVisible(view)], [false, "free", true, true]);
+    const list = await run(f.s.manager, (tx) => listMembers(tx, f.s.manager, {}));
+    assert.deepEqual(list.rows.map((r) => r.id), [ana.id]);
+    assert.equal((await run(f.s.manager, (tx) => memberDetail(tx, f.s.manager, ana.id))).name, "Ana Libre");
+    assert.equal((await run(f.s.manager, (tx) => memberDataSheet(tx, f.s.manager, ana.id))).stamps, 2);
+    const fixed = await run(f.s.manager, (tx) =>
+      updateMember(tx, f.s.manager, ana.id, { operationId: randomUUID(), expectedVersion: 1, name: "Ana Libre Ruiz", marketingOptIn: false }),
+    );
+    assert.deepEqual([fixed.name, fixed.marketingOptIn], ["Ana Libre Ruiz", false]);
+    await rejects(giveStamps(f, ana.id, 1), "pro_required");
+    const gone = await run(f.s.owner, (tx) =>
+      deleteMember(tx, f.s.owner, ana.id, { operationId: randomUUID(), expectedVersion: fixed.version, confirm: "ELIMINAR" }),
+    );
+    assert.deepEqual([gone.deleted, gone.name, gone.phone], [true, "", null]);
+    const after = (await run(f.s.manager, (tx) => getLoyaltySettings(tx, f.s.manager))) as LoyaltySettingsView;
+    assert.deepEqual([after.hasMembers, customersVisible(after)], [false, false]);
   });
 
   await test("L15. retention: a member inactive 25 months is redacted, one at 23 months is not; an imported member whose last pos-lite visit is old is redacted on the next pass; nothing is deleted; it runs as the schema owner under the NO FORCE pattern", async () => {

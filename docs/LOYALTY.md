@@ -142,7 +142,11 @@ disabled with "El club requiere conexión." and the sale proceeds.
   unchecked; nothing sends messages in the pilot.
 - ARCO: access ("Imprimir datos del cliente", the owner export), rectification ("Editar datos"),
   cancellation ("Eliminar datos del cliente": name, phone, notice snapshot and opt-in blanked; ledger,
-  links and sales stay; irreversible), opposition (the marketing toggle).
+  links and sales stay; irreversible), opposition (the marketing toggle). Clientes and these actions
+  need neither Pro nor the club on: with the club off, Clientes stays (with a "club desactivado"
+  note, no Ajustar) while any member who is not deleted exists (LOYALTY-PRIVACY-3). The printed sheet
+  holds every stored field: pos-lite's figures and its pre-checked SMS flag (evidence, never
+  consent), the marketing change date, the managers' notes and the linked orders with totals.
 - Retention: the daily pass redacts members with no activity for 24 months
   (`server/ops/retention.ts`); no loyalty row is ever deleted.
 - Personal data never goes into logs (route templates only; lookups are POST bodies), audit details
@@ -167,7 +171,10 @@ DB check L9 (a platform tender earns nothing) runs once P1's `tenders.method` co
   file in the private scratchpad (mode 600), upload it in Configuración › Club de lealtad › Importar
   socios de POS Lite, choose the rewards policy (default "recent": completed in the last 90 days with
   no visit since), Importar, and require "Verificado". Spot-check 10 members against pos-lite's
-  Loyalty y CRM screen, record it in the cutover log, delete the file. "Premios por confirmar" lists
+  Loyalty y CRM screen, record it in the cutover log, delete the file. Then purge pos-lite's copy:
+  once Juanberto's stops using pos-lite, delete (or anonymise) that tenant's `loyalty_customers`
+  rows in pos-lite and record it in the cutover log; until then, an ARCO cancellation of an
+  imported member is also done in pos-lite (OPERATIONS "ARCO requests"). "Premios por confirmar" lists
   completed cards the policy did not grant; grant one with Ajustar › Saldo de POS Lite.
 - **Dead `loyalty_reconcile` job** (`jobs_dead_loyalty_reconcile`): the order's stamps did not post.
   Requeue it from the jobs screen; it is state-reconciling, so a requeue or a manual
