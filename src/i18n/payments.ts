@@ -113,6 +113,14 @@ export default defineArea({
     payReportsMarginAfterFees: "Margen después de comisiones",
     payReportsPlatformSales: "Plataformas",
     payRefundPlatform: "Reembolso por plataforma (sin efectivo)",
+    payProblemPlatformRequired: "Elige la plataforma.",
+    payProblemPlatformName: "Escribe el nombre de la plataforma.",
+    payProblemPlatformFullBalance:
+      "La plataforma cubre todo el saldo: el importe debe ser el saldo completo.",
+    payProblemPlatformReference:
+      "El número de pedido admite hasta 40 caracteres.",
+    payProblemPlatformConfirm:
+      "Confirma que la plataforma ya cobró este pedido.",
     payOpTerminalSaved: "Terminal guardada",
     payOpTerminalArchived: "Terminal archivada",
     payOpPlatformsSaved: "Plataformas guardadas",
@@ -219,6 +227,13 @@ export default defineArea({
     payReportsMarginAfterFees: "Margin after fees",
     payReportsPlatformSales: "Platforms",
     payRefundPlatform: "Platform refund (no cash)",
+    payProblemPlatformRequired: "Choose the platform.",
+    payProblemPlatformName: "Enter the platform's name.",
+    payProblemPlatformFullBalance:
+      "The platform covers the whole balance: the amount must be the full balance.",
+    payProblemPlatformReference: "The order number takes up to 40 characters.",
+    payProblemPlatformConfirm:
+      "Confirm that the platform already charged this order.",
     payOpTerminalSaved: "Terminal saved",
     payOpTerminalArchived: "Terminal archived",
     payOpPlatformsSaved: "Platforms saved",

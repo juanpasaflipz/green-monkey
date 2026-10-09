@@ -1,11 +1,17 @@
 import { z } from "zod";
 import {
+  PAYMENTS_LIMITS,
+  type PlatformCode,
+  type TenderMethod,
+} from "./payments.js";
+import {
   DomainError,
   minor,
   quote,
   type Label,
   type LineInput,
   type PricedLine,
+  type PricePlatform,
   type Product,
 } from "./domain.js";
 
@@ -259,26 +265,43 @@ export type PaymentValues = {
   amount: number;
   tip: number;
   received: number;
-  method: "cash" | "external";
+  method: TenderMethod;
   reference: string;
   confirmed: boolean;
+  /** payments (037): the named terminal of a card record; absent = "Otra terminal". */
+  terminalId?: string;
+  /** payments (037): the platform of a platform tender ("Otra" carries its name). */
+  platform?: PlatformCode;
+  platformLabel?: string;
 };
 export type PaymentProblem = {
-  field: "drawer" | "amount" | "tip" | "received" | "reference" | "confirmed";
+  field:
+    | "drawer"
+    | "amount"
+    | "tip"
+    | "received"
+    | "reference"
+    | "confirmed"
+    | "platform";
   key: string;
 };
-/** Pure validation used by PaymentDialog; `key` is an i18n key from src/i18n/service.ts. */
+/** Pure validation used by PaymentDialog; `key` is an i18n key (service or payments area). */
 export function validatePayment(input: {
   amountText: string;
   tipText: string;
   receivedText: string;
-  method: "cash" | "external";
+  method: TenderMethod;
   reference: string;
   confirmed: boolean;
   due: number;
   exponent: number;
   drawerOpen: boolean;
   online: boolean;
+  /** payments (037): card records may name a terminal. */
+  terminalId?: string | null;
+  /** payments (037): platform tenders name their platform ("Otra" with a name). */
+  platform?: PlatformCode | null;
+  platformLabel?: string;
 }):
   { ok: true; values: PaymentValues } | { ok: false; problem: PaymentProblem } {
   const fail = (field: PaymentProblem["field"], key: string) =>
@@ -293,6 +316,31 @@ export function validatePayment(input: {
   }
   if (amount === 0) return fail("amount", "servicePayAmountZero");
   if (amount > input.due) return fail("amount", "servicePayAmountExceeds");
+  if (input.method === "platform") {
+    // Q6: the platform covers the whole balance, with no tip; the order number is optional.
+    if (!input.platform) return fail("platform", "payProblemPlatformRequired");
+    const label = input.platformLabel?.trim() ?? "";
+    if (input.platform === "other" && !label)
+      return fail("platform", "payProblemPlatformName");
+    if (amount !== input.due)
+      return fail("amount", "payProblemPlatformFullBalance");
+    if (input.reference.trim().length > PAYMENTS_LIMITS.platformReferenceMax)
+      return fail("reference", "payProblemPlatformReference");
+    if (!input.confirmed) return fail("confirmed", "payProblemPlatformConfirm");
+    return {
+      ok: true,
+      values: {
+        amount,
+        tip: 0,
+        received: amount,
+        method: "platform",
+        reference: input.reference.trim(),
+        confirmed: true,
+        platform: input.platform,
+        ...(input.platform === "other" ? { platformLabel: label } : {}),
+      },
+    };
+  }
   let tip: number;
   try {
     tip = parseMoneyInput(input.tipText, input.exponent, { emptyAsZero: true });
@@ -320,6 +368,8 @@ export function validatePayment(input: {
       },
     };
   }
+  if (input.method !== "external")
+    return fail("amount", "servicePayAmountInvalid");
   if (!input.reference.trim())
     return fail("reference", "servicePayReferenceRequired");
   if (!input.confirmed) return fail("confirmed", "servicePayConfirmRequired");
@@ -332,6 +382,7 @@ export function validatePayment(input: {
       method: "external",
       reference: input.reference.trim(),
       confirmed: true,
+      ...(input.terminalId ? { terminalId: input.terminalId } : {}),
     },
   };
 }
@@ -346,12 +397,14 @@ export function priceCart(
   lines: LineInput[],
   catalog: Product[],
   canOpen: boolean,
+  /** payments (037, LD-72): the order's platform price list; null = POS prices. */
+  priceList: PricePlatform | null = null,
 ): { lines: CartLine[]; total: number; blocked: boolean } {
   const result = lines.map((input): CartLine => {
     try {
       return {
         input,
-        priced: quote([input], catalog, canOpen)[0],
+        priced: quote([input], catalog, canOpen, undefined, priceList)[0],
         error: null,
       };
     } catch (e) {
