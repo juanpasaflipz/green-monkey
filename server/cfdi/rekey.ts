@@ -1,6 +1,6 @@
 /**
  * Re-seals the cfdi organization API keys under the active CREDENTIAL_ENCRYPTION_KEY kid (spec §4.5,
- * docs/CFDI.md "Credential key rotation"). Worker side: used by scripts/cfdi-rekey.ts with the jobs
+ * docs/CFDI.md "Credential key rotation"). Worker side: used by scripts/vault-rekey.ts with the jobs
  * login; the web never imports it. Counts only, never a key; safe to run again.
  */
 import type postgres from "postgres";
