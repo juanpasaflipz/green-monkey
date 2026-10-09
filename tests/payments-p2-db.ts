@@ -31,6 +31,21 @@ import { cancelJob, requeueJob } from "../server/jobs/queue.js";
 import { createJobRunner } from "../server/jobs/runner.js";
 import { workerHandlers } from "../server/jobs/worker-registry.js";
 import "../server/jobs/handlers/payments.js";
+import "../server/jobs/handlers/loyalty.js";
+import { linkOrderMember } from "../server/loyalty/links.js";
+import { redeemReward } from "../server/loyalty/rewards.js";
+import { adjustMember, enrollMember } from "../server/loyalty/members.js";
+import {
+  getLoyaltySettings,
+  saveLoyaltySettings,
+} from "../server/loyalty/settings.js";
+import { reconcileOrder } from "../server/loyalty/ledger.js";
+import { legalConfig } from "../server/legal.js";
+import { LEGAL_CI_ENV } from "./fixtures/legal-ci.js";
+import {
+  rewardDiscountRequest,
+  type LoyaltySettingsView,
+} from "../shared/loyalty.js";
 import "../server/payments/worker/register.js";
 import { publishPaymentsPlatform } from "../server/payments/worker/boot.js";
 import {
@@ -39,7 +54,7 @@ import {
 } from "../server/payments/worker/runtime.js";
 import { parseCredentialKeyring } from "../server/cfdi/config.js";
 import { rekeyPaymentSecrets } from "../server/vault/rekey.js";
-import { createOrder, recordPayment } from "../server/orders.js";
+import { createOrder, getOrder, recordPayment } from "../server/orders.js";
 import { voidLines } from "../server/voids.js";
 import { applyDiscount } from "../server/discounts.js";
 import { closeCash } from "../server/cash.js";
@@ -153,11 +168,13 @@ const workerRunner = createJobRunner(worker, {
   sweepMs: 3_600_000,
   onDead: (job, code) => dead.push({ kind: job.kind, code }),
 });
-const settleOnly = new Map([
+// The club's reconcile (loyalty 038) is a web job too: a settle of a linked order queues it.
+const webKinds = new Map([
   ["payments_settle", handlers().get("payments_settle")!],
+  ["loyalty_reconcile", handlers().get("loyalty_reconcile")!],
 ]);
 const webRunner = createJobRunner(sql, {
-  handlers: () => settleOnly,
+  handlers: () => webKinds,
   concurrency: 2,
   sweepMs: 3_600_000,
   onDead: (job, code) => dead.push({ kind: job.kind, code }),
@@ -2922,11 +2939,78 @@ try {
     assert.equal(fake.chargeFor(never.id), null, "nothing reached MP");
   });
 
-  await test("15. lock order: starts on two terminals, a settle (job and sync), a void, a discount, an offline sale, a public pay-first accept and a drawer close run together with no deadlock and no retry (LO-R9)", async () => {
-    // Prepared: an approved charge waiting for its settle, and a pay-first public hold.
+  await test("15. lock order: starts on two terminals, a settle (job and sync), a void, a discount, an offline sale, a public pay-first accept, a drawer close and the club's work on linked orders (a member linked, a reward redeemed, the after-payment reconcile; R16) run together with no deadlock and no retry (LO-R9)", async () => {
+    // R16 (loyalty 038 is in): the club on, a member linked to the charge that settles in the
+    // burst, another holding one reward. Fictional people and phones.
+    await asOwner(A, (tx) =>
+      tx`insert into restaurant_account_settings(tenant_id,privacy_notice_url)
+        values(${A},'https://example.com/aviso-de-privacidad')`,
+    );
+    const program = (await write(owner, (tx) =>
+      getLoyaltySettings(tx, owner),
+    )) as LoyaltySettingsView;
+    await write(owner, (tx) =>
+      saveLoyaltySettings(
+        tx,
+        owner,
+        {
+          operationId: randomUUID(),
+          expectedVersion: program.version,
+          enabled: true,
+          programName: "",
+          stampsRequired: 10,
+          stampThreshold: 40000,
+          maxStampsPerOrder: null,
+          rewardKind: "item",
+          rewardDescription: "Un producto gratis",
+          rewardAmount: null,
+          rewardMaxAmount: 15000,
+          maxRewardsPerOrder: 1,
+          promptAtCheckout: true,
+          receiptJoinQr: true,
+          linkWindowDays: 7,
+          privacyAttested: true,
+        },
+        legalConfig(LEGAL_CI_ENV),
+      ),
+    );
+    const enroll = async (name: string, phone: string) =>
+      (
+        await write(cashier, (tx) =>
+          enrollMember(tx, cashier, {
+            operationId: randomUUID(),
+            phone,
+            country: "MX",
+            name,
+            consent: true,
+            marketingOptIn: false,
+          }),
+        )
+      ).member;
+    const ana = await enroll("Ana Ficticia", "5550001501");
+    const beto = await enroll("Beto Ficticio", "5550001502");
+    await write(manager, (tx) =>
+      adjustMember(tx, manager, beto.id, {
+        operationId: randomUUID(),
+        stamps: 0,
+        rewards: 1,
+        reason: "correction",
+        note: "Saldo de prueba",
+      }),
+    );
+    const link = (s: Session, orderId: string, memberId: string) =>
+      write(s, (tx) =>
+        linkOrderMember(tx, s, orderId, {
+          operationId: randomUUID(),
+          memberId,
+        }),
+      );
+    // Prepared: an approved charge on a linked order waiting for its settle, and a pay-first
+    // public hold.
     const settling = await newOrder(cashier, [
       { product: ids.taco, quantity: 1 },
     ]);
+    await link(cashier, settling.id, ana.id);
     const x = await pending(settling, terminals.mpStandalone);
     fake.approve(x.ref, { ...TEST_CARD });
     await workerOnly();
@@ -2967,6 +3051,16 @@ try {
       note: "",
     };
     const managerAt2 = session(A, ids.manager, "manager", ids.device2);
+    // Beto's reward on one taco of o7, as RedeemRewardDialog sends it.
+    const o7 = await newOrder(cashier2, [{ product: ids.taco, quantity: 2 }]);
+    const reward = rewardDiscountRequest(program, o7, o7.lines[0].id);
+    const redeemBody = {
+      operationId: randomUUID(),
+      memberId: beto.id,
+      expectedVersion: o7.version,
+      lineId: o7.lines[0].id,
+      ...discountExpectation(o7, planDiscount(o7, reward)),
+    };
     const results = await noRetries("payments P2 burst", () =>
       Promise.allSettled([
         start(cashier, o1.id, terminals.mp, o1.total),
@@ -3033,6 +3127,15 @@ try {
             reason: "Corte de prueba del burst",
           }),
         ),
+        // R16: the club's work on linked orders, against the same orders and members.
+        link(cashier, o1.id, ana.id),
+        write(cashier2, (tx) => redeemReward(tx, cashier2, o7.id, redeemBody)),
+        write(cashier, (tx) => reconcileOrder(tx, A, settling.id)).catch(
+          (e) => {
+            // A link that changed between its read and its lock: the job retries (row 49).
+            if (e.code !== "loyalty_retry") throw e;
+          },
+        ),
       ]),
     );
     while (webRunner.running() > 0) await sleep(10);
@@ -3055,6 +3158,40 @@ try {
     for (const r of results.slice(0, 2))
       if (r.status === "fulfilled")
         await cancelCreated((r.value as AttemptView).id);
+    // The settle's club hook queued the reconcile; it stamps Ana once, and Beto's reward is spent.
+    await webRunner.drainTenant(A);
+    while (webRunner.running() > 0) await sleep(10);
+    const ledger = await asOwner(
+      A,
+      (tx) => tx`select m.name,m.stamps,m.rewards,m.rewards_redeemed,
+          (select coalesce(sum(stamps_delta),0)::int from loyalty_ledger l where l.member_id=m.id) as ledger_stamps,
+          (select coalesce(sum(rewards_delta),0)::int from loyalty_ledger l where l.member_id=m.id) as ledger_rewards,
+          (select string_agg(kind||':'||stamps_delta,',' order by created_at,id) from loyalty_ledger l
+            where l.member_id=m.id and l.order_id=${settling.id}) as settled_kinds
+        from loyalty_members m where m.id in (${ana.id},${beto.id}) order by m.name`,
+    );
+    assert.deepEqual(
+      ledger.map((m: any) => [
+        m.name,
+        m.stamps,
+        m.rewards,
+        m.rewards_redeemed,
+        m.ledger_stamps,
+        m.ledger_rewards,
+        m.settled_kinds,
+      ]),
+      [
+        ["Ana Ficticia", 1, 0, 0, 1, 0, "earn:1"],
+        ["Beto Ficticio", 0, 0, 1, 0, 0, null],
+      ],
+      "the terminal settle stamped the linked member once; the reward unit is spent",
+    );
+    const redeemed = await write(cashier2, (tx) => getOrder(tx, o7.id));
+    assert.equal(
+      redeemed.discounts!.filter((d) => d.reasonCode === "loyalty_reward")
+        .length,
+      1,
+    );
   });
 
   await test("stranded charges (P2-MONEY-1, P2-PROVIDERS-1, P2-CONCURRENCY-1): a rotated MP token fails the account only after MP's own verification refuses it; every pending MP charge keeps its poll chain and reaches unknown at its deadline; the owner reconnects while charges are live and the worker re-reads them; a 403 for a terminal of another account declines that charge and leaves the account alone", async () => {

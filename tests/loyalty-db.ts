@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import postgres from "postgres";
 import { password } from "../server/auth.js";
-import { checkRole, connect, tenant, type Tx } from "../server/db.js";
+import { checkRole, connect, connectWorker, tenant, type Tx } from "../server/db.js";
 import { makeRoute } from "../server/http.js";
 import { apiErrorHandler } from "../server/api-errors.js";
 import { setLogSink } from "../server/logging.js";
@@ -23,6 +23,9 @@ import { applyDiscount, reverseDiscount } from "../server/discounts.js";
 import { approvalFor } from "../server/routes/discounts.js";
 import { handlers } from "../server/jobs.js";
 import "../server/jobs/handlers/loyalty.js";
+import "../server/jobs/handlers/payments.js";
+import { syncAttemptCore } from "../server/payments/terminal.js";
+import { queueSettle } from "../server/payments/worker/runtime.js";
 import { runRetention } from "../server/ops/retention.js";
 import { exportTables } from "../server/data-export.js";
 import { seal } from "../server/tokens.js";
@@ -88,16 +91,19 @@ import {
   previewLoyaltyImport,
   type ImportRow,
 } from "../shared/loyalty-import.js";
-import { isolatedTarget } from "./isolated-target.js";
+import { isolatedTarget, requireWorker } from "./isolated-target.js";
 import { legalConfig } from "../server/legal.js";
 import { LEGAL_CI_ENV } from "./fixtures/legal-ci.js";
 import { noRetries } from "./db-retries.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 
-const { runtime: url, migration } = isolatedTarget(process.env);
+const target = isolatedTarget(process.env);
+const { runtime: url, migration } = target;
 const sql = connect(url),
-  admin = postgres(migration, { max: 1 });
+  admin = postgres(migration, { max: 1 }),
+  // The jobs login, for the worker's attempt transitions (R16: L16's payments_settle).
+  workerSql = connectWorker(requireWorker(target));
 await checkRole(sql);
 const logLines: string[] = [];
 setLogSink((line) => logLines.push(line));
@@ -399,21 +405,74 @@ async function runJobs(f: Fixture, orderId: string) {
  * A terminal charge in flight for the order (037 state 'created', as payments P2's start leaves
  * it): an integrated terminal with a fictional device id and an attempt on the open drawer.
  */
-async function liveAttempt(f: Fixture, orderId: string) {
+async function liveAttempt(
+  f: Fixture,
+  orderId: string,
+  amount = 4500,
+  device = "FICTIONAL_POINT_CLUB_0001",
+  name = "Club Point",
+) {
   const terminalId = randomUUID(),
     attemptId = randomUUID();
   await asAdmin(f.tenantId, async (tx) => {
     const [drawer] = await tx`select id from cash_sessions where device_id=${f.terminal} and closed_at is null`;
     await tx`insert into payment_terminals(tenant_id,id,name,kind,provider_device_id,fee_bp,created_by,updated_by)
-      values(${f.tenantId},${terminalId},'Club Point','mercadopago_point','FICTIONAL_POINT_CLUB_0001',null,${f.ids.manager},${f.ids.manager})`;
+      values(${f.tenantId},${terminalId},${name},'mercadopago_point',${device},null,${f.ids.manager},${f.ids.manager})`;
     await tx`insert into payment_attempts(tenant_id,id,operation_id,settle_operation_id,target,origin,order_id,
         terminal_id,provider,provider_device_id,terminal_label,amount,tip,currency,employee_id,device_id,
         session_id,cash_session_id,state)
       values(${f.tenantId},${attemptId},${randomUUID()},${randomUUID()},'order','pos',${orderId},${terminalId},
-        'mercadopago','FICTIONAL_POINT_CLUB_0001','Club Point',4500,0,'MXN',${f.ids.cashier},${f.terminal},
+        'mercadopago',${device},${name},${amount},0,'MXN',${f.ids.cashier},${f.terminal},
         ${randomUUID()},${drawer.id},'created')`;
   });
   return attemptId;
+}
+let paymentSeq = 0;
+/**
+ * An approved terminal charge for the whole order (R16, payments P2), waiting for its settle: born
+ * 'created' as the start leaves it, then moved on the jobs login exactly as the worker's provider
+ * read does (sending → pending → approved with a fictional reference, card and fee) and its
+ * payments_settle job queued (queueSettle, keyed by the attempt).
+ */
+async function approvedAttempt(f: Fixture, orderId: string, amount: number) {
+  const n = 1000001 + paymentSeq++;
+  const attemptId = await liveAttempt(f, orderId, amount, `FICTIONAL_POINT_CLUB_${n}`, `Club Point ${n}`);
+  await tenant(workerSql, f.tenantId, async (tx) => {
+    await tx`update payment_attempts set state='sending',sent_at=now(),version=version+1 where id=${attemptId}`;
+    await tx`update payment_attempts set state='pending',provider_reference=${"FICTIONAL-ORDER-" + n},version=version+1
+      where id=${attemptId}`;
+    await tx`update payment_attempts set state='approved',provider_status='approved',paid_amount=${amount},
+        provider_payment_id=${String(n)},fee=${Math.round(amount * 0.03)},fee_source='provider',
+        card_type='debit',card_brand='visa',card_last4='4242',decided_at=now(),version=version+1
+      where id=${attemptId}`;
+    await queueSettle(tx, f.tenantId, attemptId);
+  });
+  return attemptId;
+}
+/** The payments_settle job of the attempt, through its registered handler (the web's runner). */
+async function settleJob(f: Fixture, attemptId: string) {
+  const entry = handlers().get("payments_settle");
+  assert(entry, "payments_settle is registered");
+  const [j] = await asAdmin(f.tenantId, (tx) =>
+    tx`select id,dedupe_key,payload from jobs where kind='payments_settle' and dedupe_key=${attemptId}`,
+  );
+  assert(j, "the approval queued payments_settle");
+  return entry.handler({
+    job: {
+      tenantId: f.tenantId,
+      id: j.id,
+      kind: "payments_settle",
+      dedupeKey: j.dedupe_key,
+      payload: j.payload,
+      attempts: 1,
+      lease: "",
+      createdAt: new Date(),
+    },
+    tenant: (fn) => tenant(sql, f.tenantId, fn),
+    extendLease: async () => {},
+    signal: new AbortController().signal,
+    log: { info() {}, warn() {}, error() {} } as never,
+  });
 }
 async function redeem(
   f: Fixture,
@@ -1792,7 +1851,7 @@ try {
   });
 
   // ------------------------------------------------------------------ L16 burst
-  await test("L16. lock-order burst under noRetries, zero deadlocks: links, payments, settlements of table checks, refunds, redemptions, reward reversals, member changes, reconcile jobs and linkFromKiosk inside a stub acceptance", async () => {
+  await test("L16. lock-order burst under noRetries, zero deadlocks: links, payments, settlements of table checks, refunds, redemptions, reward reversals, member changes, reconcile jobs, linkFromKiosk inside a stub acceptance and terminal settles of linked orders (payments_settle job and sync racing, R16)", async () => {
     const f = await clubTenant("rafaga");
     const members: MemberSummary[] = [];
     for (let i = 0; i < 4; i++) {
@@ -1820,9 +1879,19 @@ try {
         ),
       ),
     );
+    // R16 (payments P2): two linked orders whose terminal charge was approved and waits for its
+    // settle; in the burst the payments_settle job and the sync route race on each.
+    const charged: { order: Order; attemptId: string }[] = [];
+    for (const m of [members[3], members[1]]) {
+      const o = await newOrder(f, [{ product: f.p.combo, quantity: 1 }]);
+      await link(f, o.id, m.id);
+      charged.push({ order: o, attemptId: await approvedAttempt(f, o.id, o.total) });
+    }
     const a = await approvalFor(sql, f.s.manager, undefined, "required");
     await noRetries("L16 burst", () =>
       Promise.all([
+        // Terminal settles (payments P2 row 43): the job and a sync on each approved charge.
+        ...charged.flatMap((c) => [settleJob(f, c.attemptId), syncAttemptCore(sql, f.tenantId, c.attemptId)]),
         // Link and pay the same orders from two terminals.
         ...fresh.slice(0, 3).flatMap((o, i) => [link(f, o.id, members[i].id), pay(f, o.id, 23500)]),
         // Redeem while the same member is linked elsewhere.
@@ -1862,7 +1931,16 @@ try {
         })),
       ]),
     );
-    for (const o of [...paid, ...fresh, ...redeemed.map((r) => r.order)]) await runJobs(f, o.id);
+    for (const o of [...paid, ...fresh, ...redeemed.map((r) => r.order), ...charged.map((c) => c.order)])
+      await runJobs(f, o.id);
+    for (const c of charged) {
+      const [row] = await asAdmin(f.tenantId, (tx) =>
+        tx`select a.state,(select count(*)::int from tenders t where t.order_id=a.order_id) as tenders
+          from payment_attempts a where a.id=${c.attemptId}`,
+      );
+      assert.deepEqual([row.state, row.tenders], ["settled", 1], "one tender per settled charge");
+      assert.deepEqual(await ledgerKinds(f, c.order.id), ["earn:1"], "the terminal settle stamps the linked member once");
+    }
     for (const m of members) {
       const row = await member(f, m.id);
       assert.deepEqual([row.stamps, row.rewards], [row.ledger_stamps, row.ledger_rewards], m.firstName);
@@ -2053,8 +2131,9 @@ try {
   for (const id of tenantsMade)
     await admin.begin(async (tx) => {
       await tx`select set_config('app.tenant_id',${id},true)`;
-      await tx`delete from jobs where tenant_id=${id} and kind in ('kitchen_dispatch','loyalty_reconcile') and created_at>=${started}`;
+      await tx`delete from jobs where tenant_id=${id} and kind in ('kitchen_dispatch','loyalty_reconcile','payments_settle') and created_at>=${started}`;
     });
   await sql.end();
   await admin.end();
+  await workerSql.end();
 }

@@ -200,8 +200,10 @@ call to payments, and payments adds none to loyalty (critic R16):
   `payments_order_attempt_live` while a terminal charge for the order is in flight (DB check L10).
 
 The settle hooks reach every payment path through `refreshCheckState`, including payments'
-`settleAttempt` (row 43, phase P2). Once P2 is in, L16 adds `payments_settle` (job and sync) to its
-lock-order burst; payments' DB 15 adds loyalty-linked orders to its own (R16).
+`settleAttempt` (row 43, phase P2). With P2 in, L16's lock-order burst races the `payments_settle`
+job and the sync route on approved charges of two linked orders (one tender and one `earn` each),
+and payments' DB 15 runs a member link, a reward redemption and the after-payment reconcile of a
+linked order whose charge settles in its burst (R16).
 
 ## Restaurant-day branch L (spec §9.4)
 
