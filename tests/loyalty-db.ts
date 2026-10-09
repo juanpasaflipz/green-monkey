@@ -65,6 +65,10 @@ import {
   importStatus,
 } from "../server/loyalty/import.js";
 import { loyaltyReport } from "../server/loyalty/reports.js";
+import { exceptionRows } from "../server/reports/exceptions.js";
+import { dayCorte } from "../server/reports/cortes.js";
+import { reportsPorts } from "../server/reports/ports.js";
+import { snapshotTenant } from "../server/reports/snapshot.js";
 import { clubRouter, register as registerLoyalty } from "../server/routes/loyalty.js";
 import { type Order, type Session } from "../shared/domain.js";
 import { discountExpectation, planDiscount } from "../shared/discounts.js";
@@ -741,6 +745,21 @@ try {
     assert.deepEqual([m.stamps, m.rewards], [2, 1]);
   });
 
+  // L9 (spec §9.2: a platform tender earns nothing) needs payments P1's 037, whose tenders.method
+  // constraint accepts 'platform'. Until then the unit tests cover the exclusion; once the
+  // constraint accepts it, this check fails so the P1 rebase writes L9 (LOYALTY-OPS-4).
+  await test("L9 gate. a platform tender earns nothing: pending payments P1 (037); this fails once tenders accept 'platform' so the rebase must write L9", async () => {
+    const [c] = await admin`select pg_get_constraintdef(oid) as def from pg_constraint
+      where conrelid='tenders'::regclass and contype='c' and pg_get_constraintdef(oid) like '%method%'`;
+    const acceptsPlatform = String(c?.def ?? "").includes("'platform'");
+    assert.equal(
+      acceptsPlatform,
+      false,
+      "tenders.method accepts 'platform' (037 merged): write L9 (link a member, pay with a platform tender, expect no earn; mixed cash + platform earns on the cash part) and remove this gate",
+    );
+    console.log("SKIP L9: requires 037's platform tender (payments P1); covered by the unit tests until then");
+  });
+
   await test("L8. refunds: a partial one below the threshold posts nothing, one crossing it −1, a full one reverses all; crossing a completed unredeemed card withdraws the reward; a redeemed one leaves negative stamps; both refund paths enqueue", async () => {
     const f = await clubTenant("reembolso");
     const ana = await enroll(f);
@@ -1103,6 +1122,37 @@ try {
       if (before === undefined) delete process.env.FISCAL_TICKETS_ENABLED;
       else process.env.FISCAL_TICKETS_ENABLED = before;
     }
+  });
+
+  await test("L28. acceptance criterion 5 (LOYALTY-OPS-4): a club reward shows in Excepciones (reason loyalty_reward, no approver), in the corte del día's discounts and exception tiles, and the refund that reverses its stamps in the corte and Finanzas › Club de lealtad", async () => {
+    const f = await clubTenant("corte-premio");
+    const ana = await enroll(f);
+    await giveStamps(f, ana.id, 0, 1);
+    const o = await newOrder(f, [{ product: f.p.burrito, quantity: 1 }, { product: f.p.combo, quantity: 1 }]);
+    await link(f, o.id, ana.id);
+    await redeem(f, o.id, ana.id, lineOf(o, f.p.burrito));
+    await pay(f, o.id, 15000);
+    await runJobs(f, o.id);
+    assert.deepEqual(await ledgerKinds(f, o.id), ["reward_redeemed:0", "earn:1"]);
+    await refundAmount(f, o.id, 15000);
+    await runJobs(f, o.id);
+    assert.deepEqual(await ledgerKinds(f, o.id), ["reward_redeemed:0", "earn:1", "earn_reversal:-1"]);
+    const day = (await run(f.s.manager, (tx) => getOrder(tx, o.id))).businessDate!;
+    const page = await run(f.s.manager, (tx) => exceptionRows(tx, f.s.manager, { from: day, to: day, limit: "500" }));
+    const reward = page.rows.filter((r) => r.kind === "discount");
+    assert.deepEqual(
+      reward.map((r) => [r.reasonCode, r.amount, r.approverId, r.orderId]),
+      [["loyalty_reward", 8500, null, o.id]],
+    );
+    const corte = await run(f.s.manager, (tx) => dayCorte(tx, f.s.manager, day, "req", reportsPorts));
+    assert.equal(corte.summary.sales.discounts, 8500, "the reward is a discount of the day");
+    assert.deepEqual(
+      corte.exceptions.filter((x) => x.kind === "discount").map((x) => [x.count, x.amount]),
+      [[1, 8500]],
+    );
+    assert.equal(corte.summary.refunds.count, 1);
+    const club = await snapshotTenant(sql, f.tenantId, (tx) => loyaltyReport(tx, f.s.manager, { from: day, to: day }));
+    assert.deepEqual([club.stamps.earned, club.stamps.reversed, club.rewards.redeemed], [1, 1, 1]);
   });
 
   // ------------------------------------------------------------------ L13–L15 members, ARCO, retention

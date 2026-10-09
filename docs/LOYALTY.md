@@ -168,7 +168,14 @@ disabled with "El club requiere conexión." and the sale proceeds.
 Selling takes an `onPaymentSettled` prop (no-op by default) and calls it with the club's after-payment
 work from its single payment-settled exit; P1's own exit replaces that wiring at the rebase. Loyalty
 DB check L9 (a platform tender earns nothing) runs once P1's `tenders.method` constraint accepts
-`platform`; until then the unit tests cover the exclusion.
+`platform`; until then the unit tests cover the exclusion, and the DB suite's "L9 gate" check fails
+as soon as the constraint accepts `platform`, so the rebase writes L9 (LOYALTY-OPS-4).
+
+Not written yet (a release gate, DELIVERY_STATUS): the restaurant-day branch L of spec §9.4 (link,
+pay, earn, redeem, refund reversal through the UI, reconciled in `tests/restaurant-day-db.ts`). Until
+it lands, DB check L28 asserts acceptance criterion 5 (the reward in Excepciones with reason
+`loyalty_reward` and no approver, in the corte del día's discounts and exception tiles; the refund
+that reverses its stamp in the corte and Finanzas › Club de lealtad).
 
 ## Runbooks
 
