@@ -92,9 +92,19 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
   ).not.toBeChecked();
   await expect(panel.getByLabel("Otra", { exact: true })).not.toBeChecked();
   await panel.getByLabel("Uber Eats", { exact: true }).check();
+  const didiCommission = panel.getByLabel("Comisión estimada (%) · DiDi Food", {
+    exact: true,
+  });
+  // PAYMENTS-UX-6: a bad percentage is named under «Guardar plataformas» and its field is marked.
+  await didiCommission.fill("treinta");
   await panel
-    .getByLabel("Comisión estimada (%) · DiDi Food", { exact: true })
-    .fill("25");
+    .getByRole("button", { name: "Guardar plataformas", exact: true })
+    .click();
+  await expect(panel.locator("#payments-platforms-error")).toContainText(
+    "Comisión estimada (%) · DiDi Food",
+  );
+  await expect(didiCommission).toHaveAttribute("aria-invalid", "true");
+  await didiCommission.fill("25");
   await panel
     .getByRole("button", { name: "Guardar plataformas", exact: true })
     .click();
@@ -103,13 +113,21 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
   await panel
     .getByLabel("Buscar producto", { exact: true })
     .fill("Taco de hongos");
+  const tacoUber = panel.getByLabel("Taco de hongos · Uber Eats", {
+    exact: true,
+  });
+  await tacoUber.fill("59");
+  // PAYMENTS-UX-5: saving another section keeps the typed, unsaved price.
   await panel
-    .getByLabel("Taco de hongos · Uber Eats", { exact: true })
-    .fill("59");
+    .getByRole("button", { name: "Guardar plataformas", exact: true })
+    .click();
+  await expect(panel.getByRole("status")).toContainText("Guardado");
+  await expect(tacoUber).toHaveValue("59");
   await panel
     .getByRole("button", { name: "Guardar precios", exact: true })
     .click();
   await expect(panel.getByRole("status")).toContainText("Guardado");
+  await expect(tacoUber).toHaveValue("59.00");
   for (const width of [1440, 1024, 768, 390]) {
     await page.setViewportSize({ width, height: 900 });
     await axe(page, "section.payment-settings");

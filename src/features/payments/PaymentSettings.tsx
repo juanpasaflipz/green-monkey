@@ -52,27 +52,47 @@ export function PaymentSettings({
     }).format(n / scale);
   const [view, setView] = useState<PaymentSettingsView | null>(null);
   const [catalog, setCatalog] = useState<Product[]>([]);
-  const [error, setError] = useState("");
-  const [status, setStatus] = useState("");
+  // PAYMENTS-UX-6: one status or error at a time, shown under the section that was saved (and
+  // naming the field at fault), not at the end of a long price table.
+  type Section = "load" | "terminals" | "device" | "platforms" | "prices";
+  const [note, setNote] = useState<{
+    section: Section;
+    status?: string;
+    error?: string;
+    field?: string;
+  } | null>(null);
+  const setError = (error: string, section: Section = "load", field?: string) =>
+    setNote(error ? { section, error, field } : null);
+  const setStatus = (status: string, section: Section) =>
+    setNote(status ? { section, status } : null);
   const [busy, setBusy] = useState(false);
+  // PAYMENTS-UX-5: typed but unsaved platform and price edits survive another section's save and
+  // a reconnect.
+  const [platformsDirty, setPlatformsDirty] = useState(false);
+  const [pricesDirty, setPricesDirty] = useState(false);
   // New or edited terminal.
   const [editing, setEditing] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [fee, setFee] = useState("");
   // Platforms: enabled + commission text per platform.
+  // LD-75: platforms are off until the owner turns them on.
   const [platformForm, setPlatformForm] = useState<
     Record<PlatformCode, { enabled: boolean; commission: string }>
   >(
     () =>
       Object.fromEntries(
-        PLATFORMS.map((p) => [p, { enabled: true, commission: "" }]),
+        PLATFORMS.map((p) => [p, { enabled: false, commission: "" }]),
       ) as Record<PlatformCode, { enabled: boolean; commission: string }>,
   );
   // Prices: typed text per product:platform.
   const [priceTexts, setPriceTexts] = useState<Record<string, string>>({});
   const [query, setQuery] = useState("");
 
-  async function load() {
+  /**
+   * Reads the settings and the catalog. The platform and price forms take the server's values
+   * only where nothing unsaved is typed, unless `saved` says that section was just saved.
+   */
+  async function load(saved?: Section) {
     try {
       const [v, products] = await Promise.all([
         api<PaymentSettingsView>("/payments/settings"),
@@ -80,30 +100,37 @@ export function PaymentSettings({
       ]);
       setView(v);
       setCatalog(products);
-      setPlatformForm(
-        Object.fromEntries(
-          v.platforms.map((p) => [
-            p.platform,
-            { enabled: p.enabled, commission: bpToPercent(p.commissionBp) },
-          ]),
-        ) as Record<PlatformCode, { enabled: boolean; commission: string }>,
-      );
-      setPriceTexts(
-        Object.fromEntries(
-          v.prices
-            .filter((p) => p.price !== null)
-            .map((p) => [
-              `${p.productId}:${p.platform}`,
-              (p.price! / scale).toFixed(exponent),
+      if (!platformsDirty || saved === "platforms") {
+        setPlatformForm(
+          Object.fromEntries(
+            v.platforms.map((p) => [
+              p.platform,
+              { enabled: p.enabled, commission: bpToPercent(p.commissionBp) },
             ]),
-        ),
-      );
-      setError("");
+          ) as Record<PlatformCode, { enabled: boolean; commission: string }>,
+        );
+        setPlatformsDirty(false);
+      }
+      if (!pricesDirty || saved === "prices") {
+        setPriceTexts(
+          Object.fromEntries(
+            v.prices
+              .filter((p) => p.price !== null)
+              .map((p) => [
+                `${p.productId}:${p.platform}`,
+                (p.price! / scale).toFixed(exponent),
+              ]),
+          ),
+        );
+        setPricesDirty(false);
+      }
+      if (!saved) setNote(null);
     } catch (e) {
       setError(errorNotice(e, locale));
     }
   }
   useEffect(() => {
+    // A reconnect re-reads, keeping whatever is typed and unsaved (PAYMENTS-UX-5).
     if (online) void load();
   }, [session.id, online]);
 
@@ -122,17 +149,19 @@ export function PaymentSettings({
     [catalog, query, locale],
   );
 
-  async function run(fn: () => Promise<PaymentSettingsView | void>) {
+  async function run(
+    section: Section,
+    fn: () => Promise<PaymentSettingsView | void>,
+  ) {
     setBusy(true);
-    setError("");
-    setStatus("");
+    setNote(null);
     try {
       const next = await fn();
       if (next) setView(next);
-      await load();
-      setStatus(t("paySaved"));
+      await load(section);
+      setStatus(t("paySaved"), section);
     } catch (e) {
-      setError(errorNotice(e, locale));
+      setError(errorNotice(e, locale), section);
     } finally {
       setBusy(false);
     }
@@ -142,11 +171,15 @@ export function PaymentSettings({
     try {
       feeBp = percentToBp(fee, PAYMENTS_LIMITS.feeBpMax);
     } catch {
-      setError(t("payInvalidPercent"));
+      setError(
+        `${t("payFeeRate")}: ${t("payInvalidPercent")}`,
+        "terminals",
+        "fee",
+      );
       return;
     }
     const current = view?.terminals.find((x) => x.id === editing);
-    void run(async () => {
+    void run("terminals", async () => {
       await api<PaymentSettingsView>("/payments/terminals", {
         operationId: crypto.randomUUID(),
         ...(current
@@ -184,7 +217,11 @@ export function PaymentSettings({
           PAYMENTS_LIMITS.commissionBpMax,
         );
       } catch {
-        setError(t("payInvalidPercent"));
+        setError(
+          `${t("payCommission")} · ${t(PLATFORM_KEYS[p.platform])}: ${t("payInvalidPercent")}`,
+          "platforms",
+          `commission:${p.platform}`,
+        );
         return;
       }
       platforms.push({
@@ -194,7 +231,7 @@ export function PaymentSettings({
         expectedVersion: p.version,
       });
     }
-    void run(() =>
+    void run("platforms", () =>
       api("/payments/platforms", {
         operationId: crypto.randomUUID(),
         platforms,
@@ -221,7 +258,11 @@ export function PaymentSettings({
           try {
             price = parseMoneyInput(typed, exponent);
           } catch {
-            setError(`${t("payInvalidPrice")} (${product.name[locale]})`);
+            setError(
+              `${product.name[locale]} · ${t(PLATFORM_KEYS[p.platform])}: ${t("payInvalidPrice")}`,
+              "prices",
+              `price:${key}`,
+            );
             return;
           }
         if ((row?.price ?? null) === price) continue;
@@ -233,10 +274,11 @@ export function PaymentSettings({
         });
       }
     if (!prices.length) {
-      setStatus(t("paySaved"));
+      setPricesDirty(false);
+      setStatus(t("paySaved"), "prices");
       return;
     }
-    void run(async () => {
+    void run("prices", async () => {
       for (let i = 0; i < prices.length; i += 400)
         await api("/payments/platform-prices", {
           operationId: crypto.randomUUID(),
@@ -245,7 +287,7 @@ export function PaymentSettings({
     });
   }
   async function setDefault(terminalId: string | null) {
-    await run(() =>
+    await run("device", () =>
       api(`/payments/devices/${session.deviceId}/terminal`, {
         operationId: crypto.randomUUID(),
         terminalId,
@@ -253,17 +295,30 @@ export function PaymentSettings({
     );
   }
 
+  /** The status or error of one section, under its own button (PAYMENTS-UX-6). */
+  const notice = (section: Section) =>
+    note?.section !== section ? null : note.error ? (
+      <p className="error" role="alert" id={`payments-${section}-error`}>
+        {note.error}
+      </p>
+    ) : (
+      <p className="notice" role="status">
+        {note.status}
+      </p>
+    );
+  /** aria-invalid and aria-describedby for the field an error names. */
+  const invalid = (section: Section, field: string) =>
+    note?.section === section && note.error && note.field === field
+      ? {
+          "aria-invalid": true as const,
+          "aria-describedby": `payments-${section}-error`,
+        }
+      : {};
   if (!view)
     return (
       <section className="panel payment-settings">
         <h2>{t("paySettingsTitle")}</h2>
-        {error ? (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        ) : (
-          <p>{t("loading")}</p>
-        )}
+        {note?.error ? notice("load") : <p>{t("loading")}</p>}
       </section>
     );
   const active = view.terminals.filter((x) => !x.archivedAt);
@@ -333,7 +388,7 @@ export function PaymentSettings({
                               )
                             )
                               return;
-                            void run(() =>
+                            void run("terminals", () =>
                               api(`/payments/terminals/${x.id}/archive`, {
                                 operationId: crypto.randomUUID(),
                                 expectedVersion: x.version,
@@ -369,6 +424,7 @@ export function PaymentSettings({
             value={fee}
             placeholder="1.75"
             disabled={busy || !online}
+            {...invalid("terminals", "fee")}
             onChange={(e) => setFee(e.target.value)}
           />
         </Field>
@@ -392,6 +448,7 @@ export function PaymentSettings({
           </Button>
         )}
       </div>
+      {notice("terminals")}
       <p className="muted tiny">
         {t("payFeeRateHint")} {t("payIntegratedSoon")}
       </p>
@@ -411,6 +468,7 @@ export function PaymentSettings({
           </select>
         </Field>
       )}
+      {notice("device")}
 
       <h3>{t("payPlatforms")}</h3>
       <p className="muted">{t("payPlatformsHint")}</p>
@@ -420,17 +478,18 @@ export function PaymentSettings({
             <label className="option">
               <input
                 type="checkbox"
-                checked={platformForm[p.platform]?.enabled ?? true}
+                checked={platformForm[p.platform]?.enabled ?? false}
                 disabled={busy || !online}
-                onChange={(e) =>
+                onChange={(e) => {
+                  setPlatformsDirty(true);
                   setPlatformForm((f) => ({
                     ...f,
                     [p.platform]: {
                       ...f[p.platform],
                       enabled: e.target.checked,
                     },
-                  }))
-                }
+                  }));
+                }}
               />
               {t(PLATFORM_KEYS[p.platform])}
             </label>
@@ -442,15 +501,17 @@ export function PaymentSettings({
                 value={platformForm[p.platform]?.commission ?? ""}
                 placeholder="30"
                 disabled={busy || !online}
-                onChange={(e) =>
+                {...invalid("platforms", `commission:${p.platform}`)}
+                onChange={(e) => {
+                  setPlatformsDirty(true);
                   setPlatformForm((f) => ({
                     ...f,
                     [p.platform]: {
                       ...f[p.platform],
                       commission: e.target.value,
                     },
-                  }))
-                }
+                  }));
+                }}
               />
             </Field>
           </div>
@@ -460,10 +521,16 @@ export function PaymentSettings({
       <Button disabled={busy || !online} onClick={savePlatforms}>
         {t("paySavePlatforms")}
       </Button>
+      {notice("platforms")}
 
       <h3>{t("payPlatformPrices")}</h3>
       <p className="muted">{t("payPlatformPricesHint")}</p>
-      {enabledPlatforms.length && catalog.length ? (
+      {!enabledPlatforms.length ? (
+        <p className="muted">{t("payPlatformPricesNone")}</p>
+      ) : !catalog.length ? (
+        // PAYMENTS-UX-16: platforms are on but the menu has no products yet.
+        <p className="muted">{t("payPlatformPricesNoProducts")}</p>
+      ) : (
         <>
           <Field label={t("payPlatformPricesSearch")}>
             <input
@@ -506,12 +573,14 @@ export function PaymentSettings({
                               exponent,
                             )}
                             disabled={busy || !online}
-                            onChange={(e) =>
+                            {...invalid("prices", `price:${key}`)}
+                            onChange={(e) => {
+                              setPricesDirty(true);
                               setPriceTexts((x) => ({
                                 ...x,
                                 [key]: e.target.value,
-                              }))
-                            }
+                              }));
+                            }}
                           />
                         </td>
                       );
@@ -524,20 +593,10 @@ export function PaymentSettings({
           <Button disabled={busy || !online} onClick={savePrices}>
             {t("paySavePrices")}
           </Button>
+          {notice("prices")}
         </>
-      ) : (
-        <p className="muted">{t("payPlatformPricesNone")}</p>
       )}
-      {status && (
-        <p className="notice" role="status">
-          {status}
-        </p>
-      )}
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
+      {notice("load")}
     </section>
   );
 }
