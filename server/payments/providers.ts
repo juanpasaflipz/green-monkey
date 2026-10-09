@@ -56,7 +56,8 @@ async function assertNoLiveForProvider(tx: Tx, provider: Provider) {
 }
 
 /**
- * POST /payments/providers/:provider/credentials (owner, step-up). Checks the format, seals
+ * POST /payments/providers/:provider/credentials (owner, step-up; allowed while charges are live).
+ * Checks the format, seals
  * {provider, credentials, hookToken} to the worker's published key bound to {tenant,
  * credentials_upload, row}, stores only the box and the hook hash, and queues the worker's
  * verification. The plaintext never touches the database, a log or operations.
@@ -84,7 +85,10 @@ export async function saveCredentials(
   )
     throw new DomainError("payments_credentials_invalid_format");
   await lockPaymentsConfig(tx, s);
-  await assertNoLiveForProvider(tx, provider);
+  // Never refused while charges are live (P2-MONEY-1, P2-PROVIDERS-1): a failed or rotated
+  // account is repaired here mid-service. In-flight attempts keep their poll chains (and their
+  // deadlines) while the new credentials are verified, and the worker re-reads each of them once
+  // the account is active again. Only a disconnect waits for them (spec §2.5).
   const [platform] =
     await tx`select providers,upload_kid,upload_public_jwk from payments_platform where id=1`;
   if (

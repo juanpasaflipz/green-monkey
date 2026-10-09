@@ -200,6 +200,21 @@ export async function credentialsHandler(ctx: JobContext): Promise<JobOutcome> {
         payload: { provider },
       },
     );
+    // The owner repaired the account while charges were in flight (saveCredentials allows it):
+    // re-read each of them now, which resumes a pending attempt's chain and lets an unknown one
+    // settle by itself if the provider has an answer.
+    const live = await tx`select id from payment_attempts
+      where provider=${provider} and state in ('pending','unknown') order by created_at limit 50`;
+    for (const r of live)
+      await enqueueJob(
+        tx,
+        { tenantId },
+        {
+          kind: "payments_webhook",
+          dedupeKey: `check:${r.id as string}:account:${secretId}`,
+          payload: { attemptId: r.id, source: "check" },
+        },
+      );
   });
   return { status: "done" };
 }

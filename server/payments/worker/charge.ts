@@ -20,6 +20,7 @@ import { ProviderError } from "./http.js";
 import {
   cancelPointOrder,
   createPointOrder,
+  getAccount,
   getPaymentDetail,
   getPointOrder,
   mapPointOrder,
@@ -32,10 +33,12 @@ import {
   cancelPinPadPayment,
   createPinPadPayment,
   getPinPadPayment,
+  listPinPadDevices,
   mapClipPayment,
   type ClipClient,
 } from "./clip.js";
 import {
+  accountUnusable,
   failAccount,
   lockAttempt,
   openAccount,
@@ -102,10 +105,20 @@ function deadline(a: WorkerAttempt): number {
 
 type Loaded = {
   attempt: WorkerAttempt;
-  account: ActiveAccount;
+  /** null when the account cannot be used now (verifying, failed, disabled, or its box cannot be
+   *  opened): `accountError` says why. The attempt still keeps its chain and its deadline. */
+  account: ActiveAccount | null;
+  accountError: string | null;
   feeBp: number | null;
 };
-/** Attempt, opened credentials and the terminal's fee rate, in one short transaction. */
+type Usable = Loaded & { account: ActiveAccount };
+const usable = (l: Loaded | null): l is Usable => Boolean(l?.account);
+/**
+ * Attempt, opened credentials and the terminal's fee rate, in one short transaction. An account
+ * that cannot be used is reported (never thrown): a pending attempt must still reach its deadline
+ * (P2-MONEY-1, P2-PROVIDERS-1, P2-CONCURRENCY-1). Any other failure throws, so the runner retries
+ * the job with back-off instead of ending a chain.
+ */
 async function load(
   ctx: JobContext,
   rt: PaymentsRuntime,
@@ -114,16 +127,74 @@ async function load(
   return ctx.tenant(async (tx) => {
     const attempt = await readAttempt(tx, attemptId);
     if (!attempt) return null;
-    const account = await openAccount(
-      tx,
-      rt,
-      ctx.job.tenantId,
-      attempt.provider,
-    );
+    let account: ActiveAccount | null = null;
+    let accountError: string | null = null;
+    try {
+      account = await openAccount(tx, rt, ctx.job.tenantId, attempt.provider);
+    } catch (e) {
+      accountError = accountUnusable(e);
+      if (!accountError) throw e;
+    }
     const [t] =
       await tx`select fee_bp from payment_terminals where id=${attempt.terminal_id}`;
-    return { attempt, account, feeBp: (t?.fee_bp as number | null) ?? null };
+    return {
+      attempt,
+      account,
+      accountError,
+      feeBp: (t?.fee_bp as number | null) ?? null,
+    };
   });
+}
+
+/**
+ * A 401/403 on an order or terminal call does not prove the credentials are bad (MP answers 403
+ * forbidden_checking_terminal_owner for a device linked to another account): the account fails
+ * only when the provider's own verification call refuses them too (MP GET /users/me, Clip GET
+ * /devices/status: what payments_credentials verifies with). true = refused, false = valid,
+ * null = could not tell (network, 5xx).
+ */
+async function credentialsRefused(
+  rt: PaymentsRuntime,
+  account: ActiveAccount,
+  signal: AbortSignal,
+): Promise<boolean | null> {
+  try {
+    if (account.credentials.provider === "mercadopago")
+      await getAccount(mpClient(rt, account, signal));
+    else await listPinPadDevices(clipClient(rt, account, signal));
+    return false;
+  } catch (e) {
+    if (e instanceof ProviderError && e.code === "payments_credentials_rejected")
+      return true;
+    return null;
+  }
+}
+
+/** Fails the account (and alerts once) when the verification call refuses its credentials. */
+async function failIfRefused(
+  ctx: JobContext,
+  rt: PaymentsRuntime,
+  provider: WorkerAttempt["provider"],
+  account: ActiveAccount,
+): Promise<boolean> {
+  if ((await credentialsRefused(rt, account, ctx.signal)) !== true)
+    return false;
+  const moved = await ctx.tenant((tx) =>
+    failAccount(
+      tx,
+      provider,
+      "payments_credentials_rejected",
+      account.secretId,
+    ),
+  );
+  if (moved)
+    raise(rt, {
+      key: `payments_account_failed_${tenantTag(ctx.job.tenantId)}`,
+      severity: "warning",
+      title: "payments provider credentials refused",
+      body: `payments_account_failed tenant=${tenantTag(ctx.job.tenantId)} provider=${provider}`,
+    });
+  return true;
 }
 
 type Read = ProviderRead & {
@@ -134,7 +205,7 @@ type Read = ProviderRead & {
 /** One provider read of an attempt with a reference (outside any transaction). */
 async function readProvider(
   rt: PaymentsRuntime,
-  l: Loaded,
+  l: Usable,
   signal: AbortSignal,
 ): Promise<Read | null> {
   const a = l.attempt;
@@ -300,6 +371,26 @@ async function schedulePoll(
 }
 const newChain = () => Math.random().toString(36).slice(2, 10);
 
+/**
+ * Starts a poll chain for a pending attempt unless one is already queued or running (a re-read
+ * that found it still pending, or an unknown attempt the provider shows pending again): one chain
+ * per attempt, never two (P2-CONCURRENCY-1 fix 2).
+ */
+async function ensureChain(tx: Tx, tenantId: string, attemptId: string) {
+  const [live] = await tx`select 1 from jobs
+    where kind='payments_poll' and state in ('queued','available','running')
+      and payload->>'attemptId'=${attemptId} limit 1`;
+  if (!live)
+    await schedulePoll(
+      tx,
+      tenantId,
+      attemptId,
+      newChain(),
+      1,
+      PAYMENTS_LIMITS.pollFastMs,
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 
 /** payments_push: created → sending → pending (or declined / unknown). */
@@ -314,32 +405,45 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
       afterMs: 60_000,
     };
   const tenantId = ctx.job.tenantId;
+  let unknownWithoutCall = false;
   const step = await ctx.tenant(async (tx) => {
     const a = await lockAttempt(tx, attemptId);
     if (!a || (a.state !== "created" && a.state !== "sending")) return null;
-    const decline = async (code: string) => {
-      if (a.state === "created")
+    // Nothing can be sent now. A `created` attempt never reached the provider: declined. A
+    // `sending` one (an earlier run committed it before its call) may be on the terminal: unknown,
+    // never a decline that would free the order and the terminal.
+    const giveUp = async (code: string) => {
+      if (a.state === "created") {
         await tx`update payment_attempts set state='sending',sent_at=now(),version=version+1
           where id=${attemptId}`;
-      await tx`update payment_attempts set state='declined',error_code=${code},decided_at=now(),
+        await tx`update payment_attempts set state='declined',error_code=${code},decided_at=now(),
+            version=version+1 where id=${attemptId}`;
+        await workerEvent(tx, tenantId, attemptId, "declined", { code });
+        return null;
+      }
+      const unknownCode =
+        a.provider === "clip"
+          ? "payments_clip_create_outcome_unknown"
+          : "payments_provider_unreachable";
+      await tx`update payment_attempts set state='unknown',error_code=${unknownCode},
           version=version+1 where id=${attemptId}`;
-      await workerEvent(tx, tenantId, attemptId, "declined", { code });
+      await workerEvent(tx, tenantId, attemptId, "unknown", {
+        code: unknownCode,
+        before: "sending",
+        source: code,
+      });
+      unknownWithoutCall = true;
       return null;
     };
     if (!rt.providers.includes(a.provider))
-      return decline("payments_provider_unavailable");
+      return giveUp("payments_provider_unavailable");
     let account: ActiveAccount;
     try {
       account = await openAccount(tx, rt, tenantId, a.provider);
     } catch (e) {
-      const code = (e as { code?: string }).code ?? "";
-      return decline(
-        /^payments_[a-z_]+$/.test(code)
-          ? code.startsWith("payments_vault")
-            ? "payments_provider_not_configured"
-            : code
-          : "payments_provider_not_configured",
-      );
+      const code = accountUnusable(e);
+      if (!code) throw e;
+      return giveUp(code);
     }
     if (a.state === "sending" && a.provider === "clip") {
       // A previous run died between committing `sending` and recording Clip's answer: Clip has
@@ -363,6 +467,7 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
     const description = o ? `Orden ${o.number}` : a.terminal_label;
     return { a, account, description, clipUnknown: false };
   });
+  if (unknownWithoutCall) raise(rt, unknownAlert(tenantId, "create"));
   if (!step) return { status: "done" };
   const { a, account } = step;
   if (step.clipUnknown) {
@@ -396,6 +501,13 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
       ).pinpadRequestId;
   } catch (e) {
     if (!(e instanceof ProviderError)) throw e;
+    if (e.code === "payments_credentials_rejected") {
+      // A 401/403 on the create: the account fails only if its verification call is refused too;
+      // otherwise MP refused this terminal (403 forbidden_checking_terminal_owner: a device linked
+      // to another account), which declines this charge and leaves the account alone.
+      if (!(await failIfRefused(ctx, rt, a.provider, account)) && e.status === 403)
+        e.code = "payments_terminal_not_linked";
+    }
     if (e.retryable && a.provider === "mercadopago" && ctx.job.attempts < 3)
       // Same idempotency key on the next run: MP returns the same order if it exists.
       return {
@@ -427,8 +539,6 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
           httpStatus: e.status,
         },
       );
-      if (e.code === "payments_credentials_rejected")
-        await failAccount(tx, a.provider, e.code);
     });
     if (unknown) {
       if (a.provider === "clip") await withdrawBySerial(ctx, rt, a, account);
@@ -538,32 +648,45 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
       afterMs: 60_000,
     };
   const tenantId = ctx.job.tenantId;
-  let loaded: Loaded | null;
-  try {
-    loaded = await load(ctx, rt, attemptId);
-  } catch {
-    loaded = null;
-  }
+  // A database failure throws here: the runner retries this link with back-off (never "done",
+  // which would end the chain with the attempt pending).
+  const loaded = await load(ctx, rt, attemptId);
   const a = loaded?.attempt;
   if (!loaded || !a || a.state !== "pending" || !a.provider_reference)
     return { status: "done" };
-  const next = async (afterMs: number) =>
+  /** The chain's next link, or `unknown` once the deadline passed (the only pending → unknown). */
+  const next = async (afterMs: number, timeoutCode = "payments_attempt_timeout") =>
     ctx.tenant(async (tx) => {
       const now = await readAttempt(tx, attemptId);
       if (now?.state !== "pending") return;
       if (Date.now() > deadline(now)) {
         const locked = await lockAttempt(tx, attemptId);
         if (locked?.state !== "pending") return;
-        await tx`update payment_attempts set state='unknown',error_code='payments_attempt_timeout',
+        await tx`update payment_attempts set state='unknown',error_code=${timeoutCode},
             version=version+1 where id=${attemptId}`;
         await workerEvent(tx, tenantId, attemptId, "unknown", {
-          code: "payments_attempt_timeout",
+          code: timeoutCode,
         });
-        raise(rt, unknownAlert(tenantId, "no_final_status"));
+        raise(
+          rt,
+          unknownAlert(
+            tenantId,
+            timeoutCode === "payments_attempt_timeout"
+              ? "no_final_status"
+              : "account_unusable",
+          ),
+        );
         return;
       }
       await schedulePoll(tx, tenantId, attemptId, chain, seq + 1, afterMs);
     });
+  if (!usable(loaded)) {
+    // The account is verifying, failed or disabled, or its box cannot be opened: no read is
+    // possible, but the chain lives on (slow cadence) so the attempt still reaches its deadline,
+    // and resumes reading as soon as the owner reconnects.
+    await next(PAYMENTS_LIMITS.pollSlowMs, loaded.accountError!);
+    return { status: "done" };
+  }
   const elapsed = Date.now() - new Date(a.sent_at ?? a.created_at).getTime();
   const cadence =
     elapsed < PAYMENTS_LIMITS.pollFastForMs
@@ -575,7 +698,7 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
   } catch (e) {
     if (!(e instanceof ProviderError)) throw e;
     if (e.code === "payments_credentials_rejected")
-      await ctx.tenant((tx) => failAccount(tx, a.provider, e.code));
+      await failIfRefused(ctx, rt, a.provider, loaded.account);
     // A read failure never changes the attempt: keep polling (429: MP's observed back-off).
     await next(e.retryAfterMs ?? Math.max(cadence, PAYMENTS_LIMITS.pollSlowMs));
     return { status: "done" };
@@ -615,13 +738,15 @@ export async function cancelHandler(ctx: JobContext): Promise<JobOutcome> {
     return { status: "retry", code: "payments_cancel_waiting", afterMs: 2000 };
   if (head.state !== "pending" && head.state !== "unknown")
     return { status: "done" };
-  let loaded: Loaded | null;
-  try {
-    loaded = await load(ctx, rt, attemptId);
-  } catch {
-    return { status: "done" };
-  }
+  const loaded = await load(ctx, rt, attemptId);
   if (!loaded) return { status: "done" };
+  if (!usable(loaded))
+    // No provider call possible now: try again later (the owner may be reconnecting).
+    return {
+      status: "retry",
+      code: loaded.accountError ?? "payments_provider_not_configured",
+      afterMs: 30_000,
+    };
   const a = loaded.attempt;
   if (!a.provider_reference) {
     if (a.provider === "clip")
@@ -693,14 +818,16 @@ export async function webhookHandler(ctx: JobContext): Promise<JobOutcome> {
       afterMs: 30_000,
     };
   const tenantId = ctx.job.tenantId;
-  let loaded: Loaded | null;
-  try {
-    loaded = await load(ctx, rt, attemptId);
-  } catch {
-    return { status: "done" };
-  }
+  const loaded = await load(ctx, rt, attemptId);
   if (!loaded) return { status: "done" };
   const a = loaded.attempt;
+  if (!usable(loaded)) {
+    // Nothing can be verified or read now. A pending attempt keeps (or regains) its chain, which
+    // carries it to its deadline.
+    if (a.state === "pending")
+      await ctx.tenant((tx) => ensureChain(tx, tenantId, attemptId));
+    return { status: "done" };
+  }
   if (source === "mercadopago") {
     const str = (v: unknown) => (typeof v === "string" ? v : null);
     const valid =
@@ -743,15 +870,9 @@ export async function webhookHandler(ctx: JobContext): Promise<JobOutcome> {
   if (!read) return { status: "done" };
   await ctx.tenant(async (tx) => {
     const outcome = await applyRead(tx, rt, tenantId, attemptId, read, source);
-    if (outcome === "restart")
-      await schedulePoll(
-        tx,
-        tenantId,
-        attemptId,
-        newChain(),
-        1,
-        PAYMENTS_LIMITS.pollFastMs,
-      );
+    // Still (or again) pending: make sure a chain carries it to its deadline.
+    if (outcome === "restart" || outcome === "continue")
+      await ensureChain(tx, tenantId, attemptId);
   });
   return { status: "done" };
 }

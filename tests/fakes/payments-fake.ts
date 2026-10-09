@@ -9,7 +9,8 @@
  *     "server5xx", "timeout" (the connection drops with no answer: a lost create),
  *     "clipCreateTimeout" (alias of timeout for Clip), "belowMin", "reusedOrderId" (MP: 201 with
  *     the id of the fake's newest MP order, an answer the restaurant cannot record twice, so the
- *     push fails on every claim; the same key keeps getting that answer)
+ *     push fails on every claim; the same key keeps getting that answer), "terminalNotOwned" (MP:
+ *     403 forbidden_checking_terminal_owner, a device linked to another account; the token is fine)
  *   fake.approve(ref, {paid?, tip?, brand?, type?, last4?, fee?})   paid at the terminal
  *   fake.decline(ref) / fake.expire(ref) / fake.cancelOnTerminal(ref) / fake.refund(ref)
  *   fake.lateApproval(ref, ms, o?)                                 approve after ms
@@ -42,7 +43,8 @@ export type Behaviour =
   | "timeout"
   | "clipCreateTimeout"
   | "belowMin"
-  | "reusedOrderId";
+  | "reusedOrderId"
+  | "terminalNotOwned";
 type Approval = {
   paid?: number;
   tip?: number;
@@ -367,6 +369,15 @@ export async function startPaymentsFake(
           });
         if (behaviour === "rateLimit429") return send(res, 429, {});
         if (behaviour === "server5xx") return send(res, 503, {});
+        if (behaviour === "terminalNotOwned")
+          return send(res, 403, {
+            errors: [
+              {
+                code: "forbidden_checking_terminal_owner",
+                message: "The Point terminal does not belong to the user",
+              },
+            ],
+          });
         if (behaviour === "reusedOrderId") {
           const newest = [...charges.values()]
             .filter((x) => x.provider === "mercadopago")

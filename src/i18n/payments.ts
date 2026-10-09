@@ -797,6 +797,10 @@ export default defineArea({
       "La terminal no está conectada.",
       "The terminal is not connected.",
     ],
+    payments_terminal_not_linked: [
+      "Mercado Pago dice que esta terminal no pertenece a la cuenta conectada. Revisa la terminal en Configuración.",
+      "Mercado Pago says this terminal does not belong to the connected account. Check the terminal in Settings.",
+    ],
     payments_terminal_queue_busy: [
       "La terminal tiene un cobro pendiente. Cancélalo en la terminal o reiníciala.",
       "The terminal has a pending charge. Cancel it on the terminal or restart it.",

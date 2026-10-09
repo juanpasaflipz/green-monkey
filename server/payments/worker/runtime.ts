@@ -13,7 +13,11 @@ import type { Tx } from "../../db.js";
 import type { Alert } from "../../ops/alerts.js";
 import type { Keyring } from "../../cfdi/config.js";
 import { enqueueJob } from "../../jobs.js";
-import { paymentsVault, type PaymentSecretPurpose } from "../../vault/vault.js";
+import {
+  paymentsVault,
+  VaultError,
+  type PaymentSecretPurpose,
+} from "../../vault/vault.js";
 import type { AttemptState, Provider } from "../../../shared/payments.js";
 
 export type PaymentsRuntime = {
@@ -180,6 +184,8 @@ export function parseCredentials(text: string): Credentials | null {
 
 export type ActiveAccount = {
   providerAccountId: string | null;
+  /** The payment_secrets row these credentials came from (failAccount fails only that one). */
+  secretId: string;
   credentials: Credentials;
 };
 
@@ -222,19 +228,44 @@ export async function openAccount(
     throw new PaymentsJobError("payments_vault_malformed");
   return {
     providerAccountId: (account.provider_account_id as string | null) ?? null,
+    secretId: secret.id as string,
     credentials,
   };
 }
 
-/** The account's credentials were refused by the provider: it fails until the owner reconnects. */
+/**
+ * openAccount's refusal as a code when the account cannot be used right now (not active: verifying,
+ * failed or disabled; or its box cannot be opened), so no provider call is possible; null for any
+ * other failure (a database error), which the caller rethrows so the runner retries the job. An
+ * attempt in flight keeps its poll chain and its deadline through such a refusal (PAYMENTS P2
+ * fix round: P2-MONEY-1, P2-PROVIDERS-1, P2-CONCURRENCY-1).
+ */
+export function accountUnusable(e: unknown): string | null {
+  if (e instanceof VaultError) return "payments_provider_not_configured";
+  if (e instanceof PaymentsJobError)
+    return e.code.startsWith("payments_vault")
+      ? "payments_provider_not_configured"
+      : e.code;
+  return null;
+}
+
+/**
+ * The account's credentials were refused by the provider's own verification call (never a single
+ * 401/403 on an order or a terminal): it fails until the owner reconnects. Only while it still
+ * holds the refused credentials (`secretId`): a job that opened them before the owner reconnected
+ * never fails the repaired account. True when this call moved it from active to failed.
+ */
 export async function failAccount(
   tx: Tx,
   provider: Provider,
   code: string,
-): Promise<void> {
-  await tx`update payment_provider_accounts set state='failed',error_code=${code},
+  secretId: string,
+): Promise<boolean> {
+  const rows = await tx`update payment_provider_accounts set state='failed',error_code=${code},
       version=version+1,updated_at=now()
-    where provider=${provider} and state='active'`;
+    where provider=${provider} and state='active' and credential_secret_id=${secretId}
+    returning provider`;
+  return rows.length > 0;
 }
 
 /** Queues the web's payments_settle (LO-R8: keyed by the attempt, the step's own id). */

@@ -2254,6 +2254,117 @@ try {
         await cancelCreated((r.value as AttemptView).id);
   });
 
+  await test("stranded charges (P2-MONEY-1, P2-PROVIDERS-1, P2-CONCURRENCY-1): a rotated MP token fails the account only after MP's own verification refuses it; every pending MP charge keeps its poll chain and reaches unknown at its deadline; the owner reconnects while charges are live and the worker re-reads them; a 403 for a terminal of another account declines that charge and leaves the account alone", async () => {
+    const pollsQueued = async (attemptId: string) =>
+      count(
+        A,
+        (tx) => tx`select count(*)::int as n from jobs where kind='payments_poll'
+          and state in ('queued','available','running') and payload->>'attemptId'=${attemptId}`,
+      );
+    const o1 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const o2 = await newOrder(cashier, [{ product: ids.taco, quantity: 2 }]);
+    const a1 = await pending(o1, terminals.mp);
+    const a2 = await pending(o2, terminals.mpStandalone);
+    // The owner rotates the token in MP's panel during service: every call with the old one is 401.
+    const oldToken = fake.mp.accessToken;
+    const rotated = "TEST-mp-rotated-token-not-real-0001";
+    fake.mp.accessToken = rotated;
+    const alertsBefore = alerts.length;
+    await round(A);
+    assert.deepEqual((await caps(A)).mercadopago, {
+      enabled: false,
+      reason: "payments_credentials_rejected",
+    });
+    assert.ok(
+      fake.requests.some((r) => r.path === "/mp/users/me"),
+      "the account failed only after its verification call was refused",
+    );
+    assert.ok(
+      alerts
+        .slice(alertsBefore)
+        .some((x) => /payments_account_failed .*provider=mercadopago/.test(x.body)),
+    );
+    // Both charges stay pending with a live chain (before: the chain ended with the first link
+    // whose account could not be opened, and nothing could ever move them again).
+    await round(A);
+    await round(A);
+    for (const a of [a1, a2]) {
+      assert.equal(await stateOf(a.id), "pending");
+      assert.equal(await pollsQueued(a.id), 1, "one live chain per charge");
+    }
+    // «Volver a consultar» while the account is failed keeps one chain (never two).
+    await resolve(cashier, a1.id, { outcome: "check" });
+    await round(A);
+    assert.equal(await pollsQueued(a1.id), 1);
+    // The diner pays a1 on the terminal; MP's notification cannot be matched (account failed).
+    fake.approve(a1.ref, { ...TEST_CARD });
+    // At the deadline (expiry + 2 min) both become unknown: resolvable, alerted, never stuck.
+    await asOwner(
+      A,
+      (tx) => tx`update payment_attempts set sent_at = now() - interval '13 minutes'
+        where id in (${a1.id}, ${a2.id})`,
+    );
+    await round(A);
+    for (const a of [a1, a2]) {
+      const row = await attemptRow(a.id);
+      assert.deepEqual(
+        [row.state, row.error_code],
+        ["unknown", "payments_provider_not_configured"],
+      );
+      assert.equal(await pollsQueued(a.id), 0);
+    }
+    assert.ok(
+      alerts
+        .slice(alertsBefore)
+        .some((x) => /payments_attempt_unknown .*reason=account_unusable/.test(x.body)),
+    );
+    // The owner repairs the account while both charges are live (before: payments_attempts_live).
+    const repaired = await write(owner, (tx) =>
+      saveCredentials(
+        tx,
+        fresh(A, ids.owner, "owner"),
+        "mercadopago",
+        { accessToken: rotated, webhookSecret: FAKE.mpSecret },
+        { appEnv: "test", appUrl: "https://pos.example.test" },
+      ),
+    );
+    hooks.mercadopago = repaired.webhookUrl;
+    // Verified, active, and each live charge is re-read: a1 was paid → settled by itself.
+    assert.equal(await drive(a1.id, ["settled"]), "settled");
+    assert.deepEqual((await caps(A)).mercadopago, { enabled: true });
+    assert.equal((await tenderOf(a1.id)).length, 1);
+    // a2 is still on the terminal at MP: pending again with a chain; the cashier cancels it.
+    assert.equal(await drive(a2.id, ["pending"]), "pending");
+    await write(cashier, (tx) =>
+      requestCancel(tx, cashier, a2.id, { operationId: randomUUID() }),
+    );
+    assert.equal(await drive(a2.id, ["cancelled"]), "cancelled");
+    // A 403 for a terminal linked to another account declines that charge only.
+    const o3 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    fake.next("mercadopago", "terminalNotOwned");
+    const v3 = await start(cashier, o3.id, terminals.mp, o3.total);
+    assert.equal(await drive(v3.id, ["declined", "unknown", "pending"]), "declined");
+    assert.equal(
+      (await attemptRow(v3.id)).error_code,
+      "payments_terminal_not_linked",
+    );
+    assert.deepEqual((await caps(A)).mercadopago, { enabled: true });
+    // The suite's other restaurant still uses the original token: put it back for both.
+    fake.mp.accessToken = oldToken;
+    const back = await write(owner, (tx) =>
+      saveCredentials(
+        tx,
+        fresh(A, ids.owner, "owner"),
+        "mercadopago",
+        { accessToken: oldToken, webhookSecret: FAKE.mpSecret },
+        { appEnv: "test", appUrl: "https://pos.example.test" },
+      ),
+    );
+    hooks.mercadopago = back.webhookUrl;
+    await drain(A);
+    assert.deepEqual((await caps(A)).mercadopago, { enabled: true });
+  });
+
   await test("vault rekey (LD-76 deviation 1): with a new key first, a credential is re-sealed on use and vault:rekey lists both restaurants through 037's worker listing policy and re-seals the rest under the new kid (counts only, no value logged); the listing needs its flag and gives the web login nothing; charging works once the old key is dropped", async () => {
     const secrets = async (tenantId: string) =>
       Object.fromEntries(
@@ -2416,6 +2527,7 @@ try {
     );
     const values = [
       FAKE.mpToken,
+      "TEST-mp-rotated-token-not-real-0001",
       FAKE.mpSecret,
       FAKE.clipKey,
       FAKE.clipSecret,
