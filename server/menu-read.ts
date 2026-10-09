@@ -2,14 +2,25 @@
 import type { Tx } from "./db.js";
 import type { Product } from "../shared/domain.js";
 
-/** Sellable catalog (archived products excluded) in POS order. */
+/**
+ * Sellable catalog (archived products excluded) in POS order. payments (037, LD-72): each
+ * product carries its platform prices (`platformPrices`, only the set ones) in the same
+ * statement; the diner catalog strips them.
+ */
 export async function catalog(tx: Tx): Promise<Product[]> {
   return (
-    await tx`select data from catalog
-      where not coalesce((data->>'archived')::boolean, false)
-      order by coalesce((data->>'categoryPosition')::int, 2147483647), data->'category'->>'es',
-               coalesce((data->>'position')::int, 2147483647), data->'name'->>'es', id`
-  ).map((r) => r.data as Product);
+    await tx`select c.data,
+        (select jsonb_object_agg(pp.platform, pp.price) from payment_platform_prices pp
+          where pp.product_id = c.id and pp.price is not null) as platform_prices
+      from catalog c
+      where not coalesce((c.data->>'archived')::boolean, false)
+      order by coalesce((c.data->>'categoryPosition')::int, 2147483647), c.data->'category'->>'es',
+               coalesce((c.data->>'position')::int, 2147483647), c.data->'name'->>'es', c.id`
+  ).map((r) =>
+    r.platform_prices
+      ? ({ ...r.data, platformPrices: r.platform_prices } as Product)
+      : (r.data as Product),
+  );
 }
 
 /** QR/kiosk catalog: no open-price products and no recipes, costs or fiscal data. */
@@ -18,15 +29,24 @@ export async function publicCatalog(tx: Tx) {
     (await catalog(tx))
       .filter((p) => !p.openAmount)
       // fiscal (027): a product's tax category and SAT keys stay off the diner payload.
-      .map(({ recipe: _recipe, cost: _cost, fiscal: _fiscal, ...p }) => ({
-        ...p,
-        groups: p.groups.map((g) => ({
-          ...g,
-          options: g.options.map(
-            ({ recipe: _optionRecipe, cost: _optionCost, ...o }) => o,
-          ),
-        })),
-      }))
+      // payments (037): platform prices are staff-only (LD-72).
+      .map(
+        ({
+          recipe: _recipe,
+          cost: _cost,
+          fiscal: _fiscal,
+          platformPrices: _platformPrices,
+          ...p
+        }) => ({
+          ...p,
+          groups: p.groups.map((g) => ({
+            ...g,
+            options: g.options.map(
+              ({ recipe: _optionRecipe, cost: _optionCost, ...o }) => o,
+            ),
+          })),
+        }),
+      )
   );
 }
 

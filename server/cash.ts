@@ -140,7 +140,10 @@ export async function drawerBreakdown(
   tx: Tx,
   drawerId: string,
   opts: { fees: boolean },
-): Promise<{ byTerminal: DrawerTerminalRow[]; platforms: DrawerPlatformRow[] }> {
+): Promise<{
+  byTerminal: DrawerTerminalRow[];
+  platforms: DrawerPlatformRow[];
+}> {
   const rows = await tx`with x as (
       select t.method,t.terminal_id,t.platform,t.terminal_label,t.created_at,
         t.amount,t.tip,0 as refund,t.fee,t.fee_source,1 as n,
@@ -485,9 +488,7 @@ export async function closeDrawerRow(
   )
     throw new DomainError("reason_required");
   const reports = p.terminalReports ?? [];
-  if (
-    new Set(reports.map((r) => r.terminalId ?? "")).size !== reports.length
-  )
+  if (new Set(reports.map((r) => r.terminalId ?? "")).size !== reports.length)
     throw new DomainError("invalid_input");
   // external_reported stays the sum of the batch totals (old readers).
   const externalReported =
@@ -509,8 +510,7 @@ export async function closeDrawerRow(
   if (!closed.length) throw new DomainError("drawer_required", 409);
   for (const r of reports) {
     const expected =
-      breakdown.byTerminal.find((b) => b.terminalId === r.terminalId)?.net ??
-      0;
+      breakdown.byTerminal.find((b) => b.terminalId === r.terminalId)?.net ?? 0;
     if (r.terminalId) {
       const [terminal] =
         await tx`select id from payment_terminals where id=${r.terminalId}`;

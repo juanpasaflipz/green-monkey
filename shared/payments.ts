@@ -2,7 +2,14 @@
 // platform price lists, attempt states, request schemas and pure helpers shared
 // by the server and the client. Leaf module: zod and ./domain.js only.
 import { z } from "zod";
-import { id, money, type Label, type Product } from "./domain.js";
+import {
+  id,
+  listPrice,
+  money,
+  PRICE_PLATFORMS,
+  type Label,
+  type PricePlatform,
+} from "./domain.js";
 
 /**
  * Every value of tenders.method (037's tenders_method_check). Readers map these
@@ -18,8 +25,9 @@ export function isTenderMethod(value: unknown): value is TenderMethod {
 }
 export const PROVIDERS = ["mercadopago", "clip"] as const;
 export type Provider = (typeof PROVIDERS)[number];
-export const PLATFORMS = ["uber_eats", "rappi", "didi_food", "other"] as const;
-export type PlatformCode = (typeof PLATFORMS)[number];
+/** Delivery platforms (and their price lists, LD-72); declared in shared/domain.ts. */
+export const PLATFORMS = PRICE_PLATFORMS;
+export type PlatformCode = PricePlatform;
 export const TERMINAL_KINDS = [
   "manual",
   "mercadopago_point",
@@ -198,18 +206,7 @@ export function platformLabel(
 
 /** Platform prices of one product (LD-72): absent = the POS price. */
 export type PlatformPrices = Partial<Record<PlatformCode, number>>;
-/**
- * The base price a product sells at under a price list: its platform price when
- * one is set, otherwise the POS price. Modifier prices stay the POS ones.
- */
-export function listPrice(
-  product: Pick<Product, "price"> & { platformPrices?: PlatformPrices },
-  platform: PlatformCode | null | undefined,
-): number {
-  if (!platform) return product.price;
-  const p = product.platformPrices?.[platform];
-  return typeof p === "number" ? p : product.price;
-}
+export { listPrice };
 
 export const paymentMethodInput = z.enum(TENDER_METHODS);
 /**
@@ -304,7 +301,8 @@ export const savePlatformsInput = z
   })
   .strict()
   .refine(
-    (v) => new Set(v.platforms.map((p) => p.platform)).size === v.platforms.length,
+    (v) =>
+      new Set(v.platforms.map((p) => p.platform)).size === v.platforms.length,
     { message: "duplicate_platform" },
   );
 export const savePlatformPricesInput = z

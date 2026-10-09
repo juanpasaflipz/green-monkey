@@ -105,10 +105,11 @@ CREATE TABLE payment_platform_prices(
 );
 
 -- 4. Default terminal per POS device (server-side, so every browser on a paired device agrees).
+--    terminal_id NULL = cleared (rows are never deleted).
 CREATE TABLE payment_device_terminals(
   tenant_id uuid NOT NULL,
   device_id uuid NOT NULL,
-  terminal_id uuid NOT NULL,
+  terminal_id uuid,
   updated_at timestamptz NOT NULL DEFAULT now(),
   updated_by uuid NOT NULL,
   PRIMARY KEY (tenant_id, device_id),

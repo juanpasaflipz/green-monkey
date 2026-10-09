@@ -10,6 +10,7 @@ import {
   quote,
   sum,
   type LineInput,
+  type PricePlatform,
   type Order,
   type Session,
 } from "../shared/domain.js";
@@ -259,6 +260,8 @@ export async function verifyLines(
   lines: LineInput[],
   snapshots: unknown[] | undefined,
   expectedTotal: number,
+  /** payments (037, LD-72): the order's platform price list (null = POS prices). */
+  priceList: PricePlatform | null = null,
 ) {
   const productIds = [...new Set(lines.map((line) => line.productId))].sort();
   // Hold the catalog revisions until commit so a concurrent edit cannot change
@@ -267,7 +270,13 @@ export async function verifyLines(
     await tx`select id,data from catalog where id=any(${tx.array(productIds)}::uuid[]) order by id for share`;
   // Staff path: open-price lines are valid evidence (contract D11). Synced
   // orders and rounds snapshot tax with the server's fiscal context (027).
-  const priced = quote(lines, await catalog(tx), true, await fiscalContext(tx));
+  const priced = quote(
+    lines,
+    await catalog(tx),
+    true,
+    await fiscalContext(tx),
+    priceList,
+  );
   const problem = linesProblem(
     lines,
     snapshots,
@@ -420,7 +429,13 @@ export async function resolveOrCreateOrder(
       );
     return { orderId: created.orderId, reused: true };
   }
-  await verifyLines(tx, p.order.lines, snapshotLines(p), p.expectedTotal);
+  await verifyLines(
+    tx,
+    p.order.lines,
+    snapshotLines(p),
+    p.expectedTotal,
+    p.order.pricePlatform ?? null,
+  );
   await assertLinesNotRecorded(tx, p.order.lines);
   // Business date from the validated sale time, never the sync time (I12).
   const order = await createOrder(

@@ -85,7 +85,8 @@ export default defineArea({
     cashCardByTerminal: "Tarjeta por terminal",
     cashBatchTotal: "Total del lote",
     cashBatchDifference: "Diferencia del lote",
-    cashPlatforms: "Pagado por plataformas (no cuenta como efectivo ni tarjeta)",
+    cashPlatforms:
+      "Pagado por plataformas (no cuenta como efectivo ni tarjeta)",
     cashUnresolvedAttempts:
       "Hay cobros en terminal sin resolver. Un gerente debe resolverlos antes de cerrar.",
     cashTerminalFees: "Comisiones estimadas",
@@ -97,7 +98,8 @@ export default defineArea({
     cfdiPlatformForm: "Forma de pago SAT para pedidos pagados por plataforma",
     cfdiPlatformFormHint:
       "Confírmala con tu contador antes de facturar en vivo. Nunca se usa 99 (se timbra PUE).",
-    cfdiForm31: "31 Intermediario pagos (recomendado; confirma con tu contador)",
+    cfdiForm31:
+      "31 Intermediario pagos (recomendado; confirma con tu contador)",
     cfdiForm03: "03 Transferencia electrónica de fondos",
     cfdiForm04: "04 Tarjeta de crédito",
     cfdiForm28: "28 Tarjeta de débito",
@@ -111,6 +113,11 @@ export default defineArea({
     payReportsMarginAfterFees: "Margen después de comisiones",
     payReportsPlatformSales: "Plataformas",
     payRefundPlatform: "Reembolso por plataforma (sin efectivo)",
+    payOpTerminalSaved: "Terminal guardada",
+    payOpTerminalArchived: "Terminal archivada",
+    payOpPlatformsSaved: "Plataformas guardadas",
+    payOpPlatformPricesSaved: "Precios por plataforma guardados",
+    payOpDeviceTerminalSet: "Terminal predeterminada del dispositivo",
   },
   en: {
     payMethodCash: "Cash",
@@ -139,8 +146,7 @@ export default defineArea({
     payPriceListPos: "Counter",
     payPriceListHint:
       "Products take the platform's price; without their own price, the counter price.",
-    payPriceListLocked:
-      "The order uses {platform} prices. New rounds do too.",
+    payPriceListLocked: "The order uses {platform} prices. New rounds do too.",
     paySettingsTitle: "Card and platform payments",
     paySettingsHint:
       "Card terminals with their fees, delivery platforms and their prices. Only owners and managers see fees.",
@@ -199,7 +205,8 @@ export default defineArea({
     cfdiPlatformForm: "SAT payment form for platform-paid orders",
     cfdiPlatformFormHint:
       "Confirm it with your accountant before invoicing live. 99 is never used (invoices are PUE).",
-    cfdiForm31: "31 Payment intermediary (recommended; confirm with your accountant)",
+    cfdiForm31:
+      "31 Payment intermediary (recommended; confirm with your accountant)",
     cfdiForm03: "03 Electronic funds transfer",
     cfdiForm04: "04 Credit card",
     cfdiForm28: "28 Debit card",
@@ -212,6 +219,11 @@ export default defineArea({
     payReportsMarginAfterFees: "Margin after fees",
     payReportsPlatformSales: "Platforms",
     payRefundPlatform: "Platform refund (no cash)",
+    payOpTerminalSaved: "Terminal saved",
+    payOpTerminalArchived: "Terminal archived",
+    payOpPlatformsSaved: "Platforms saved",
+    payOpPlatformPricesSaved: "Platform prices saved",
+    payOpDeviceTerminalSet: "Device default terminal",
   },
   errors: {
     payments_provider_unavailable: [

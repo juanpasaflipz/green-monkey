@@ -25,6 +25,18 @@ export class DomainError extends Error {
 }
 export const money = z.number().int().min(0).max(100_000_000);
 export const id = z.string().uuid();
+/**
+ * payments (037, LD-72): the delivery platforms, which are also price lists. Declared here (not in
+ * shared/payments.ts, which re-exports it as PLATFORMS) so orderInput and quote() need no import
+ * from a module that imports this one.
+ */
+export const PRICE_PLATFORMS = [
+  "uber_eats",
+  "rappi",
+  "didi_food",
+  "other",
+] as const;
+export type PricePlatform = (typeof PRICE_PLATFORMS)[number];
 export const lineInput = z
   .object({
     id: id,
@@ -44,6 +56,9 @@ export const orderInput = z
     name: z.string().max(80).default(""),
     note: z.string().max(500).default(""),
     channel: z.enum(["pos", "qr", "kiosk", "offline"]).default("pos"),
+    // payments (037, LD-72): ring the order at a platform's prices. Optional with no default, so
+    // an older order body parses (and fingerprints) exactly as before.
+    pricePlatform: z.enum(PRICE_PLATFORMS).optional(),
   })
   .strict();
 export type OrderInput = z.infer<typeof orderInput>;
@@ -86,7 +101,21 @@ export type Product = {
   groupIds?: string[];
   /** fiscal (027): ProductFiscal; absent = restaurant default. */
   fiscal?: unknown;
+  /** payments (037, LD-72): base price per platform; absent = the POS price. Staff catalog only. */
+  platformPrices?: Partial<Record<PricePlatform, number>>;
 };
+/**
+ * The base price a product sells at under a price list (LD-72): its platform price when one is
+ * set, otherwise the POS price. Modifier prices stay the POS ones.
+ */
+export function listPrice(
+  product: Pick<Product, "price" | "platformPrices">,
+  priceList: PricePlatform | null | undefined,
+): number {
+  if (!priceList) return product.price;
+  const p = product.platformPrices?.[priceList];
+  return typeof p === "number" ? p : product.price;
+}
 export type PricedLine = LineInput & {
   name: Label;
   /** Count-prefixed for repeated choices ("2× Asada"). */
@@ -162,6 +191,8 @@ export function quote(
   catalog: Product[],
   canOpen = false,
   fiscal: FiscalContext = DEFAULT_FISCAL_CONTEXT,
+  /** payments (037, LD-72): the order's platform price list; null = POS prices. */
+  priceList: PricePlatform | null = null,
 ): PricedLine[] {
   if (new Set(lines.map((l) => l.id)).size !== lines.length)
     throw new DomainError("duplicate_line");
@@ -173,7 +204,7 @@ export function quote(
     if (issue) throw new DomainError(issue, issue === "forbidden" ? 403 : 400);
     const chosen = chosenOptions(p, l.options);
     const unitPrice = sum([
-      l.openAmount ?? p.price,
+      l.openAmount ?? listPrice(p, priceList),
       ...chosen.map((c) => c.option.price * c.count),
     ]);
     return {

@@ -131,10 +131,7 @@ export const EXPORT_TABLE_LABELS: Readonly<
     "Terminal predeterminada por dispositivo",
     "Default terminal by device",
   ],
-  payment_platform_prices: [
-    "Precios por plataforma",
-    "Prices by platform",
-  ],
+  payment_platform_prices: ["Precios por plataforma", "Prices by platform"],
   payment_platforms: ["Plataformas de entrega", "Delivery platforms"],
   payment_provider_accounts: [
     "Cuentas de Mercado Pago y Clip",

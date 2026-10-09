@@ -126,12 +126,16 @@ appliers.round = async (tx, s, p, ctx) => {
   // An online send of these same lines may have committed with its response
   // lost: a manager decides (archive if the order already has them).
   await assertLinesNotRecorded(tx, record.lines);
-  // Re-price first (I3), then take the order lock for the append.
+  // Re-price first (I3), then take the order lock for the append. The order's price list (LD-72)
+  // is set once at creation, so a plain read before the lock is stable.
+  const [listed] =
+    await tx`select price_platform from orders where id=${orderId}`;
   const lines = await verifyLines(
     tx,
     record.lines,
     record.receiptSnapshot.lines,
     record.expectedTotal,
+    listed?.price_platform ?? null,
   );
   const order = await writableOrder(tx, orderId);
   await assertTakesRounds(tx, order);

@@ -138,6 +138,12 @@ const operations: Record<string, Key> = {
   "public.resumed": "publicOpResumed",
   "public.hold_accepted": "publicOpHoldAccepted",
   "public.hold_rejected": "publicOpHoldRejected",
+  // payments (037)
+  "payment.terminal_saved": "payOpTerminalSaved",
+  "payment.terminal_archived": "payOpTerminalArchived",
+  "payment.platforms_saved": "payOpPlatformsSaved",
+  "payment.platform_prices_saved": "payOpPlatformPricesSaved",
+  "payment.device_terminal_set": "payOpDeviceTerminalSet",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",
@@ -159,6 +165,8 @@ const channels: Record<string, Key> = {
 const tenderMethods: Record<string, Key> = {
   cash: "serviceIntegrationCash",
   external: "serviceIntegrationExternal",
+  // payments (037): "Pagado por plataforma"; tenderLabel names the platform.
+  platform: "payMethodPlatform",
 };
 const integrations: Record<string, Key> = {
   cash: "serviceIntegrationCash",

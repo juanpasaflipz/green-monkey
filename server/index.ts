@@ -80,6 +80,7 @@ import * as cfdiRoutes from "./routes/cfdi.js";
 import { cfdiCapability } from "./cfdi/hooks.js";
 import * as accountRoutes from "./routes/account.js";
 import * as publicOrderingRoutes from "./routes/public-ordering.js";
+import * as paymentsRoutes from "./routes/payments.js";
 import {
   paymentRecoveryStatus,
   retryPaymentRecovery,
@@ -155,6 +156,8 @@ discountsRoutes.registerPreAuth({ app, sql });
 reportsRoutes.registerPreAuth({ app, sql });
 cfdiRoutes.registerPreAuth({ app, sql });
 accountRoutes.registerPreAuth({ app, sql });
+// payments (037): provider webhooks (P2) are pre-auth, before authentication (critic R31).
+paymentsRoutes.registerPreAuth({ app, sql });
 app.use("/api", authentication(sql));
 // account (031): every /api/account-data/* path is owner-only with a recent step-up (C30).
 app.use("/api/account-data", accountRoutes.accountDataGuard);
@@ -484,6 +487,8 @@ reportsRoutes.register({ app, sql, route });
 cfdiRoutes.register({ app, sql, route });
 accountRoutes.register({ app, sql, route });
 publicOrderingRoutes.register({ app, sql, route });
+// Wave 4 authenticated routes, in order: payments, loyalty, kiosk (critic R31).
+paymentsRoutes.register({ app, sql, route });
 app.use("/api", (_req, res) => res.status(404).json({ error: "not_found" }));
 if (process.env.NODE_ENV === "production") {
   // Diner pages (public ordering 032) stay out of search indexes; helmet

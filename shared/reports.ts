@@ -302,6 +302,10 @@ export const AUDIT_GROUPS = {
     "public.paused",
     "public.resumed",
     "job.",
+    // payments (037, critic R27): terminals, platforms, platform prices, device defaults.
+    "payment.terminal_",
+    "payment.platform",
+    "payment.device_terminal",
   ],
   fiscal: ["fiscal.", "cfdi."],
   reports: ["reports."],
@@ -1555,8 +1559,7 @@ export function composeSalesSummary(input: SummaryInput): SalesSummary {
     processorFees,
     platformCommissions,
     feesEstimated:
-      platformCommissions > 0 ||
-      byTerminal.some((t) => t.fees.estimated > 0),
+      platformCommissions > 0 || byTerminal.some((t) => t.fees.estimated > 0),
     marginAfterFees:
       estimatedMargin === null
         ? null
@@ -2205,7 +2208,8 @@ export function drawerRow(
     terminalDifference: terminalDifference(f),
     platformSales: (f.platform ?? NO_PLATFORM).amount,
     platformRefunds: (f.platform ?? NO_PLATFORM).refunds,
-    payments: f.cash.count + f.external.count + (f.platform ?? NO_PLATFORM).count,
+    payments:
+      f.cash.count + f.external.count + (f.platform ?? NO_PLATFORM).count,
     lateCash: closed ? add(f.cash.lateAmount, f.cash.lateTips) : 0,
     lateTerminal: lateTerminal(f),
     review: f.review,

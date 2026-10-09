@@ -363,11 +363,15 @@ export async function createOrder(
   return once(tx, s, input.operationId, "create_order", input, async () => {
     if (["qr", "kiosk"].includes(input.channel)) await requirePro(tx);
     else if (!offline) await requireSelling(tx, s);
+    // payments (037, LD-72): only staff orders ring at a platform's prices.
+    if (input.pricePlatform && ["qr", "kiosk"].includes(input.channel))
+      throw new DomainError("invalid_input");
     const lines = quote(
       input.lines,
       await catalog(tx),
       !["qr", "kiosk"].includes(input.channel),
       await fiscalContext(tx),
+      input.pricePlatform ?? null,
     );
     if (input.tableId) {
       const [t] =
@@ -384,7 +388,7 @@ export async function createOrder(
     const [number] =
       await tx`insert into order_numbers(tenant_id,business_date,value) values(${s.tenantId},${date},1) on conflict(tenant_id,business_date) do update set value=order_numbers.value+1 returning value`;
     const orderId = randomUUID();
-    await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,restaurant_snapshot) values(${s.tenantId},${orderId},${number.value},${date},${s.employeeId},${input.tableId},${input.mode},${input.name},${input.note},${input.channel},${sum(lines.map((l) => l.total))},${tx.json(s.restaurant)})`;
+    await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,restaurant_snapshot,price_platform) values(${s.tenantId},${orderId},${number.value},${date},${s.employeeId},${input.tableId},${input.mode},${input.name},${input.note},${input.channel},${sum(lines.map((l) => l.total))},${tx.json(s.restaurant)},${input.pricePlatform ?? null})`;
     await append(tx, s, orderId, lines, 1, {
       stockPolicy: offline ? "allow" : undefined,
     });
@@ -392,6 +396,7 @@ export async function createOrder(
       channel: input.channel,
       deviceId: s.deviceId,
       capabilityId: s.id,
+      ...(input.pricePlatform ? { pricePlatform: input.pricePlatform } : {}),
     });
     // LO-R3: the kitchen feed (LO-10) after every order, round and stock lock of
     // this command and before refreshCheckState, whose issuance takes the folio
@@ -453,11 +458,16 @@ export async function addRound(
       if (o.version !== input.expectedVersion)
         throw new DomainError("stale_order", 409);
       assertCheckWritable(o as { check_state: string; state: string });
+      // payments (037, LD-72): a round takes the order's own price list, set at creation; a
+      // round body naming another list is refused.
+      if (input.pricePlatform && input.pricePlatform !== o.price_platform)
+        throw new DomainError("payments_platform_price_list", 409);
       const lines = quote(
         input.lines,
         await catalog(tx),
         true,
         await fiscalContext(tx),
+        o.price_platform ?? null,
       );
       await applyRound(tx, s, o as RoundTarget, lines, { note: input.note });
       await bumpKitchenFeed(tx, s);
@@ -577,8 +587,7 @@ export async function recordPayment(
         : p.method === "platform"
           ? p.amount
           : p.received;
-    const reference =
-      p.method === "cash" ? null : p.reference.trim() || null;
+    const reference = p.method === "cash" ? null : p.reference.trim() || null;
     const tenderId = await insertTender(tx, s, {
       orderId,
       drawerId: d.id,

@@ -32,10 +32,7 @@ import {
   type Order,
   type Session,
 } from "../shared/domain.js";
-import {
-  isTenderMethod,
-  type TenderMethod,
-} from "../shared/payments.js";
+import { isTenderMethod, type TenderMethod } from "../shared/payments.js";
 import {
   itemRefundPlanMatches,
   itemRefundsBlocked,
@@ -415,7 +412,8 @@ export async function refund(tx: Tx, s: Session, raw: unknown) {
     // batch refund (Reembolsar), which records it as a platform portion.
     if (t.method === "platform")
       throw new DomainError("payments_platform_refund_requires_batch", 409);
-    if (t.method !== "cash") throw new DomainError("report_method_unknown", 500);
+    if (t.method !== "cash")
+      throw new DomainError("report_method_unknown", 500);
     if (p.reason.trim().length < 3)
       throw new DomainError("refund_note_required", 400);
     const d = await drawer(tx, s);

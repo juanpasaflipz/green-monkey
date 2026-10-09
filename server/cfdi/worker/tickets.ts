@@ -23,7 +23,12 @@ type Row = {
   series: string;
   number: string | number;
   gross: number;
-  payments: { method: string; amount: number; at?: string; cardType?: string }[];
+  payments: {
+    method: string;
+    amount: number;
+    at?: string;
+    cardType?: string;
+  }[];
   groups: { category: TaxCategory; gross: number; tax: number }[];
   adjustments: {
     refundId: string;
