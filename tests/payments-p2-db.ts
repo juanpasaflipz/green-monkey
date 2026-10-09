@@ -2755,6 +2755,27 @@ try {
     assert.ok(next.wait > 3, `the next read backs off (got ${next.wait} s)`);
     fake.approve(r.ref, { ...TEST_CARD });
     assert.equal(await drive(r.id, ["settled"]), "settled");
+    // MP's limit is per access token and shared by every live charge (P2V-FIXES-4): a 429 with
+    // no Retry-After never reads sooner than the 5 s cadence, but at the slow 10 s one.
+    const oMp = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const rMp = await pending(oMp, terminals.mp);
+    fake.rateLimitReads(1);
+    await round(A);
+    assert.equal(await stateOf(rMp.id), "pending");
+    const [nextMp] = await asOwner(
+      A,
+      (
+        tx,
+      ) => tx`select extract(epoch from (next_at - now()))::float8 as wait from jobs
+        where tenant_id=${A} and kind='payments_poll' and payload->>'attemptId'=${rMp.id}
+          and state='available' order by created_at desc limit 1`,
+    );
+    assert.ok(
+      nextMp.wait > 9,
+      `an MP read after a 429 waits the slow cadence (got ${nextMp.wait} s)`,
+    );
+    fake.approve(rMp.ref, { ...TEST_CARD });
+    assert.equal(await drive(rMp.id, ["settled"]), "settled");
     // Refunded at MP before the settle: review, never a tender.
     const o2 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
     const m = await pending(o2, terminals.mp);

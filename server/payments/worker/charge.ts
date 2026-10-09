@@ -1287,8 +1287,13 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
     if (!(e instanceof ProviderError)) throw e;
     if (e.code === "payments_credentials_rejected")
       await failIfRefused(ctx, rt, a.provider, loaded.account);
-    // A read failure never changes the attempt: keep polling (429: MP's observed back-off).
-    await next(e.retryAfterMs ?? Math.max(cadence, PAYMENTS_LIMITS.pollSlowMs));
+    // A read failure never changes the attempt: keep polling, never sooner than the slow
+    // cadence (P2V-FIXES-4: MP's 429 limit is per access token, shared by every live charge of
+    // the restaurant, so a 3.5 s default back-off read faster than the 5 s fresh cadence), or
+    // the provider's Retry-After when longer.
+    await next(
+      Math.max(e.retryAfterMs ?? 0, cadence, PAYMENTS_LIMITS.pollSlowMs),
+    );
     return finish();
   }
   if (!read) {
