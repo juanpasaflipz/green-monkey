@@ -9,13 +9,19 @@ import {
 } from "../src/labels";
 import { archivedDrawerAmounts } from "../src/features/offline/format";
 import { exceptionDetail } from "../src/features/reports/exception-text";
-import { tenderColumns, toCsv } from "../src/features/reports/csv";
+import {
+  dayColumns,
+  drawerColumns,
+  tenderColumns,
+  toCsv,
+} from "../src/features/reports/csv";
 import { money } from "../src/features/reports/format";
 import { referenceFromName } from "../shared/payments";
 import {
   buildCorteDocument,
   drawerRow,
   otherDayDrawerCollections,
+  type DayRow,
   type DrawerFacts,
   type ExceptionRow,
   type TenderReportRow,
@@ -253,6 +259,38 @@ describe("Excepciones and the tender CSV", () => {
     expect(line).toContain("DiDi Food");
     expect(line).toContain("59.00");
     expect(line).toContain("estimadas");
+  });
+  it("PAYMENTS-MONEY-5: the day CSV has a Plataformas column, so cash + terminal + platforms add up; the drawers CSV carries platform sales and refunds", () => {
+    const day = {
+      date: "2026-10-09",
+      orders: 3,
+      grossSales: 300_000,
+      discounts: 0,
+      salesTotal: 300_000,
+      refunds: 0,
+      cash: 150_000,
+      external: 50_000,
+      platform: 100_000,
+      tips: 0,
+      paidOuts: 0,
+    } as unknown as DayRow;
+    const opts = {
+      locale: "es" as const,
+      currency: "MXN",
+      timezone: "America/Mexico_City",
+    };
+    const [header, line] = toCsv(dayColumns, [day], opts)
+      .replace(/^\uFEFF/, "")
+      .split(/\r\n/);
+    const cells = (row: string) => row.split(",");
+    const column = cells(header).indexOf("Plataformas");
+    expect(column).toBeGreaterThan(cells(header).indexOf("Terminal"));
+    expect(cells(line)[column]).toBe("1000.00");
+    const drawerHeader = toCsv(drawerColumns("es"), [], opts)
+      .replace(/^\uFEFF/, "")
+      .split(/\r\n/)[0];
+    expect(drawerHeader).toContain("Plataformas");
+    expect(drawerHeader).toContain("Reembolsos de plataformas");
   });
 });
 

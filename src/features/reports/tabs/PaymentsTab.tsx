@@ -259,7 +259,7 @@ export function PaymentsTab({
             caption={t.payReportsByPlatform}
             locale={locale}
             rows={summary.data.collections.byPlatform}
-            rowKey={(r) => r.platform}
+            rowKey={(r) => `${r.platform}:${r.label ?? ""}`}
             columns={[
               {
                 key: "platform",
@@ -290,11 +290,19 @@ export function PaymentsTab({
                 numeric: true,
                 render: (r) => m(r.commission),
               },
+              // PAYMENTS-UX-12: the sales net before the commission, then the payout estimate,
+              // as the terminal table reads.
               {
                 key: "net",
-                header: t.reportsColNet,
+                header: t.payReportsNetBeforeCommission,
                 numeric: true,
                 render: (r) => m(r.net),
+              },
+              {
+                key: "netAfter",
+                header: t.payReportsNetAfterCommission,
+                numeric: true,
+                render: (r) => m(r.net - r.commission),
               },
             ]}
           />
