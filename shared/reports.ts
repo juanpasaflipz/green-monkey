@@ -2400,10 +2400,17 @@ export function buildCorteDocument(
       last: number;
       count: number;
     }[];
+    /**
+     * Processor fees and platform commissions (spec §2.2: owner and manager only). drawerCorte
+     * passes managers && full (PAYMENTS-SECURITY-3): a cashier allowed to see expected cash
+     * still never sees the negotiated rates. Absent: the full variant's default.
+     */
+    fees?: boolean;
   },
 ): CorteDocument {
   const closed = f.closedAt !== null;
   const blind = ctx.visibility === "blind";
+  const fees = !blind && (ctx.fees ?? true);
   if (!closed && blind) throw new RangeError("blind_corte_x");
   const platform = f.platform ?? NO_PLATFORM;
   const lateCount = closed
@@ -2467,8 +2474,8 @@ export function buildCorteDocument(
       reported: closed ? f.stored.externalReported : null,
       difference: terminalDifference(f),
     },
-    terminals: corteTerminals(f, closed, !blind),
-    platforms: cortePlatforms(f, closed, !blind),
+    terminals: corteTerminals(f, closed, fees),
+    platforms: cortePlatforms(f, closed, fees),
     payments:
       add(add(f.cash.count, f.external.count), platform.count) - lateCount,
     controls: blind ? null : ctx.controls,

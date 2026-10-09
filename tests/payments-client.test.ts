@@ -462,6 +462,15 @@ describe("a drawer with named terminals and platforms (corte X/Z)", () => {
     const blind = buildCorteDocument(closed, ctx("blind"));
     expect(blind.terminals.every((x) => !("fees" in x))).toBe(true);
     expect(blind.platforms.every((x) => !("commission" in x))).toBe(true);
+    // PAYMENTS-SECURITY-3: a cashier who may see expected cash gets the full corte without
+    // fees or commissions (drawerCorte passes fees only for owners and managers).
+    const cashier = buildCorteDocument(facts(), {
+      ...ctx("full"),
+      fees: false,
+    });
+    expect(cashier.cash).not.toBeNull();
+    expect(cashier.terminals.every((x) => !("fees" in x))).toBe(true);
+    expect(cashier.platforms.every((x) => !("commission" in x))).toBe(true);
     // The day corte counts platform sales as collected by that day's drawers.
     expect(otherDayDrawerCollections(12_000, [row], "2026-10-09")).toBe(0);
   });
