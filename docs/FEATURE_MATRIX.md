@@ -14,7 +14,7 @@
 | Kitchen/bar, status, seen acknowledgement | Both KDS; POS Lite KDS devices | One queue per station, reliable acknowledgements | 2–3, required |
 | Thermal receipts, kitchen printing, reprints | Both print bridges/jobs | One device-authorized durable print pipeline | 2–3, required; hardware validation gate |
 | Cash, separate external bank terminal recording | Both payment methods; POS Lite external terminals | One payment workspace; explicit manual recording; named terminals with fee rates and the «Pagado por plataforma» tender with platform prices (payments 037 P1) | 2, required |
-| Integrated payments and terminal binding | POS Lite Stripe/MP/Getnet; Clip partial | Retain adapters, prove each enabled provider | 3, required for configured providers |
+| Integrated payments and terminal binding | POS Lite Stripe/MP/Getnet; Clip partial | Retain adapters, prove each enabled provider; Mercado Pago Point and Clip PinPad rebuilt as payments P2 (worker adapters, «Enviar a la terminal», owner provider setup), proven on real devices at the staging rehearsal (Wave 4 R44a) before enabling | 3, required for configured providers |
 | Split by items/amount; grouped settlement | Both splits; POS Lite payment groups | Canonical allocations; keep kitchen orders distinct | 3, required |
 | Full/partial refunds, cancellations, history | Both | Reversal records and scoped manager approval | 2–3, required |
 | Offline cash, menu cache, refresh recovery | POS Lite Dexie/sync; Luma local handling | Preserve/rebuild with visible reconciliation | 3, required |
