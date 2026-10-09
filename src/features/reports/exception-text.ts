@@ -142,23 +142,6 @@ export function exceptionDetail(
       return d.path === "offline.payment_reconciled"
         ? t.reportsOfflinePaymentReconciled
         : t.reportsOfflineSaleRecovered;
-    case "terminal_attempt_review":
-    case "terminal_attempt_unknown_open":
-      // payments (037 P2): the terminal of the charge (a provider code never shows raw).
-      return typeof d.terminal === "string" ? d.terminal : "";
-    case "terminal_attempt_dismissed":
-      return [
-        typeof d.terminal === "string" ? d.terminal : "",
-        d.resolution === "recorded"
-          ? t.payResolutionRecorded
-          : d.resolution === "not_charged"
-            ? t.payResolutionNotCharged
-            : d.resolution === "refunded_at_provider"
-              ? t.payResolutionRefunded
-              : "",
-      ]
-        .filter(Boolean)
-        .join(" · ");
     default:
       return "";
   }

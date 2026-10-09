@@ -250,12 +250,6 @@ export default defineArea({
     payOpCredentialsSaved: "Credenciales del proveedor guardadas",
     payOpProviderDisabled: "Proveedor desconectado",
     payOpDeviceModeRequested: "Cambio de modo de terminal",
-    payExKindAttemptReview: "Cobro en terminal por revisar",
-    payExKindAttemptDismissed: "Cobro en terminal resuelto por gerente",
-    payExKindAttemptUnknown: "Cobro en terminal sin confirmar",
-    payResolutionRecorded: "registrado",
-    payResolutionNotCharged: "no se cobró",
-    payResolutionRefunded: "reembolsado en el proveedor",
   },
   en: {
     payMethodCash: "Cash",
@@ -491,12 +485,6 @@ export default defineArea({
     payOpCredentialsSaved: "Provider credentials saved",
     payOpProviderDisabled: "Provider disconnected",
     payOpDeviceModeRequested: "Terminal mode change",
-    payExKindAttemptReview: "Terminal charge to review",
-    payExKindAttemptDismissed: "Terminal charge resolved by a manager",
-    payExKindAttemptUnknown: "Unconfirmed terminal charge",
-    payResolutionRecorded: "recorded",
-    payResolutionNotCharged: "not charged",
-    payResolutionRefunded: "refunded at the provider",
   },
   errors: {
     payments_provider_unavailable: [
