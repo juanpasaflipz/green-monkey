@@ -322,6 +322,58 @@ describe("jobs API (Wave 2.0)", () => {
     }
   });
 
+  it("poke() runs discovery now instead of at the next sweep, coalesces a burst into one discovery, queues one more behind a running discovery, and is a no-op without discover (payments /wake)", async () => {
+    vi.useFakeTimers();
+    try {
+      const drained: string[] = [];
+      let polls = 0;
+      let release: (ids: string[]) => void = () => {};
+      const only = new Map<string, RegisteredHandler>([
+        ["opsworker_probe", jobRegistration("opsworker_probe", noop)],
+      ]);
+      const runner = createJobRunner(fakeSql(drained), {
+        handlers: () => only,
+        sweepMs: 5000,
+        debounceMs: 10,
+        discover: () => {
+          polls++;
+          return polls === 1
+            ? Promise.resolve([])
+            : new Promise<string[]>((r) => (release = r));
+        },
+      });
+      runner.start();
+      await vi.advanceTimersByTimeAsync(20);
+      expect(polls).toBe(1);
+      for (let i = 0; i < 5; i++) runner.poke();
+      await vi.advanceTimersByTimeAsync(20);
+      expect(polls, "five pokes, one discovery, long before sweepMs").toBe(2);
+      runner.poke();
+      runner.poke();
+      await vi.advanceTimersByTimeAsync(20);
+      expect(polls, "a discovery is running: the pokes wait for it").toBe(2);
+      release(["t-1"]);
+      await vi.advanceTimersByTimeAsync(40);
+      expect(polls, "exactly one more discovery after the running one").toBe(3);
+      expect(drained).toContain("t-1");
+      release([]);
+      await runner.stop(100);
+      runner.poke();
+      await vi.advanceTimersByTimeAsync(300);
+      expect(polls, "no discovery after stop").toBe(3);
+      const web = createJobRunner(fakeSql(drained), {
+        handlers: () => only,
+        sweepMs: 5000,
+      });
+      web.start();
+      web.poke();
+      await vi.advanceTimersByTimeAsync(300);
+      await web.stop(100);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("without discover the active-tenant sweep is unchanged", async () => {
     vi.useFakeTimers();
     try {

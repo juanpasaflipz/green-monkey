@@ -70,6 +70,17 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify(body));
     return;
   }
+  // Payments (spec §4.7): the web wakes the worker after a start, cancel, sync or webhook
+  // enqueue so a charge reaches the terminal without waiting for the 5 s sweep. No auth and no
+  // body: it carries no data and only advances discovery (runner.poke() coalesces bursts to one
+  // discovery per 250 ms); the port is reachable on the private network only.
+  if (req.method === "POST" && req.url === "/wake") {
+    req.resume();
+    jobs?.poke();
+    res.writeHead(202, { "Cache-Control": "no-store" });
+    res.end();
+    return;
+  }
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "not_found" }));
 });

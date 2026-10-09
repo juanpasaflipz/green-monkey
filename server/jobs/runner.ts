@@ -53,6 +53,9 @@ import {
   jobErrorCode,
 } from "./queue.js";
 
+/** Longest wait between a poke and its discovery (pokes inside the window coalesce). */
+export const POKE_COALESCE_MS = 250;
+
 export type JobAction =
   | { action: "complete" }
   | {
@@ -96,6 +99,14 @@ export interface JobRunner {
   noteTenant(tenantId: string, activity?: "write" | "read"): void;
   /** Claims and runs the tenant's runnable jobs; resolves with the number claimed. */
   drainTenant(tenantId: string): Promise<number>;
+  /**
+   * Worker mode: run discovery (and claim what it finds) now instead of at the next sweep.
+   * Coalesced: any number of pokes within POKE_COALESCE_MS cause one discovery, and a poke
+   * that arrives while a discovery runs causes exactly one more after it. A no-op without
+   * `discover` (the web runner drains on its own writes) and while stopping. The worker's
+   * private POST /wake calls it (payments spec §4.7: tap-to-terminal latency).
+   */
+  poke(): void;
   /**
    * Stops claiming and waits for in-flight drains and running handlers, all
    * within `timeoutMs`; then aborts whatever is still running.
@@ -380,6 +391,8 @@ export function createJobRunner(
   }
 
   let discovering = false;
+  let pokeTimer: NodeJS.Timeout | null = null;
+  let pokeAgain = false;
   function sweep() {
     if (o.discover) {
       if (discovering || stopping) return;
@@ -391,6 +404,10 @@ export function createJobRunner(
         .catch((error) => log.warn("jobs_discover_failed", {}, error))
         .finally(() => {
           discovering = false;
+          if (pokeAgain) {
+            pokeAgain = false;
+            poke();
+          }
         });
       return;
     }
@@ -401,7 +418,21 @@ export function createJobRunner(
     }
   }
 
+  function poke() {
+    if (!o.discover || stopping || pokeTimer) return;
+    pokeTimer = setTimeout(
+      () => {
+        pokeTimer = null;
+        if (discovering) pokeAgain = true;
+        else sweep();
+      },
+      Math.min(debounceMs, POKE_COALESCE_MS),
+    );
+    pokeTimer.unref();
+  }
+
   return {
+    poke,
     start() {
       stopping = false;
       sweepTimer = setInterval(sweep, sweepMs);
@@ -415,6 +446,8 @@ export function createJobRunner(
     async stop(timeoutMs) {
       stopping = true;
       if (sweepTimer) clearInterval(sweepTimer);
+      if (pokeTimer) clearTimeout(pokeTimer);
+      pokeTimer = null;
       for (const timer of scheduled.values()) clearTimeout(timer);
       scheduled.clear();
       // One deadline for both waits: a drain blocked on a hung handler
