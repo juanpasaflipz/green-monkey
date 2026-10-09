@@ -1025,7 +1025,7 @@ try {
       run(f.s.manager, (tx) => updateMember(tx, f.s.manager, ana.id, { operationId: randomUUID(), expectedVersion: d.version, name: "Otra" })),
       "loyalty_member_changed",
     );
-    const audits = await asAdmin(f.tenantId, (tx) => tx`select operation,detail::text as detail from audit where operation like 'loyalty.%'`);
+    const audits = await asAdmin(f.tenantId, (tx) => tx`select operation,detail::text as detail from audit where tenant_id=${f.tenantId} and operation like 'loyalty.%'`);
     assert(audits.length >= 5);
     for (const a of audits) {
       assert.doesNotMatch(a.detail, /Ana|Zúñiga|María|Beto|5544332211|5544332299|4433/, a.operation);
@@ -1088,7 +1088,7 @@ try {
         values(${f.tenantId},${randomUUID()},${ids.imported},'import',3,0,${f.ids.owner},'pos_lite_balance')`;
     });
     assert.equal((await member(f, ids.imported)).last_activity_at, null, "an import is not activity");
-    const before = await asAdmin(f.tenantId, (tx) => tx`select count(*)::int as n from loyalty_ledger`);
+    const before = await asAdmin(f.tenantId, (tx) => tx`select count(*)::int as n from loyalty_ledger where tenant_id=${f.tenantId}`);
     const result = await runRetention(admin, { pauseMs: 0 });
     assert.deepEqual(result.failed, []);
     assert(result.redacted.loyalty_members >= 2);
@@ -1097,7 +1097,7 @@ try {
     assert.deepEqual([old.name, old.phone_e164, imported.stamps], ["", null, 3]);
     const [r] = await asAdmin(f.tenantId, (tx) => tx`select redaction_reason,redacted_by from loyalty_members where id=${ids.old}`);
     assert.deepEqual({ ...r }, { redaction_reason: "retention", redacted_by: null });
-    const after = await asAdmin(f.tenantId, (tx) => tx`select count(*)::int as n from loyalty_ledger`);
+    const after = await asAdmin(f.tenantId, (tx) => tx`select count(*)::int as n from loyalty_ledger where tenant_id=${f.tenantId}`);
     assert.equal(after[0].n, before[0].n);
     const [forced] = await admin`select relforcerowsecurity as f from pg_class where relname='loyalty_members'`;
     assert.equal(forced.f, true);
@@ -1174,7 +1174,7 @@ try {
     const [mp] = await asAdmin(f.tenantId, (tx) => tx`select count(*)::int as n from source_mappings where import_batch_id=${first.batchId} and entity_type='loyalty_member'`);
     assert.equal(mp.n, 6);
     const imported = await asAdmin(f.tenantId, (tx) => tx`select consent_channel,joined_via,marketing_opt_in,legacy_sms_opt_in,last_activity_at,legacy_spend
-      from loyalty_members where legacy_id='101'`);
+      from loyalty_members where tenant_id=${f.tenantId} and legacy_id='101'`);
     assert.deepEqual({ ...imported[0], legacy_spend: Number(imported[0].legacy_spend) }, {
       consent_channel: "pos_lite_import",
       joined_via: "import",
