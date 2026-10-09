@@ -257,6 +257,8 @@ export default async function globalSetup() {
   const now = new Date();
   const cutoffA = cutoffFor("America/Mexico_City", now);
   const cutoffB = cutoffFor("America/Tijuana", now);
+  // Branch L's restaurant (loyalty spec §9.4) is in Mexico City, like A.
+  const cutoffL = cutoffFor("America/Mexico_City", now);
 
   // Output folder: everything but Playwright's own artifacts dir.
   mkdirSync(OUT, { recursive: true });
@@ -522,8 +524,10 @@ export default async function globalSetup() {
     appUrl: u.app.origin,
     cutoffA,
     cutoffB,
+    cutoffL,
     businessDateA: businessDate(now, "America/Mexico_City", cutoffA),
     businessDateB: businessDate(now, "America/Tijuana", cutoffB),
+    businessDateL: businessDate(now, "America/Mexico_City", cutoffL),
     orders: {},
     numbers: {},
     realSoldAt: {},

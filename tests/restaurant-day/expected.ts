@@ -1,8 +1,9 @@
 /**
- * The literal tables of specs/acceptance.md §6.12-§6.16 and §7.9-§7.12, typed
- * in by hand (double entry, §5.1). The oracle must reproduce them exactly;
- * when they disagree the run stops before any browser work, and the scenario,
- * the oracle and these tables are fixed together with the rule cited.
+ * The literal tables of specs/acceptance.md §6.12-§6.16 and §7.9-§7.12, and
+ * branch L's (loyalty spec §9.4), typed in by hand (double entry, §5.1). The
+ * oracle must reproduce them exactly; when they disagree the run stops before
+ * any browser work, and the scenario, the oracle and these tables are fixed
+ * together with the rule cited.
  */
 
 const T = (
@@ -293,5 +294,82 @@ export const EXPECTED = {
       { name: "Aguacate", opening: 2, final: 1.2, negative: false },
       { name: "Limón", opening: 5, final: 4.2, negative: false },
     ],
+  },
+  /**
+   * Branch L (loyalty spec §9.4, LD-80), typed by hand: Restaurant L's tickets,
+   * the day's figures with one club reward (a comp, R18) and one cash refund
+   * (R8), and the club's ledger and report (R19) for Rosa: 3 stamps on L1
+   * complete her 3-stamp card, L3 redeems it on the $120.00 torta cubana and
+   * earns 1 on the $30.00 left, and the $30.00 refund on L1 lowers its base to
+   * $95.00 (2 stamps), reversing one.
+   */
+  L: {
+    // prettier-ignore
+    tickets: [
+      T("L-000001", 1, "$125.00", "$107.76", "$17.24", "—", "$0.00", "Efectivo $125.00"),
+      T("L-000002", 2, "$95.00", "$81.90", "$13.10", "—", "$0.00", "Efectivo $95.00"),
+      T("L-000003", 3, "$30.00", "$25.86", "$4.14", "—", "$0.00", "Terminal $30.00"),
+    ],
+    adjustments: [
+      {
+        folio: "L-000003",
+        discount: "—",
+        courtesy: "$120.00",
+        grossBeforeDiscount: "$150.00",
+      },
+    ],
+    refunds: [
+      { folio: "L-000001", amount: "$30.00", base: "$25.86", tax: "$4.14" },
+    ],
+    day: {
+      tickets: 3,
+      folios: "L-000001 a L-000003",
+      gross: "$370.00",
+      discounts: "$120.00",
+      courtesies: "$120.00",
+      net: "$250.00",
+      iva16: { sales: "$250.00", base: "$215.52", tax: "$34.48" },
+      tasa0: "$0.00",
+      refunds: "$30.00",
+      cashRefunds: "$30.00",
+      cardRefunds: "$0.00",
+      refundBase: "$25.86",
+      refundTax: "$4.14",
+      ivaNet: "$30.34",
+      cash: "$220.00",
+      external: "$30.00",
+      opening: "$1,000.00",
+      expectedCash: "$1,190.00",
+      terminalNet: "$30.00",
+      cogs: "$134.00",
+    },
+    club: {
+      // prettier-ignore
+      ledger: [
+        { order: "L1", kind: "earn", stamps: 3, rewards: 0 },
+        { order: "L1", kind: "reward_earned", stamps: -3, rewards: 1 },
+        { order: "L3", kind: "reward_redeemed", stamps: 0, rewards: -1 },
+        { order: "L3", kind: "earn", stamps: 1, rewards: 0 },
+        { order: "L1", kind: "earn_reversal", stamps: -1, rewards: 0 },
+      ],
+      member: {
+        stamps: 0,
+        rewards: 0,
+        lifetimeStamps: 3,
+        rewardsEarned: 1,
+        rewardsRedeemed: 1,
+      },
+      report: {
+        members: 1,
+        new: 1,
+        active: 1,
+        stampsEarned: 4,
+        stampsReversed: 1,
+        rewardsEarned: 1,
+        rewardsRedeemed: 1,
+        rewardValue: "$120.00",
+        memberSales: "$125.00",
+      },
+    },
   },
 };

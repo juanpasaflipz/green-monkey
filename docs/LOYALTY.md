@@ -200,11 +200,25 @@ The settle hooks reach every payment path through `refreshCheckState`, including
 `settleAttempt` (row 43, phase P2). Once P2 is in, L16 adds `payments_settle` (job and sync) to its
 lock-order burst; payments' DB 15 adds loyalty-linked orders to its own (R16).
 
-Not written yet (a release gate, DELIVERY_STATUS): the restaurant-day branch L of spec §9.4 (link,
-pay, earn, redeem, refund reversal through the UI, reconciled in `tests/restaurant-day-db.ts`). Until
-it lands, DB check L28 asserts acceptance criterion 5 (the reward in Excepciones with reason
-`loyalty_reward` and no approver, in the corte del día's discounts and exception tiles; the refund
-that reverses its stamp in the corte and Finanzas › Club de lealtad).
+## Restaurant-day branch L (spec §9.4)
+
+The restaurant-day gate (`tests/browser/restaurant-day.spec.ts`, after X1) runs the club through the
+UI in its own restaurant, "Tortas El Mezquite" (lead decision LD-80): created like A and B (signup,
+support grant, fiscal profile, staff, menu, a paired register), it is the only restaurant whose club
+is ever on, so A's and B's sales, receipts and hand-typed tables never meet the prompt, the receipt
+block or the Club button. `tests/restaurant-day/club-l.ts`: the owner publishes the restaurant's
+privacy notice and turns the club on (3 stamps a card, one extra per $50.00); the cashier enrolls
+Rosa at the prompt (her $125.00 purchase completes a card), answers "Sin club" for a walk-in (the
+receipt's join QR), redeems Rosa's reward on the $120.00 torta cubana with no PIN and takes the rest
+by card, and records a $30.00 cash refund on Rosa's first sale with the manager's PIN, which reverses
+one stamp. The register's corte X, Clientes, Excepciones (the reward with no approver), the corte del
+día (the reward among the cortesías, the refund and its IVA) and Finanzas › Club de lealtad show the
+oracle's figures (`oracle.ts` R18 reward, R19 stamps; `expected.ts` L, hand-typed). DB checks
+D20–D23 reconcile tickets, tenders, the reward discount, the refund and the drawer; the settings,
+the consented member, the links and the ledger row by row (each earn's base and rule); every
+reconcile job done and no phone or name in audit, jobs or operations; and that A and B hold no
+loyalty row and see none of L's. L28 still asserts acceptance criterion 5 against the reports'
+code directly.
 
 ## Runbooks
 
