@@ -49,6 +49,11 @@ acknowledged a critical alert within 15 minutes during service hours
 | `cfdi_csd_expiring:*` (info) | ntfy, from the worker | a restaurant's CSD expires within 30 days: the owner uploads a new one |
 | `public_order_limited` (log, warn) | web logs | a public QR/kiosk order hit a durable cap (`code`: `public_order_limit`, `public_ordering_busy` or `public_order_churn`); the line names the code's `ref` (the "Ref. 7A3F" staff see in Mesas or Configuración), its kind and the client's `ipHash`, never a token or a path. Repeated lines for one `ref` from one `ipHash`: "Online ordering abuse" below |
 | `rate_limited` with `limiter: public-*` (log, warn) | web logs | a client hit a public ordering per-IP or per-link limit (in memory, per replica); one diner retrying is normal, a steady stream from one `ipHash` is abuse |
+| `payments_attempt_unknown_<tenant>` (warning) | ntfy, from the worker | a terminal charge's outcome is unknown (`reason`: `create` = the provider did not answer the create, `clip_create` = Clip's create answer was lost, `no_final_status` = no final status within the expiry + 2 min, `paid_amount_unknown` = paid without an amount). Its terminal and order stay blocked: "Payments: unknown outcomes" below |
+| `jobs_dead_payments_*` (warning) | ntfy, from the worker | a payments job used up its attempts (`payments_credentials` / `payments_devices`: the provider kept failing, the account stays as it was; `payments_push`: the attempt can stay «Enviando», which no screen resolves yet: check the device and the provider for the charge and report the attempt id to engineering). See "Payments: provider outage" below |
+| `payments_webhook_dropped` (log, info) | web logs | a provider notification was screened out (`reason`: `format`, `rate_ip`, `rate_hook`, `body_size`, `topic`, `no_match`); always answered 200. A steady `no_match` stream for one restaurant means the URL in MP or Clip is from an older connect: "Payments: notification failures" |
+| `webhook_rejected` (attempt event) | Cobros en terminal → the attempt, `payment_attempt_events` | an MP notification whose `x-signature` did not verify with the sealed secret; nothing changed and the provider was not read (polling continues). Many in a row: the secret in MP and the one entered in Configuración differ |
+| `payments_worker_disabled` (log, info) | worker startup | `PAYMENTS_PROVIDERS` is empty: integrated charging is off (`/capabilities` says `worker_not_configured`); manual terminals keep working |
 | `jobs_dead_cfdi_*` (warning) | ntfy, from the worker | a cfdi job used up its attempts. The global tick's recovery sweep re-enqueues what the document needs within a day (or a manager presses **Reintentar** on it); a dead `cfdi_global` tick already scheduled the next one, and the chain also restarts at the next worker deploy and operator sign-in ([CFDI](CFDI.md) "Jobs") |
 
 Alerts carry codes and counts only, never personal or tenant data. Logs are
@@ -449,11 +454,103 @@ Other secrets:
   `GOOGLE_CLIENT_SECRET`, deploy, then disable the old secret.
 - R2 token, Railway project token, ntfy topic: create the new one, update the
   GitHub environment secret/variable, delete the old one.
-- cfdi `CREDENTIAL_ENCRYPTION_KEY` (worker only): prepend a new kid, redeploy
-  the worker, run `npm run cfdi:rekey`, then drop the old kid
-  ([CFDI](CFDI.md) "Credential key rotation"). The Facturapi User key: create a
-  new one in Facturapi, set `FACTURAPI_API_KEY` on `worker`, deploy, revoke the
-  old one.
+- `CREDENTIAL_ENCRYPTION_KEY` (worker only; CFDI and payments share it): prepend a
+  new kid, redeploy the worker, run `npm run vault:rekey` in the worker environment
+  (`cfdi:rekey` is an alias), then drop the old kid ([CFDI](CFDI.md) "Credential key
+  rotation"). For payments the script visits every restaurant with a payments job and
+  any `--tenant <uuid>` given; a credential it does not reach is re-sealed the next time
+  the worker opens it, so drop the old kid only after the script reports `failed: 0` and
+  every connected restaurant charged once, or after passing every connected restaurant
+  with `--tenant` ([PAYMENTS](PAYMENTS.md), LD-76 deviation 1). The output is counts
+  only. The Facturapi User key: create a new one in Facturapi, set
+  `FACTURAPI_API_KEY` on `worker`, deploy, revoke the old one.
+- A restaurant's Mercado Pago or Clip credentials (and its notification URL) are the
+  owner's: Configuración → **Reemplazar credenciales** seals the new ones and shows a new
+  notification URL once; the owner pastes it in MP's Webhooks (event Órdenes) or nothing
+  (Clip takes it per payment), then revokes the old token or keys at the provider. Support
+  never sees or copies them.
+
+## Payments terminals (Mercado Pago Point, Clip)
+
+Background in [PAYMENTS](PAYMENTS.md) "Phase P2". The web never calls a provider; the worker
+does, with each restaurant's sealed credentials. Every answer below is something a manager or
+the owner does in the POS, except where it says "operator".
+
+**Payments: unknown outcomes** (`payments_attempt_unknown_<tenant>`, «No sabemos si el cobro se
+completó»). Money may or may not have been taken. Nothing retries on its own.
+
+1. At the terminal: look at the device's screen and its last transactions (MP Point: the
+   activity list; Clip: the reader's history or the Clip app). Any operator can press
+   **Volver a consultar** (Cobros en terminal → the charge): the worker reads the provider
+   again, and a found approval settles by itself.
+2. Still unknown: a manager presses **Resolver cobro** and chooses, with a note and the
+   confirmation that they checked the provider's history (PIN asked):
+   - **Sí se cobró: registrar en la orden** (type the provider's reference when the screen asks):
+     records the tender (no card data; the terminal's estimated fee);
+   - **No se cobró**: the order is free to be charged again (refused if the provider last
+     said paid).
+3. `review` («El cobro se aprobó pero la orden cambió»): the customer paid but the order no
+   longer takes it (paid another way, changed, or the approval was flagged). If the order can
+   take it now, anyone presses **Registrar el cobro aprobado**; otherwise a manager refunds it in
+   the MP or Clip app and chooses **Se cobró y se reembolsó en la terminal**, naming the refund in
+   the note. There are no partial refunds through the POS in v1.
+4. Every outcome is in Reportes → Excepciones (`terminal_attempt_*` kinds), and the drawer
+   cannot close while a charge is live or in review.
+
+**Payments: provider outage** (the provider's status page, `payments_provider_unreachable`
+declines, `jobs_dead_payments_*`). The POS keeps selling:
+
+1. Cashiers use **Cobrar sin integración** (shown after such a decline, and always offline): the
+   same terminal recorded manually. Switch the device to standalone mode first (MP Point:
+   Configuración → Mercado Pago → **Cambiar modo** to «Independiente», then restart the
+   terminal; Clip: open the Clip app on the reader), charge on the device, type its
+   approval reference and confirm.
+2. Live charges stay blocked until the provider answers or a manager resolves them (above).
+3. When the provider is back: switch MP devices back to «Integrado (PDV)» (restart), and
+   charge one small order per terminal (**Cobro de prueba**) before relying on it.
+4. Operator: a worker-wide problem (`/capabilities` shows `worker_not_configured`, the worker
+   log has `payments_worker_disabled`, or every restaurant fails) is the worker's
+   `PAYMENTS_PROVIDERS` / `CREDENTIAL_ENCRYPTION_KEY` or the provider; one restaurant failing
+   is its account (Configuración shows «Error: …»): the owner reconnects.
+
+**Payments: notification failures.** Notifications only make the worker read sooner: charges
+still settle by polling (every 2 s for 3 minutes, then every 10 s), so a broken notification
+costs seconds, not money.
+
+- `webhook_rejected` events (MP): the notification secret in MP («Webhooks → Clave secreta»)
+  differs from the one entered in Configuración. The owner enters both credentials again
+  (**Reemplazar credenciales**) and pastes the new notification URL in MP.
+- `payments_webhook_dropped` `no_match` for a restaurant's charges: the URL in MP is from an
+  older connect (each connect makes a new one; the old one stops matching). Same fix.
+- MP shows deliveries failing: the URL must be the one shown once, on HTTPS, with the event
+  **Órdenes**; MP retries non-200 answers, and ours are always 200.
+- MP error 2205 «queued intent» on a terminal: another integration (pos-lite) or an earlier
+  order is still queued on that device. Cancel it on the device (or from the integration that
+  sent it), then send again. Never let two systems drive one PDV terminal.
+
+**Payments: rekey.** See "Credential rotation" above (`npm run vault:rekey`).
+
+**Payments: real-device rehearsal** (critic R44a, acceptance 11; staging, a scheduled window,
+LD-72). With one MP Point in PDV mode and one Clip reader on the restaurant's accounts (or a
+test merchant), charges are real and low-value:
+
+1. Staging worker: `PAYMENTS_PROVIDERS=mercadopago,clip`, production API bases (the defaults),
+   `CREDENTIAL_ENCRYPTION_KEY` set; web `WORKER_URL` set. Check `/capabilities`.
+2. The owner connects both accounts in Configuración, pastes the MP notification URL (event
+   Órdenes), finds the devices and adds them as terminals with their fee rates.
+3. For each terminal, from a cashier's tablet, and timing tap → terminal prompt (≤ 3 s p95):
+   approve (a tender with provider, terminal, reference, card type, brand, last 4 and fee —
+   MP's real fee, Clip's estimate; the fiscal ticket at zero balance); decline (a declined
+   card); cancel before pickup («Cancelar cobro»); cancel on the device (MP) or a taken charge
+   («Cancélalo en la terminal», Clip); one notification delivery (an attempt event
+   `webhook` with `source` mercadopago or clip).
+4. Verify MP's `reference_id` and the last-4 source against the receipt (LD-76 deviation 8),
+   and that every rehearsal charge is refunded in the provider's app (Clip is production
+   only).
+5. Evidence (timings, screenshots, attempt events with ids only) stays local under the LD-67
+   evidence-directory pattern; nothing with a token, a key or a card beyond the last 4.
+6. Afterwards: disconnect both accounts in Configuración (the worker wipes the credentials)
+   and archive the rehearsal terminals.
 
 ## Signing keys
 

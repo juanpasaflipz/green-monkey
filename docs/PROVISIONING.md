@@ -101,8 +101,18 @@ rotate the
    [RUNBOOK.md](RUNBOOK.md) "Signing keys"), Google OAuth,
    `STRIPE_WEBHOOK_SECRET` and `BILLING_DATABASE_URL` only if billing is
    enabled; worker: `WORKER_DATABASE_URL`, `APP_URL`, `ALERT_WEBHOOK_URL`,
-   Stripe keys only if billing is enabled, and from cfdi (030) the Facturapi
-   keys and `CREDENTIAL_ENCRYPTION_KEY`. The worker **never** gets
+   Stripe keys only if billing is enabled, from cfdi (030) the Facturapi
+   keys and `CREDENTIAL_ENCRYPTION_KEY`, and from payments (037 P2)
+   `PAYMENTS_PROVIDERS` (`mercadopago,clip`; empty or unset keeps integrated
+   charging off, with manual terminals working). `MERCADOPAGO_API_URL` and
+   `CLIP_API_URL` stay unset in staging and production (the providers' production
+   APIs; a loopback fake is accepted only in development and test). The web gets
+   `WORKER_URL` (the worker's private-network origin, e.g.
+   `http://worker.railway.internal:<port>`) so a charge reaches the terminal without
+   waiting for the worker's 5 s sweep (`POST /wake`). Restaurants' provider
+   credentials are never Railway variables: each owner enters them in Configuración
+   and they are sealed to the worker ([PAYMENTS.md](PAYMENTS.md) "Provider accounts
+   and secrets"). The worker **never** gets
    `MIGRATION_DATABASE_URL`, `SIGNING_KEYS` or `JWT_SECRET`, and the web never
    gets `WORKER_DATABASE_URL`, the Facturapi keys, `CREDENTIAL_ENCRYPTION_KEY`
    or `CFDI_LIVE_ENABLED`: each deployed process refuses to start with the

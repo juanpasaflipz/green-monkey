@@ -76,3 +76,26 @@ If the new system accepts live transactions after cutover, rollback must account
 ## Deliverables from the implementing agent
 
 Versioned schema, source adapters, preview/mapping UI or reviewable reports, dry-run command, idempotent import command, safety checks for destination identity, reconciliation report, exception report, sample sanitized fixture, rollback/cutover runbook, and integration tests. Never embed actual production URLs or exports in Git.
+
+## Pagos (payments 037): configuration from pos-lite and the cutover steps
+
+No historical payment is migrated: only configuration moves, by hand, through Configuración → «Pagos con tarjeta y plataformas». **Secrets are never copied**: the owner enters them again. The read-only queries below run against pos-lite with the restaurant's tenant id (`$1`); their answers are written down, not imported.
+
+1. **MP terminals:** `select mp_default_terminal_id, mp_default_kiosk_terminal_id from tenants where id = $1`. After connecting Mercado Pago, **Buscar terminales** must list these devices; add each as an integrated terminal (for example «MP Caja») and check that it shows «Integrado (PDV)».
+2. **Clip reader and fee:** `select key, value from tenant_credentials where tenant_id = $1 and service = 'clip' and key in ('default_terminal_id','fee_percent')` (read the two non-secret keys only). After connecting Clip, **Buscar lectores** lists the reader; add it with the fee (`fee_percent`, entered as a percentage).
+3. **Bank terminals:** `select name, fee_percent, active from external_terminals where tenant_id = $1`: the active ones become manual terminals with their fee.
+4. **Platform commissions:** `select name, display_name, commission_percent, active from delivery_platforms where tenant_id = $1`: «Plataformas de entrega» (Uber Eats, Rappi, DiDi Food), enabled only for the platforms the restaurant uses.
+5. **Credentials:** the owner's own Mercado Pago application (Tus integraciones → Credenciales de producción: access token and the Webhooks secret) and Clip's API key and secret (dashboard.clip.mx → Desarrolladores). pos-lite connected MP through its own OAuth application, so its grant cannot be reused.
+
+**Día de cambio, payments steps** (critic R43; the kiosk track folds these into the single cutover runbook, with a pointer from PILOT_SOP):
+
+- Before go-live (R43 steps 3, 5 and 6):
+  1. Stop charging from pos-lite. Two integrations must never drive one PDV terminal (MP answers 2205 «queued intent»).
+  2. Cancel any pending intent on each MP device (on the device, or from pos-lite's last screen).
+  3. Configuración: manual terminals and fees, platforms and commissions, connect MP and Clip, paste the MP notification URL (shown once; event **Órdenes**), **Buscar terminales** (MP in PDV mode), add the integrated terminals, set each register's default terminal.
+  4. One low-value real charge per terminal (**Cobro de prueba**: at least $5.00 on MP) with «Enviar a {terminal}»; cancel it on the terminal or refund it in the provider's app, and check that the charge and its outcome show in Cobros en terminal and Excepciones as expected.
+- After go-live (R43 step 10):
+  1. Revoke pos-lite's MP OAuth grant (Mercado Pago account → Seguridad → Aplicaciones conectadas).
+  2. Rotate the Clip keys (pos-lite stored them in plain text), then **Reemplazar credenciales** in Configuración with the new ones.
+  3. Delete pos-lite's `tenant_credentials` rows for MP and Clip.
+- Platform orders keep being re-rung from the tablets, now paid with **Plataforma** («Pagado por plataforma»); pos-lite's settlement CSV import stays reconciliation-only.
