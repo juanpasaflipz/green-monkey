@@ -395,6 +395,13 @@ keep where noted.
     ["Global periods"](CFDI.md#global-periods)), including late offline sales that land
     in a supplementary global part for their own day
     ([OFFLINE_RECOVERY.md, "Late sales and the global invoice"](OFFLINE_RECOVERY.md#late-sales-and-the-global-invoice)).
+  - **The FormaPago of orders paid by a delivery platform** (payments 037, LD-71): the
+    restaurant setting «Forma de pago SAT para pedidos pagados por plataforma» defaults to
+    31 «Intermediario pagos» (alternatives 03, 04, 28; never 99, since every CFDI is PUE),
+    and platform tickets go in the normal global invoice
+    ([PAYMENTS.md, "CFDI"](PAYMENTS.md#cfdi)). The accountant confirms the form, and that
+    the platform's commission (documented by the platform's own CFDI de retenciones) stays
+    outside the restaurant's sale.
   - **RESICO ISR withholding is modelled (030, LD-16 L9) and sandbox-verified on
     2026-10-07.** A nominative invoice from a persona física in régimen 626 to a persona
     moral carries a 1.25 % ISR retention per concept, on the concept's base

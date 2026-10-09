@@ -1401,8 +1401,11 @@ export function Selling({
     </Field>
   );
   // payments (037, LD-72): ring a new order at a platform's prices.
+  // Shown once some product has a platform price; with none, every list is the POS one.
   const priceListField =
-    !current && paymentOptions.platforms.length > 0 ? (
+    !current &&
+    paymentOptions.platforms.length > 0 &&
+    catalog.some((p) => p.platformPrices) ? (
       <Field label={t("payPriceList")}>
         <select
           value={draft.pricePlatform ?? ""}

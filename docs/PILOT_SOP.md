@@ -393,7 +393,8 @@ cómo conservar la bitácora.
 | Reportes y cortes por forma de pago | Disponible (reportes, migración 029) | «Hoy» y «Finanzas» (propietario y gerentes); corte X, corte Z y corte del día impresos desde «Caja» o «Finanzas → Cortes». | [Reports](REPORTS.md#cortes) |
 | Cerrar una caja desde otro dispositivo | Disponible (reportes, migración 029) | «Finanzas → Cortes → Cerrar caja desde aquí» (gerente, con PIN) para una caja de un dispositivo desvinculado o que quedó abierta de un día anterior; si su tablet funciona, ciérrala ahí. | [Reports](REPORTS.md#cortes) |
 | Acceso Pro del piloto otorgado por soporte, aviso de privacidad, contacto de soporte dentro de la app | Hecho en la rama de cuenta (031), pendiente de integrarse y de probarse en staging | Mientras no esté integrado: en Free, un solo dispositivo vende (sección 2). Ya integrado: soporte activa Pro para el piloto (hasta 90 días, renovable antes de que termine); el propietario lo ve como «Pro otorgado por soporte» con su fecha de término, y la app avisa 7, 3 y 1 días antes. | [Cuenta y aspectos legales](ACCOUNT_AND_LEGAL.md); [Operations, "Support"](OPERATIONS.md) |
-| Cobro con tarjeta integrado | No incluido | «Terminal externa»: cobras en la terminal del banco y registras su referencia. | [Service](SERVICE.md#payment-dialog) |
+| Cobro con tarjeta integrado (Mercado Pago Point, Clip) | Fase 2 de pagos (no incluida aún) | «Terminal externa»: cobras en la terminal (banco, o Clip / MP en modo independiente), eliges la terminal por su nombre y registras su referencia (sección 8). | [Payments](PAYMENTS.md) |
+| Pedidos de plataformas (Uber Eats, Rappi, DiDi) | Disponible (pagos, migración 037) | «Plataforma» al cobrar; no cuenta como efectivo ni tarjeta (sección 8). | [Payments](PAYMENTS.md) |
 | Impresión directa, corte de papel y apertura del cajón desde la app | No incluido | El controlador de la impresora (sección 1.2). | [Service](SERVICE.md#printing-browseros) |
 | Cobro en dólares | No incluido | Sección 5.1. | Esta guía |
 | Servicio de mesa sin conexión | Incluido como «Beta», apagado | Déjalo apagado durante el piloto (sección 3). | [Offline](OFFLINE_RECOVERY.md#table-service-offline-beta-off-by-default) |
@@ -429,3 +430,37 @@ sola a venta sin conexión (sección 3). Si no se puede vender en la app, vende 
 y captura después. No borres datos del navegador, no desvincules la tablet y no
 reinstales la app sin hablar antes con soporte: las ventas sin sincronizar viven en esa
 tablet.
+
+## 8. Terminales y plataformas
+
+**Configurar (propietario o gerente, una vez).** En «Configuración → Pagos con tarjeta y
+plataformas»:
+
+1. Agrega cada terminal por su nombre («BBVA», «Clip Mostrador», «MP Caja») con su
+   comisión con IVA (por ejemplo 3.6 % + IVA se escribe 4.18). Una terminal Clip o
+   Mercado Pago se registra por ahora como manual: cobras en ella en modo independiente.
+2. En cada tablet de caja, elige su «Terminal predeterminada de este dispositivo».
+3. Activa las plataformas que usa el restaurante (Uber Eats, Rappi, DiDi Food, Otra) y
+   su comisión estimada.
+4. Si los precios en la plataforma son distintos a los del mostrador, escríbelos en
+   «Precios por plataforma». Vacío: se usa el precio del mostrador.
+5. Con tu contador, revisa «Forma de pago SAT para pedidos pagados por plataforma» en
+   la configuración de facturación (31 Intermediario pagos, recomendado).
+
+**Cobrar con tarjeta.** «Cobrar» → «Terminal externa» → elige la terminal → cobra en la
+terminal → escribe la referencia de aprobación → marca la confirmación → «Confirmar
+cobro». El recibo dice «Tarjeta · {terminal}».
+
+**Pedido de plataforma.** Al recibir el pedido en la tablet de la plataforma:
+
+1. En «Vender», si hay precios por plataforma, elige «Precios: Uber Eats» (o la que
+   corresponda) antes de agregar productos.
+2. Escribe en «Nombre» el código del pedido (por ejemplo «DiDi 4F2A») y envíalo.
+3. «Cobrar» → «Plataforma» → la plataforma → número de pedido (opcional) → marca «La
+   plataforma ya cobró este pedido» → «Confirmar cobro». Cubre todo el saldo, sin
+   propina. No entra al efectivo esperado ni a la tarjeta del corte.
+
+**Cerrar caja.** El corte muestra la tarjeta por terminal y «Pagado por plataformas»
+aparte. Si usas terminales con nombre, escribe el «Total del lote» de cada una; las
+diferencias aparecen en «Finanzas → Excepciones».
+
