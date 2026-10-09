@@ -395,6 +395,26 @@ async function runJobs(f: Fixture, orderId: string) {
   return jobs.length;
 }
 /** A reward redemption as RedeemRewardDialog sends it (the preview from the current order). */
+/**
+ * A terminal charge in flight for the order (037 state 'created', as payments P2's start leaves
+ * it): an integrated terminal with a fictional device id and an attempt on the open drawer.
+ */
+async function liveAttempt(f: Fixture, orderId: string) {
+  const terminalId = randomUUID(),
+    attemptId = randomUUID();
+  await asAdmin(f.tenantId, async (tx) => {
+    const [drawer] = await tx`select id from cash_sessions where device_id=${f.terminal} and closed_at is null`;
+    await tx`insert into payment_terminals(tenant_id,id,name,kind,provider_device_id,fee_bp,created_by,updated_by)
+      values(${f.tenantId},${terminalId},'Club Point','mercadopago_point','FICTIONAL_POINT_CLUB_0001',null,${f.ids.manager},${f.ids.manager})`;
+    await tx`insert into payment_attempts(tenant_id,id,operation_id,settle_operation_id,target,origin,order_id,
+        terminal_id,provider,provider_device_id,terminal_label,amount,tip,currency,employee_id,device_id,
+        session_id,cash_session_id,state)
+      values(${f.tenantId},${attemptId},${randomUUID()},${randomUUID()},'order','pos',${orderId},${terminalId},
+        'mercadopago','FICTIONAL_POINT_CLUB_0001','Club Point',4500,0,'MXN',${f.ids.cashier},${f.terminal},
+        ${randomUUID()},${drawer.id},'created')`;
+  });
+  return attemptId;
+}
 async function redeem(
   f: Fixture,
   orderId: string,
@@ -951,7 +971,7 @@ try {
   });
 
   // ------------------------------------------------------------------ L10 / L11 rewards
-  await test("L10. redeem: a comp of one unit within the cap, the cap as an amount above it; reason loyalty_reward with no approver; a cashier redeems with no PIN and no limit (and a later staff discount's limit ignores it); rewards −1; max per order; the reserved reason is refused by Descuento", async () => {
+  await test("L10. redeem: refused while a terminal attempt is live (R17); a comp of one unit within the cap, the cap as an amount above it; reason loyalty_reward with no approver; a cashier redeems with no PIN and no limit (and a later staff discount's limit ignores it); rewards −1; max per order; the reserved reason is refused by Descuento", async () => {
     const f = await clubTenant("canje");
     const ana = await enroll(f);
     await giveStamps(f, ana.id, 0, 2);
@@ -959,6 +979,16 @@ try {
       { product: f.p.burrito, quantity: 2 },
       { product: f.p.molcajete, quantity: 1 },
     ]);
+    // Critic R17: the live-attempt guard sits in recordDiscount, so a reward is refused while a
+    // terminal charge for the order is in flight, spends nothing, and goes through once it ends.
+    const attemptId = await liveAttempt(f, o.id);
+    await rejects(
+      redeem(f, o.id, ana.id, lineOf(o, f.p.burrito), stale(f.s.cashier)),
+      "payments_order_attempt_live",
+    );
+    assert.deepEqual([(await member(f, ana.id)).rewards, await ledgerKinds(f, o.id)], [2, []]);
+    // P2's cancel of a not-yet-sent attempt: a runtime transition the 037 trigger allows.
+    await run(f.s.manager, (tx) => tx`update payment_attempts set state='cancelled',version=version+1 where id=${attemptId}`);
     // A stale terminal session: no step-up asked, no PIN, no limit (default cashier limit is 0 %).
     const r = await redeem(f, o.id, ana.id, lineOf(o, f.p.burrito), stale(f.s.cashier));
     const reward = r.order.discounts!.find((d) => d.reasonCode === "loyalty_reward")!;
