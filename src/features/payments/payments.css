@@ -23,3 +23,36 @@
   font-weight: 600;
   margin-bottom: 0.25rem;
 }
+/* P2: provider accounts, the waiting panel and the active charges banner. */
+.payment-provider {
+  border-top: 1px solid var(--line, #ddd);
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+}
+.payment-provider h4 {
+  margin: 0 0 0.5rem;
+}
+.payment-credentials .field {
+  max-width: 28rem;
+}
+.terminal-wait {
+  display: grid;
+  gap: 0.5rem;
+}
+.terminal-wait .row {
+  gap: 0.5rem;
+}
+.active-charges {
+  margin: 0.5rem 0;
+}
+.active-charges-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+.active-charges-list li {
+  gap: 0.5rem;
+  align-items: center;
+}

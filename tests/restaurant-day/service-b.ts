@@ -260,7 +260,7 @@ async function payment(
       caja,
       dialog
         .getByRole("group", { name: "Método de pago" })
-        .getByRole("button", { name: "Terminal externa", exact: true }),
+        .getByRole("button", { name: "Tarjeta", exact: true }),
     );
     await fill(
       caja,

@@ -153,9 +153,7 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
     .first()
     .click();
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
-  await dialog
-    .getByRole("button", { name: "Terminal externa", exact: true })
-    .click();
+  await dialog.getByRole("button", { name: "Tarjeta", exact: true }).click();
   await dialog.getByRole("button", { name: terminal, exact: true }).click();
   await dialog.getByLabel("Referencia de aprobación").fill("4471");
   await dialog.getByLabel("Confirmo que la terminal aprobó este pago").check();
@@ -239,4 +237,277 @@ test("CFDI: the platform FormaPago select offers 31 (recommended), 03, 04 and 28
   expect(options.map((o) => o.slice(0, 2))).toEqual(["31", "03", "04", "28"]);
   expect(options[0]).toContain("recomendado");
   expect(options.join(" ")).not.toContain("99");
+});
+
+// ---------------------------------------------------------------------------------------------
+// P2: integrated Mercado Pago Point and Clip charging against the payments fake
+// (`npm run dev:payments-fake`, the worker with PAYMENTS_PROVIDERS and the fake's API bases, as
+// CI starts them). Spec §12.3 items 1-4. Every credential typed here is fictional.
+// ---------------------------------------------------------------------------------------------
+
+const FAKE_URL = process.env.PAYMENTS_FAKE_URL ?? "http://127.0.0.1:4899";
+/**
+ * Scripts the payments fake: the customer pays, the card is refused, the next create is lost…
+ * An action on a device waits (up to 20 s) for the worker to have pushed the charge there.
+ */
+async function fake(action: string, body: object) {
+  for (let i = 0; ; i++) {
+    const r = await fetch(`${FAKE_URL}/__fake/${action}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (r.ok) return r.json();
+    expect(r.status === 404 && i < 80, `payments fake ${action}`).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
+/**
+ * The worker serves both providers. In CI (which starts the worker with the payments fake,
+ * qualification.yml) a worker without them fails the test; only a local run may skip.
+ */
+async function integratedReady(page: Page) {
+  const caps = await call(page, "/capabilities");
+  const served =
+    caps.mercadopago?.reason !== "worker_not_configured" &&
+    caps.clip?.reason !== "worker_not_configured";
+  if (process.env.CI)
+    expect(served, "CI runs the worker with the payments fake").toBe(true);
+  return served;
+}
+const TEST_CREDENTIALS = {
+  mercadopago: [
+    "TEST-mp-access-token-not-real-0000",
+    "testWebhookSecretNotReal0000",
+  ],
+  clip: ["test-clip-api-key-not-real", "test-clip-secret-key-not-real"],
+} as const;
+
+test("integrated charging: the owner connects Mercado Pago and Clip (the URL shown once), adds the found devices as terminals; a cashier's charge waits on the terminal and settles with the card; a decline retries; an unknown outcome is resolved by a manager; all undone at the end", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await login(page);
+  test.skip(
+    !(await integratedReady(page)),
+    "needs the worker with the payments fake",
+  );
+  await openDrawer(page);
+  const suffix = tag();
+  const names = { mp: "MP Caja " + suffix, clip: "Clip Caja " + suffix };
+  // A previous run's terminals on the fake's devices are archived and its accounts
+  // disconnected first (the owner's step-up is fresh).
+  const before = await call(page, "/payments/settings");
+  for (const left of before.terminals.filter(
+    (t: any) =>
+      !t.archivedAt &&
+      ["NEWLAND_N950__FAKE0001", "P8220724FAKE01"].includes(t.providerDeviceId),
+  ))
+    await call(page, `/payments/terminals/${left.id}/archive`, {
+      operationId: uuid(),
+      expectedVersion: left.version,
+    });
+  for (const provider of ["mercadopago", "clip"])
+    await call(page, `/payments/providers/${provider}/disable`, {});
+  await page
+    .getByRole("button", { name: "Configuración", exact: true })
+    .click();
+  const panel = page.locator("section.payment-settings");
+  for (const [provider, title, connectLabel, find, device, name, account] of [
+    [
+      "mercadopago",
+      "Mercado Pago",
+      "Conectar Mercado Pago",
+      "Buscar terminales",
+      "NEWLAND_N950__FAKE0001",
+      names.mp,
+      "Conectado como RESTAURANTE_FICTICIO",
+    ],
+    [
+      "clip",
+      "Clip",
+      "Conectar Clip",
+      "Buscar lectores",
+      "P8220724FAKE01",
+      names.clip,
+      "Conectado como Clip · 1 lector",
+    ],
+  ] as const) {
+    const section = panel.getByRole("region", { name: title, exact: true });
+    await section
+      .getByRole("button", { name: connectLabel, exact: true })
+      .click();
+    const form = section.getByRole("form", { name: connectLabel });
+    const [first, second] = TEST_CREDENTIALS[provider];
+    await form
+      .getByLabel(
+        provider === "mercadopago" ? "Access Token de producción" : "API key",
+        { exact: true },
+      )
+      .fill(first);
+    await form
+      .getByLabel(
+        provider === "mercadopago"
+          ? "Clave secreta de notificaciones"
+          : "Clave secreta",
+        { exact: true },
+      )
+      .fill(second);
+    await form.getByRole("button", { name: "Conectar", exact: true }).click();
+    // The notification URL, once, with Copiar; the keys never come back.
+    const url = panel.getByLabel("URL de notificaciones", { exact: true });
+    await expect(url).toHaveValue(
+      new RegExp(`/api/payments/webhooks/${provider}/[A-Za-z0-9_-]{22}$`),
+    );
+    await expect(panel).toContainText(
+      "Cópiala ahora: se muestra una sola vez.",
+    );
+    await expect(page.locator("input[type=password]")).toHaveCount(0);
+    await panel.getByRole("button", { name: "Cerrar", exact: true }).click();
+    await expect(url).toHaveCount(0);
+    await expect(section).toContainText(account, { timeout: 30_000 });
+    await section.getByRole("button", { name: find, exact: true }).click();
+    const found = section
+      .getByRole("region", { name: new RegExp(`· ${title}$`) })
+      .locator("tr")
+      .filter({ hasText: device });
+    await expect(found).toBeVisible({ timeout: 30_000 });
+    await found
+      .getByRole("button", { name: "Agregar como terminal", exact: true })
+      .click();
+    await panel.getByLabel("Nombre de la terminal", { exact: true }).fill(name);
+    await panel.getByLabel("Comisión (% con IVA)", { exact: true }).fill("3.5");
+    await panel
+      .getByRole("button", { name: "Agregar terminal", exact: true })
+      .click();
+    await expect(
+      panel
+        .getByRole("region", { name: "Terminales", exact: true })
+        .locator("tr")
+        .filter({ hasText: name }),
+    ).toContainText("3.50 %");
+  }
+  for (const width of [1440, 1024, 768, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await axe(page, "section.payment-settings");
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+
+  // A cashier's card charge: Tarjeta → the MP terminal → Enviar → the customer pays.
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "Hoy", exact: true }),
+  ).toBeVisible();
+  await go(page, "Vender");
+  const dialog = page.getByRole("dialog");
+  async function sendOn(terminal: string) {
+    await page
+      .getByRole("button", { name: /Taco de hongos/ })
+      .first()
+      .click();
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    await dialog.getByRole("button", { name: "Tarjeta", exact: true }).click();
+    await dialog
+      .getByRole("button", { name: new RegExp(`^${terminal}`) })
+      .click();
+    await expect(dialog.getByLabel("Referencia de aprobación")).toHaveCount(0);
+    await dialog
+      .getByRole("button", { name: `Enviar a ${terminal}`, exact: true })
+      .click();
+  }
+  await sendOn(names.mp);
+  await expect(dialog.getByRole("status").first()).toContainText(
+    `Esperando el pago en ${names.mp}…`,
+  );
+  await axe(page, "dialog");
+  await fake("approve", {
+    device: "NEWLAND_N950__FAKE0001",
+    approval: { brand: "visa", type: "credit_card", last4: "4242" },
+  });
+  await expect(page.locator(".receipt")).toContainText(
+    `Tarjeta · ${names.mp}`,
+    {
+      timeout: 20_000,
+    },
+  );
+  await expect(page.locator(".receipt")).toContainText("4242");
+  await page
+    .getByRole("button", { name: "Siguiente venta", exact: true })
+    .click();
+
+  // Declined at the terminal → Reintentar → paid.
+  await sendOn(names.mp);
+  await expect(dialog).toContainText(`Esperando el pago en ${names.mp}…`);
+  await fake("decline", { device: "NEWLAND_N950__FAKE0001" });
+  await expect(dialog).toContainText("La terminal rechazó el cobro", {
+    timeout: 20_000,
+  });
+  await dialog.getByRole("button", { name: "Reintentar", exact: true }).click();
+  await dialog
+    .getByRole("button", { name: `Enviar a ${names.mp}`, exact: true })
+    .click();
+  await expect(dialog).toContainText(`Esperando el pago en ${names.mp}…`);
+  await fake("approve", {
+    device: "NEWLAND_N950__FAKE0001",
+    approval: { brand: "visa", type: "credit_card", last4: "4242" },
+  });
+  await expect(page.locator(".receipt")).toContainText(
+    `Tarjeta · ${names.mp}`,
+    {
+      timeout: 20_000,
+    },
+  );
+  await page
+    .getByRole("button", { name: "Siguiente venta", exact: true })
+    .click();
+
+  // Clip loses the create's answer: unknown, never a blind retry; the manager records it.
+  await fake("next", { provider: "clip", behaviour: "timeout" });
+  await sendOn(names.clip);
+  await expect(dialog).toContainText("No sabemos si el cobro se completó", {
+    timeout: 30_000,
+  });
+  await expect(
+    dialog.getByRole("button", { name: "Reintentar", exact: true }),
+  ).toHaveCount(0);
+  await dialog
+    .getByRole("button", { name: "Resolver cobro", exact: true })
+    .click();
+  const resolve = page.getByRole("dialog", {
+    name: "Resolver cobro en terminal",
+  });
+  await resolve
+    .getByRole("radio", { name: "Sí se cobró: registrar en la orden" })
+    .check();
+  await resolve.getByLabel("Referencia del proveedor").fill("AUT123456");
+  await resolve
+    .getByLabel("Motivo (mínimo 10 caracteres)")
+    .fill("Aprobado en la pantalla del lector (prueba)");
+  await resolve.getByLabel("Revisé el historial del proveedor").check();
+  await axe(page, "dialog[open]");
+  await resolve.getByRole("button", { name: "Resolver", exact: true }).click();
+  await expect(page.locator(".receipt")).toContainText(
+    `Tarjeta · ${names.clip}`,
+    {
+      timeout: 20_000,
+    },
+  );
+  await page
+    .getByRole("button", { name: "Siguiente venta", exact: true })
+    .click();
+
+  // Undo: archive both terminals and disconnect both accounts (the worker wipes the keys).
+  const view = await call(page, "/payments/settings");
+  for (const name of [names.mp, names.clip]) {
+    const created = view.terminals.find((t: any) => t.name === name);
+    await call(page, `/payments/terminals/${created.id}/archive`, {
+      operationId: uuid(),
+      expectedVersion: created.version,
+    });
+  }
+  for (const provider of ["mercadopago", "clip"])
+    await call(page, `/payments/providers/${provider}/disable`, {});
+  const caps = await call(page, "/capabilities");
+  expect(caps.mercadopago).toEqual({ enabled: false, reason: "not_connected" });
+  expect(caps.clip).toEqual({ enabled: false, reason: "not_connected" });
 });

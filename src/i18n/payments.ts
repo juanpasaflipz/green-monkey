@@ -62,8 +62,6 @@ export default defineArea({
     payDefaultOn: "Predeterminada en",
     payDeviceDefault: "Terminal predeterminada de este dispositivo",
     payNoDefault: "Sin terminal predeterminada",
-    payIntegratedSoon:
-      "Mercado Pago Point y Clip integrados llegan en la siguiente fase; mientras tanto regístralas como terminales manuales.",
     paySave: "Guardar",
     paySaveTerminal: "Guardar terminal",
     paySavePlatforms: "Guardar plataformas",
@@ -256,6 +254,33 @@ export default defineArea({
     payResolutionRecorded: "registrado",
     payResolutionNotCharged: "no se cobró",
     payResolutionRefunded: "reembolsado en el proveedor",
+    // P2: the waiting panel, the banner, the resolve dialog and Configuración
+    payStateDeclined: "Rechazado",
+    payAmountToCharge: "Importe a cobrar en la terminal",
+    payChargeTotal: "Total en la terminal: {amount}",
+    payCloseAnyway: "Cerrar de todos modos",
+    payKeepWaiting: "Seguir esperando",
+    payResolveRetryHint:
+      "El proveedor confirmó el pago y la orden ya puede recibirlo: cualquier cajero lo registra.",
+    payResolveOutcome: "¿Qué pasó con el cobro?",
+    payResolveCharge: "{terminal} · {amount} · {order}",
+    payResolveNoOptions: "Este cobro ya no necesita una decisión.",
+    payResolveManagerOnly:
+      "Un gerente o el propietario decide si se cobró; tú puedes volver a consultar.",
+    payIntegratedHint:
+      "Las terminales Mercado Pago Point y Clip conectadas abajo reciben el importe con «Enviar a la terminal».",
+    payAccountState: "Estado",
+    payDevices: "Terminales encontradas",
+    payDeviceSerial: "Terminal",
+    payDeviceMode: "Modo",
+    payDeviceStatus: "Estado",
+    payDeviceSeen: "Visto",
+    payModeRequested: "Cambio de modo solicitado. {restart}",
+    payTestCharge: "Cobro de prueba",
+    payTestChargeHint:
+      "Cobra una orden real de bajo importe (al menos $5.00 en Mercado Pago) con «Enviar a {terminal}» en Venta y cancélala en la terminal, o reembólsala en la app del proveedor. Así compruebas la terminal, la URL de notificaciones y el registro del cobro.",
+    payTestChargeOpen: "Ir a Venta",
+    payCredentialsHidden: "Las claves no se vuelven a mostrar.",
   },
   en: {
     payMethodCash: "Cash",
@@ -310,8 +335,6 @@ export default defineArea({
     payDefaultOn: "Default on",
     payDeviceDefault: "This device's default terminal",
     payNoDefault: "No default terminal",
-    payIntegratedSoon:
-      "Integrated Mercado Pago Point and Clip arrive in the next phase; meanwhile record them as manual terminals.",
     paySave: "Save",
     paySaveTerminal: "Save terminal",
     paySavePlatforms: "Save platforms",
@@ -497,6 +520,33 @@ export default defineArea({
     payResolutionRecorded: "recorded",
     payResolutionNotCharged: "not charged",
     payResolutionRefunded: "refunded at the provider",
+    // P2: the waiting panel, the banner, the resolve dialog and Configuración
+    payStateDeclined: "Declined",
+    payAmountToCharge: "Amount to charge on the terminal",
+    payChargeTotal: "Total on the terminal: {amount}",
+    payCloseAnyway: "Close anyway",
+    payKeepWaiting: "Keep waiting",
+    payResolveRetryHint:
+      "The provider confirmed the payment and the order can take it now: any cashier records it.",
+    payResolveOutcome: "What happened with the charge?",
+    payResolveCharge: "{terminal} · {amount} · {order}",
+    payResolveNoOptions: "This charge no longer needs a decision.",
+    payResolveManagerOnly:
+      "A manager or the owner decides whether it was charged; you can check again.",
+    payIntegratedHint:
+      "Mercado Pago Point and Clip terminals connected below receive the amount with “Send to the terminal”.",
+    payAccountState: "Status",
+    payDevices: "Terminals found",
+    payDeviceSerial: "Terminal",
+    payDeviceMode: "Mode",
+    payDeviceStatus: "Status",
+    payDeviceSeen: "Seen",
+    payModeRequested: "Mode change requested. {restart}",
+    payTestCharge: "Test charge",
+    payTestChargeHint:
+      "Charge a real low-value order (at least $5.00 on Mercado Pago) with “Send to {terminal}” in Sales and cancel it on the terminal, or refund it in the provider's app. It checks the terminal, the notification URL and how the charge is recorded.",
+    payTestChargeOpen: "Go to Sales",
+    payCredentialsHidden: "The keys are never shown again.",
   },
   errors: {
     payments_provider_unavailable: [

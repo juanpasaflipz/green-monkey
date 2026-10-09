@@ -5,6 +5,12 @@ import { describe, expect, it } from "vitest";
 import { tenderLabel, tenderMethodLabel } from "../src/labels";
 import { archivedDrawerAmounts } from "../src/features/offline/format";
 import { exceptionDetail } from "../src/features/reports/exception-text";
+import {
+  attemptStatus,
+  canRetrySettle,
+  resolveOptions,
+} from "../src/features/payments/attempt-text";
+import type { AttemptView } from "../shared/payments";
 import { tenderColumns, toCsv } from "../src/features/reports/csv";
 import { exceptionKindLabel, money } from "../src/features/reports/format";
 import {
@@ -373,5 +379,114 @@ describe("a drawer with named terminals and platforms (corte X/Z)", () => {
     expect(blind.platforms.every((x) => !("commission" in x))).toBe(true);
     // The day corte counts platform sales as collected by that day's drawers.
     expect(otherDayDrawerCollections(12_000, [row], "2026-10-09")).toBe(0);
+  });
+});
+
+describe("integrated charges (P2): what the waiting panel says and offers", () => {
+  const attempt = (o: Partial<AttemptView> = {}): AttemptView => ({
+    id: "a1",
+    state: "pending",
+    target: "order",
+    origin: "pos",
+    orderId: "o1",
+    holdId: null,
+    orderNumber: 12,
+    holdLabel: null,
+    terminalId: "t1",
+    terminalLabel: "MP Caja",
+    provider: "mercadopago",
+    amount: 9000,
+    tip: 0,
+    paidAmount: null,
+    providerReference: "ORD1",
+    providerStatus: "created",
+    cardType: null,
+    cardBrand: null,
+    cardLast4: null,
+    errorCode: null,
+    cancelRequested: false,
+    resolution: null,
+    createdAt: "2026-10-09T18:00:00.000Z",
+    decidedAt: null,
+    ...o,
+  });
+  const cashier = { manager: false, online: true };
+  const manager = { manager: true, online: true };
+  it("waiting: the terminal's name, Cancelar cobro and Cambiar de terminal; once a cancel is asked, only Volver a consultar", () => {
+    const s = attemptStatus(attempt(), "es", cashier);
+    expect(s.message).toBe("Esperando el pago en MP Caja…");
+    expect(s.actions).toEqual(["cancel", "switch"]);
+    expect(s.live).toBe(true);
+    expect(
+      attemptStatus(attempt({ cancelRequested: true }), "en", cashier),
+    ).toMatchObject({
+      message: expect.stringMatching(/^Cancelling/),
+      actions: ["recheck"],
+    });
+    expect(
+      attemptStatus(
+        attempt({ errorCode: "payments_cancel_on_terminal" }),
+        "es",
+        cashier,
+      ),
+    ).toMatchObject({
+      message: "La terminal ya tomó el cobro. Cancélalo en la terminal.",
+      actions: ["recheck"],
+    });
+  });
+  it("unknown never offers a blind retry: Volver a consultar for anyone, Resolver for managers", () => {
+    const unknown = attempt({ state: "unknown" });
+    expect(attemptStatus(unknown, "es", cashier).actions).toEqual(["recheck"]);
+    expect(attemptStatus(unknown, "es", manager).actions).toEqual([
+      "recheck",
+      "resolve",
+    ]);
+    expect(attemptStatus(unknown, "es", manager).message).toMatch(
+      /^No sabemos si el cobro se completó/,
+    );
+  });
+  it("a decline names its reason; «Cobrar sin integración» only when the integration itself failed", () => {
+    const refused = attemptStatus(
+      attempt({ state: "declined", errorCode: "payments_provider_rejected" }),
+      "es",
+      cashier,
+    );
+    expect(refused.message).toMatch(/^La terminal rechazó el cobro \(/);
+    expect(refused.actions).toEqual(["retry", "otherMethod"]);
+    expect(
+      attemptStatus(
+        attempt({ state: "declined", errorCode: "payments_terminal_offline" }),
+        "es",
+        cashier,
+      ).actions,
+    ).toEqual(["retry", "otherMethod", "manualFallback"]);
+  });
+  it("review: any operator records an approved charge that now fits (R13); a flagged approval is the manager's only", () => {
+    const fits = attempt({
+      state: "review",
+      paidAmount: 9000,
+      errorCode: "payments_settle_order_changed",
+    });
+    expect(canRetrySettle(fits)).toBe(true);
+    expect(attemptStatus(fits, "es", cashier).actions).toEqual(["retrySettle"]);
+    const flagged = { ...fits, errorCode: "payments_provider_mismatch" };
+    expect(canRetrySettle(flagged)).toBe(false);
+    expect(attemptStatus(flagged, "es", cashier).actions).toEqual([]);
+    expect(attemptStatus(flagged, "es", manager).actions).toEqual(["resolve"]);
+    expect(resolveOptions(flagged)).toEqual(["refunded_at_provider", "record"]);
+    expect(resolveOptions(attempt({ state: "unknown" }))).toEqual([
+      "record",
+      "not_charged",
+    ]);
+    expect(resolveOptions(attempt({ state: "settled" }))).toEqual([]);
+  });
+  it("offline, a live charge only waits (recording it another way could charge twice)", () => {
+    expect(
+      attemptStatus(attempt(), "es", { manager: true, online: false }),
+    ).toMatchObject({
+      message:
+        "Sin conexión: el cobro sigue en la terminal; se confirmará al reconectar.",
+      actions: [],
+    });
   });
 });

@@ -13,11 +13,13 @@ import {
   PLATFORMS,
   type PaymentSettingsView,
   type PlatformCode,
+  type TerminalKind,
 } from "../../../shared/payments";
 import { api } from "../../api";
 import { Button, Field } from "../../components/ui";
 import { strings, errorNotice, type Key } from "../../i18n";
 import { PLATFORM_KEYS } from "./PlatformFields";
+import { PROVIDER_NAMES, ProviderAccounts } from "./ProviderAccounts";
 import "./payments.css";
 
 const KIND_KEYS: Record<string, Key> = {
@@ -31,16 +33,20 @@ const KIND_KEYS: Record<string, Key> = {
  * y corte de caja). Managers add, rename and archive card terminals with their fee, turn the
  * delivery platforms on with their estimated commission, set each product's price per platform
  * (LD-72) and this device's default terminal. Writes need a recent PIN (the server asks; api()
- * prompts and retries). Integrated Mercado Pago / Clip setup arrives with phase P2.
+ * prompts and retries). P2: the Mercado Pago and Clip accounts (ProviderAccounts), and a found
+ * device added as an integrated terminal.
  */
 export function PaymentSettings({
   session,
   locale,
   online,
+  navigate,
 }: {
   session: Session;
   locale: Locale;
   online: boolean;
+  /** "Cobro de prueba" opens Venta. */
+  navigate?: (view: string) => void;
 }) {
   const t = (k: Key) => strings[locale][k];
   const exponent = currencyExponent(session.restaurant.currency);
@@ -59,6 +65,11 @@ export function PaymentSettings({
   const [editing, setEditing] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [fee, setFee] = useState("");
+  // P2: a new terminal on a device the provider listed (null = a manual terminal).
+  const [device, setDevice] = useState<{
+    kind: TerminalKind;
+    providerDeviceId: string;
+  } | null>(null);
   // Platforms: enabled + commission text per platform.
   const [platformForm, setPlatformForm] = useState<
     Record<PlatformCode, { enabled: boolean; commission: string }>
@@ -159,11 +170,14 @@ export function PaymentSettings({
                 : {}),
               active: current.active,
             }
-          : { kind: "manual" }),
+          : device
+            ? { kind: device.kind, providerDeviceId: device.providerDeviceId }
+            : { kind: "manual" }),
         name: name.trim(),
         feeBp,
       });
       setEditing(null);
+      setDevice(null);
       setName("");
       setFee("");
     });
@@ -379,11 +393,12 @@ export function PaymentSettings({
         >
           {editing ? t("paySaveTerminal") : t("payAddTerminal")}
         </Button>
-        {editing && (
+        {(editing || device) && (
           <Button
             disabled={busy}
             onClick={() => {
               setEditing(null);
+              setDevice(null);
               setName("");
               setFee("");
             }}
@@ -392,8 +407,13 @@ export function PaymentSettings({
           </Button>
         )}
       </div>
+      {device && !editing && (
+        <p className="muted" role="status">
+          {t(KIND_KEYS[device.kind])} · {device.providerDeviceId}
+        </p>
+      )}
       <p className="muted tiny">
-        {t("payFeeRateHint")} {t("payIntegratedSoon")}
+        {t("payFeeRateHint")} {t("payIntegratedHint")}
       </p>
       {thisDevice && active.length > 0 && (
         <Field label={t("payDeviceDefault")}>
@@ -411,6 +431,21 @@ export function PaymentSettings({
           </select>
         </Field>
       )}
+
+      <ProviderAccounts
+        session={session}
+        locale={locale}
+        online={online}
+        onAddTerminal={(kind, providerDeviceId) => {
+          setEditing(null);
+          setDevice({ kind, providerDeviceId });
+          setName(
+            `${PROVIDER_NAMES[kind === "clip_pinpad" ? "clip" : "mercadopago"]} ${providerDeviceId.slice(-4)}`,
+          );
+          setFee("");
+        }}
+        onTestCharge={navigate ? () => navigate("sell") : undefined}
+      />
 
       <h3>{t("payPlatforms")}</h3>
       <p className="muted">{t("payPlatformsHint")}</p>

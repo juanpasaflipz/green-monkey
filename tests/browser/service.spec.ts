@@ -236,9 +236,7 @@ test("the payment dialog on a 1024×768 tablet: quick cash, Cambio and the termi
   await expect(dialog.getByText("Cambio", { exact: true })).toBeInViewport({
     ratio: 1,
   });
-  await dialog
-    .getByRole("button", { name: "Terminal externa", exact: true })
-    .click();
+  await dialog.getByRole("button", { name: "Tarjeta", exact: true }).click();
   await dialog
     .getByLabel("Referencia de aprobación", { exact: true })
     .fill("123456");
@@ -461,9 +459,7 @@ test("terminal fields reset between sales and change follows a partial cash amou
   await productTile(page, "Taco de hongos").click();
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog
-    .getByRole("button", { name: "Terminal externa", exact: true })
-    .click();
+  await dialog.getByRole("button", { name: "Tarjeta", exact: true }).click();
   await expect(
     dialog.getByLabel("Efectivo recibido", { exact: true }),
   ).toHaveCount(0);
@@ -481,9 +477,7 @@ test("terminal fields reset between sales and change follows a partial cash amou
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   const cash = dialog.getByRole("button", { name: "Efectivo", exact: true });
   await expect(cash).toHaveAttribute("aria-pressed", "true");
-  await dialog
-    .getByRole("button", { name: "Terminal externa", exact: true })
-    .click();
+  await dialog.getByRole("button", { name: "Tarjeta", exact: true }).click();
   await expect(dialog.getByLabel("Referencia de aprobación")).toHaveValue("");
   await expect(
     dialog.getByLabel("Confirmo que la terminal aprobó este pago"),

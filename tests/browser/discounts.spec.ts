@@ -855,9 +855,7 @@ test("FIT-10: a card payment with a tip needs no cash received; the drawer's ter
   await page.getByRole("button", { name: /Taco de hongos/ }).click();
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog
-    .getByRole("button", { name: "Terminal externa", exact: true })
-    .click();
+  await dialog.getByRole("button", { name: "Tarjeta", exact: true }).click();
   await expect(
     dialog.getByLabel("Efectivo recibido", { exact: true }),
   ).toHaveCount(0);
