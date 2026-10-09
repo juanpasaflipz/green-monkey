@@ -62,6 +62,7 @@ import {
   countText,
   discountRemovable,
   reasonLabel,
+  discountRowLabel,
   removableAfterReload,
 } from "../src/features/discounts/format";
 import { strings, type Key } from "../src/i18n";
@@ -1576,6 +1577,16 @@ describe("inputs and helpers", () => {
     );
     expect(reasonLabel("discount", "loyalty_reward", "en")).toBe(
       "Loyalty reward",
+    );
+    // Rows on the ticket, Detalle and Vender name the reward, never "Cortesía" (§2.6).
+    expect(
+      discountRowLabel({ kind: "comp", percentBps: null, reasonCode: "loyalty_reward" }, "es"),
+    ).toBe("Recompensa del club");
+    expect(
+      discountRowLabel({ kind: "amount", percentBps: null, reasonCode: "loyalty_reward" }, "en"),
+    ).toBe("Loyalty reward");
+    expect(discountRowLabel({ kind: "comp", percentBps: null, reasonCode: "courtesy" }, "es")).toBe(
+      discountRowLabel({ kind: "comp", percentBps: null }, "es"),
     );
     const reward = {
       id: randomUUID(),

@@ -292,8 +292,8 @@ function MemberDetailView({
           {error}
         </p>
       )}
-      <h2>{t("loyaltyHistory")}</h2>
-      <ul className="loyalty-history">
+      <h2 id="loyalty-member-history">{t("loyaltyHistory")}</h2>
+      <ul className="loyalty-history" aria-labelledby="loyalty-member-history">
         {m.history.map((h) => (
           <li key={h.id}>
             <span>{dateTime(h.createdAt, tz, locale)}</span>{" "}
@@ -314,8 +314,8 @@ function MemberDetailView({
           </li>
         ))}
       </ul>
-      <h2>{t("loyaltyOrders")}</h2>
-      <ul className="loyalty-history">
+      <h2 id="loyalty-member-orders">{t("loyaltyOrders")}</h2>
+      <ul className="loyalty-history" aria-labelledby="loyalty-member-orders">
         {m.orders.map((o) => (
           <li key={o.orderId}>
             {fill(t("loyaltyOrderLine"), {

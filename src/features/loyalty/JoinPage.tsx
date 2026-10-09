@@ -40,7 +40,8 @@ async function call<T>(token: string, body?: unknown): Promise<T> {
 }
 
 export function JoinPage() {
-  const locale: Locale = navigator.language?.startsWith("en") ? "en" : "es";
+  // Spanish first, with the diner pages' language toggle (DinerApp).
+  const [locale, setLocale] = useState<Locale>("es");
   const t = strings[locale];
   const [token] = useState(tokenOf);
   const [view, setView] = useState<JoinView | null>(null);
@@ -103,6 +104,15 @@ export function JoinPage() {
         <div>
           <p className="diner-place">{view.restaurantName}</p>
           <h1>{fill(t.loyaltyJoinTitle, { program })}</h1>
+        </div>
+        <div className="diner-header-actions">
+          <Button
+            className="diner-language"
+            onClick={() => setLocale(locale === "es" ? "en" : "es")}
+            lang={locale === "es" ? "en" : "es"}
+          >
+            {t.publicLanguageToggle}
+          </Button>
         </div>
       </header>
       <p>
