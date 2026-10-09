@@ -82,6 +82,8 @@ import {
   previewLoyaltyImport,
 } from "../shared/loyalty-import.js";
 import { isolatedTarget } from "./isolated-target.js";
+import { legalConfig } from "../server/legal.js";
+import { LEGAL_CI_ENV } from "./fixtures/legal-ci.js";
 import { noRetries } from "./db-retries.js";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -249,9 +251,11 @@ async function settingsBody(f: Fixture, over: Record<string, unknown> = {}) {
     ...over,
   };
 }
-async function saveSettings(f: Fixture, over: Record<string, unknown> = {}) {
+/** The fictional published legal set (CI's): its privacy notice and DPA cover the club. */
+const LEGAL = legalConfig(LEGAL_CI_ENV);
+async function saveSettings(f: Fixture, over: Record<string, unknown> = {}, legal = LEGAL) {
   const body = await settingsBody(f, over);
-  return run(f.s.owner, (tx) => saveLoyaltySettings(tx, f.s.owner, body));
+  return run(f.s.owner, (tx) => saveLoyaltySettings(tx, f.s.owner, body, legal));
 }
 /** A restaurant with the club switched on (defaults, cap $150). */
 async function clubTenant(label: string, over: Record<string, unknown> = {}) {
@@ -433,7 +437,19 @@ try {
     assert.equal(off.enabled, false);
     assert.equal(off.version, 1);
     const stale1 = await settingsBody(f, { expectedVersion: 0 });
-    await rejects(run(f.s.owner, (tx) => saveLoyaltySettings(tx, f.s.owner, stale1)), "stale_settings");
+    await rejects(run(f.s.owner, (tx) => saveLoyaltySettings(tx, f.s.owner, stale1, LEGAL)), "stale_settings");
+    // LOYALTY-PRIVACY-4: turning the club on waits for the platform's documents that cover it:
+    // unpublished documents refuse it (draft documents only where signup allows them, never in
+    // production); the published set whose privacy notice and DPA cover the club allows it.
+    const draft = legalConfig({ LEGAL_UNPUBLISHED_SIGNUP: "allow" });
+    await rejects(saveSettings(f, {}, legalConfig({})), "loyalty_legal_required");
+    await rejects(saveSettings(f, {}, legalConfig({ LEGAL_UNPUBLISHED_SIGNUP: "allow", APP_ENV: "production" })), "loyalty_legal_required");
+    assert.equal(LEGAL.status, "published");
+    const viaDraft = (await saveSettings(f, {}, draft)) as LoyaltySettingsView;
+    assert.equal(viaDraft.enabled, true);
+    // A club already on is not switched off nor blocked when the documents change later.
+    assert.equal(((await saveSettings(f, { programName: "Club Sello" }, legalConfig({}))) as LoyaltySettingsView).programName, "Club Sello");
+    await saveSettings(f, { enabled: false, privacyAttested: false });
     const on = (await saveSettings(f)) as LoyaltySettingsView;
     assert.equal(on.enabled, true);
     assert.equal(on.privacyAttestedByName, "Lealtad owner");

@@ -32,7 +32,10 @@ export default defineArea({
       "Mi aviso de privacidad incluye el club: qué datos pedimos (nombre y teléfono), para qué (identificar al socio y llevar sus sellos y premios; promociones solo si acepta), cuánto tiempo los guardamos y cómo ejercer los derechos ARCO.",
     loyaltyPrivacyMissing:
       "Primero publica el aviso de privacidad del restaurante en Configuración › Privacidad y datos.",
-    loyaltyPrivacyNotice: "Aviso de privacidad del restaurante: {url}",
+    loyaltyPrivacyNotice: "Aviso de privacidad del restaurante:",
+    loyaltyLegalPending:
+      "El club se podrá activar cuando Green Monkey publique sus documentos legales que lo incluyen (aviso de privacidad y contrato de encargo).",
+    loyaltyThresholdZeroHint: "Cada compra pagada da exactamente 1 sello.",
     loyaltyPrivacyAttested: "Confirmado por {name} el {date}.",
     loyaltyProOnly: "El club de lealtad está incluido en el plan Pro.",
     loyaltySave: "Guardar",
@@ -260,7 +263,10 @@ export default defineArea({
       "My privacy notice covers the club: what we collect (name and phone), why (identify the member and keep their stamps and rewards; promotions only with consent), how long we keep it, and how to exercise ARCO rights.",
     loyaltyPrivacyMissing:
       "First publish the restaurant's privacy notice in Settings › Privacy and data.",
-    loyaltyPrivacyNotice: "Restaurant privacy notice: {url}",
+    loyaltyPrivacyNotice: "Restaurant privacy notice:",
+    loyaltyLegalPending:
+      "The club can be turned on once Green Monkey publishes its legal documents that cover it (privacy notice and data processing agreement).",
+    loyaltyThresholdZeroHint: "Each paid purchase earns exactly 1 stamp.",
     loyaltyPrivacyAttested: "Confirmed by {name} on {date}.",
     loyaltyProOnly: "The loyalty club is included in the Pro plan.",
     loyaltySave: "Save",
@@ -474,6 +480,10 @@ export default defineArea({
     loyalty_privacy_attestation_required: [
       "Confirma que tu aviso de privacidad incluye el club.",
       "Confirm that your privacy notice covers the club.",
+    ],
+    loyalty_legal_required: [
+      "El club se podrá activar cuando Green Monkey publique sus documentos legales que lo incluyen. Escribe a soporte.",
+      "The club can be turned on once Green Monkey publishes its legal documents that cover it. Contact support.",
     ],
     loyalty_invalid_phone: [
       "Escribe un teléfono de 10 dígitos.",

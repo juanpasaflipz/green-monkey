@@ -136,7 +136,9 @@ disabled with "El club requiere conexión." and the sale proceeds.
 
 - The restaurant is the responsable. The club cannot be switched on without the restaurant's privacy
   notice URL (031) and the owner's attestation that it covers the club (data, purposes, retention,
-  ARCO channel); who and when are recorded.
+  ARCO channel); who and when are recorded. Green Monkey is the encargado: the club also waits for
+  the platform's published privacy notice and DPA version that list the club (`2026-10-09`,
+  `loyalty_legal_required`; ACCOUNT_AND_LEGAL "The loyalty club").
 - Consent per member: `consent_channel` (`staff_attested` at the counter, `self_service` on `/club`,
   `pos_lite_import`), `consent_at`, a snapshot of the notice URL. Marketing is separate and starts
   unchecked; nothing sends messages in the pilot.

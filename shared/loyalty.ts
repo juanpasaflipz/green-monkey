@@ -329,6 +329,11 @@ export type LoyaltySettingsView = LoyaltyProgram & {
    * reachable on every plan and with the club off (LOYALTY-PRIVACY-3).
    */
   hasMembers: boolean;
+  /**
+   * The platform's published privacy notice and DPA cover the club, so it may be turned on
+   * (LOYALTY-PRIVACY-4; otherwise saving it on is loyalty_legal_required).
+   */
+  legalReady: boolean;
 };
 /** Clientes is shown while the club is on, or while any member's data is still held (ARCO). */
 export const customersVisible = (v: { enabled: boolean; hasMembers?: boolean }) =>
@@ -689,6 +694,7 @@ export const LOYALTY_ERROR_CODES = [
   "loyalty_disabled",
   "loyalty_privacy_notice_required",
   "loyalty_privacy_attestation_required",
+  "loyalty_legal_required",
   "loyalty_invalid_phone",
   "loyalty_name_required",
   "loyalty_consent_required",

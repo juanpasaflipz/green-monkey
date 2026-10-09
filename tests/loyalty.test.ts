@@ -22,7 +22,7 @@ import { planDiscount } from "../shared/discounts";
 import type { PayableUnit } from "../shared/settlement";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { consentText, dateOnly, joinDoneText } from "../src/features/loyalty/format";
+import { consentText, dateOnly, joinDoneText, thresholdHint } from "../src/features/loyalty/format";
 import { MemberSheet } from "../src/features/loyalty/Members";
 import { customersVisible, type MemberDetail } from "../shared/loyalty";
 
@@ -490,5 +490,15 @@ describe("Clientes and the ARCO sheet (LOYALTY-PRIVACY-3, PRIVACY-5, UX-12)", ()
     ])
       expect(html).toContain(text);
     expect(html).not.toContain("Aceptó el aviso");
+  });
+});
+
+describe("the stamp threshold hint follows what the owner typed (LOYALTY-UX-18)", () => {
+  it("$0 is exactly one stamp; an amount is the typed one, not the saved one", () => {
+    expect(thresholdHint("0", "es", "MXN")).toBe("Cada compra pagada da exactamente 1 sello.");
+    expect(thresholdHint("0.00", "en", "MXN")).toBe("Each paid purchase earns exactly 1 stamp.");
+    expect(thresholdHint("250", "es", "MXN")).toContain("$250.00");
+    expect(thresholdHint("250", "es", "MXN")).not.toContain("$400.00");
+    expect(thresholdHint("abc", "es", "MXN")).toContain("$400.00");
   });
 });

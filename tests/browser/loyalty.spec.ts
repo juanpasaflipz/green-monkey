@@ -133,6 +133,10 @@ test("settings: turning the club on waits for the privacy notice and the attesta
   await login(page);
   let panel = await settings(page);
   await expect(panel).toContainText("Primero publica el aviso de privacidad del restaurante");
+  // The warning leads to Privacidad y datos (LOYALTY-UX-18); the published legal set covers the
+  // club, so no "documentos legales" note (LOYALTY-PRIVACY-4).
+  await expect(panel.getByRole("button", { name: "Agregar aviso de privacidad", exact: true })).toBeVisible();
+  await expect(panel).not.toContainText("cuando Green Monkey publique sus documentos legales");
   await panel.getByLabel("Activar el club").check();
   await panel.getByLabel(/Mi aviso de privacidad incluye el club/).check();
   await panel.getByRole("button", { name: "Guardar club de lealtad", exact: true }).click();
@@ -145,7 +149,7 @@ test("settings: turning the club on waits for the privacy notice and the attesta
   });
   await page.reload();
   panel = await settings(page);
-  await expect(panel).toContainText(NOTICE);
+  await expect(panel.getByRole("link", { name: NOTICE, exact: true })).toHaveAttribute("href", NOTICE);
   // The import is offered while the club is off.
   await panel.getByLabel("Archivo de exportación de POS Lite (.json)").setInputFiles(
     "tests/fixtures/poslite-loyalty-export.json",

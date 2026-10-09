@@ -27,6 +27,7 @@ export const dpaContent: LegalDocumentContent = {
           "Comensales: nombre o alias en las órdenes y notas de las órdenes. Una nota de alergia vinculada a un nombre es un dato sensible (artículos 2, fracción VI, y 8); recomendamos usar alias.",
           "Receptores de CFDI, cuando el restaurante activa la facturación electrónica: RFC, nombre o razón social, régimen fiscal, código postal y correo electrónico de quien pide su factura, que Green Monkey envía a Facturapi para timbrar el CFDI y entregarlo por correo.",
           "El certificado de sello digital (CSD) del restaurante y su contraseña: Green Monkey los recibe en un sobre cifrado, los entrega a Facturapi para que pueda timbrar los CFDI del restaurante y borra su copia.",
+          "Socios del club de lealtad, cuando el restaurante activa el club: nombre o apodo, teléfono, historial de compras en el club (órdenes vinculadas con su fecha y total, sellos y premios), el registro de su consentimiento (canal, fecha y el aviso de privacidad del restaurante vigente) y su preferencia sobre promociones; de los socios que el restaurante importa de otro sistema, además, sus visitas, su gasto y su última visita en ese sistema. Green Monkey los trata solo para llevar el club por cuenta del restaurante, no envía mensajes a los socios y borra el nombre y el teléfono cuando el restaurante lo indica o tras 24 meses sin actividad.",
         ],
       },
       {
@@ -54,7 +55,7 @@ export const dpaContent: LegalDocumentContent = {
         id: "subencargados",
         title: "6. Subencargados",
         paragraphs: [
-          "El responsable autoriza a los siguientes subencargados: Google (inicio de sesión), Stripe (pagos de la suscripción), Neon (base de datos), Railway (hospedaje), Cloudflare (almacenamiento cifrado de los respaldos), GitHub (ejecución automatizada de los respaldos) y, solo si el restaurante activa la facturación electrónica, Facturapi (timbrado de CFDI a través de un proveedor autorizado de certificación y envío del CFDI por correo). Algunos pueden ubicarse fuera de México. Green Monkey avisará en la aplicación, al menos 15 días antes, de cualquier subencargado nuevo.",
+          "El responsable autoriza a los siguientes subencargados: Google (inicio de sesión), Stripe (pagos de la suscripción), Neon (base de datos), Railway (hospedaje), Cloudflare (almacenamiento cifrado de los respaldos), GitHub (ejecución automatizada de los respaldos) y, solo si el restaurante activa la facturación electrónica, Facturapi (timbrado de CFDI a través de un proveedor autorizado de certificación y envío del CFDI por correo). Algunos pueden ubicarse fuera de México. Los datos de los socios del club de lealtad se tratan con los mismos subencargados de base de datos, hospedaje y respaldos (Neon, Railway, Cloudflare y GitHub); el club no agrega subencargados. Green Monkey avisará en la aplicación, al menos 15 días antes, de cualquier subencargado nuevo.",
         ],
       },
       {
@@ -90,7 +91,7 @@ export const dpaContent: LegalDocumentContent = {
         id: "transferencias",
         title: "11. Transferencias",
         paragraphs: [
-          "Green Monkey no transfiere los datos a terceros, salvo las comunicaciones que la ley exige o que hace por instrucción del responsable, como el envío de los datos de un CFDI a un proveedor autorizado de certificación para su timbrado y, por su conducto, al SAT (artículo 36); y las órdenes de autoridad competente, que informará al responsable cuando la ley lo permita.",
+          "Green Monkey no transfiere los datos a terceros, salvo las comunicaciones que la ley exige o que hace por instrucción del responsable, como el envío de los datos de un CFDI a un proveedor autorizado de certificación para su timbrado y, por su conducto, al SAT (artículo 36); y las órdenes de autoridad competente, que informará al responsable cuando la ley lo permita. Los datos de los socios del club de lealtad no se transfieren ni se comparten con terceros: solo el responsable los consulta y los exporta.",
         ],
       },
     ],
@@ -114,6 +115,7 @@ export const dpaContent: LegalDocumentContent = {
           "Guests: name or alias on orders and order notes. An allergy note tied to a name is sensitive data (articles 2, section VI, and 8); we recommend using aliases.",
           "CFDI recipients, when the restaurant enables electronic invoicing: the RFC, name or legal name, tax regime, postal code and email of whoever requests an invoice, which Green Monkey sends to Facturapi to stamp the CFDI and deliver it by email.",
           "The restaurant's digital seal certificate (CSD) and its password: Green Monkey receives them in an encrypted envelope, hands them to Facturapi so it can stamp the restaurant's CFDI, and deletes its copy.",
+          "Loyalty club members, when the restaurant enables the club: name or nickname, phone, purchase history in the club (linked orders with their date and total, stamps and rewards), the record of their consent (channel, date and the restaurant's privacy notice in force) and their preference on promotions; for members the restaurant imports from another system, also their visits, spend and last visit there. Green Monkey processes them only to run the club on the restaurant's behalf, sends members no messages, and erases the name and phone when the restaurant instructs it or after 24 months without activity.",
         ],
       },
       {
@@ -141,7 +143,7 @@ export const dpaContent: LegalDocumentContent = {
         id: "subencargados",
         title: "6. Sub-processors",
         paragraphs: [
-          "The controller authorizes the following sub-processors: Google (sign-in), Stripe (subscription payments), Neon (database), Railway (hosting), Cloudflare (encrypted backup storage), GitHub (automated backup runs) and, only if the restaurant enables electronic invoicing, Facturapi (CFDI stamping through an authorized certification provider and CFDI delivery by email). Some may be located outside Mexico. Green Monkey will give notice in the app, at least 15 days in advance, of any new sub-processor.",
+          "The controller authorizes the following sub-processors: Google (sign-in), Stripe (subscription payments), Neon (database), Railway (hosting), Cloudflare (encrypted backup storage), GitHub (automated backup runs) and, only if the restaurant enables electronic invoicing, Facturapi (CFDI stamping through an authorized certification provider and CFDI delivery by email). Some may be located outside Mexico. Loyalty club members' data is processed with the same database, hosting and backup sub-processors (Neon, Railway, Cloudflare and GitHub); the club adds no sub-processor. Green Monkey will give notice in the app, at least 15 days in advance, of any new sub-processor.",
         ],
       },
       {
@@ -177,7 +179,7 @@ export const dpaContent: LegalDocumentContent = {
         id: "transferencias",
         title: "11. Transfers",
         paragraphs: [
-          "Green Monkey does not transfer the data to third parties, except communications the law requires or that it makes on the controller's instructions, such as sending a CFDI's data to an authorized certification provider for stamping and, through it, to the SAT (article 36); and orders from a competent authority, which it will report to the controller where the law allows.",
+          "Green Monkey does not transfer the data to third parties, except communications the law requires or that it makes on the controller's instructions, such as sending a CFDI's data to an authorized certification provider for stamping and, through it, to the SAT (article 36); and orders from a competent authority, which it will report to the controller where the law allows. Loyalty club members' data is neither transferred nor shared with third parties: only the controller views and exports it.",
         ],
       },
     ],

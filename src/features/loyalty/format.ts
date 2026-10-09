@@ -81,6 +81,20 @@ export function consentText(
       });
 }
 
+/**
+ * The hint under "Un sello extra por cada", from what the owner typed (LOYALTY-UX-18): $0 is
+ * always exactly one stamp; an unreadable value keeps the default's example.
+ */
+export function thresholdHint(typed: string, locale: Locale, currency: string) {
+  const t = strings[locale];
+  let value = 40000;
+  if (/^\d+(\.\d{1,2})?$/.test(typed.trim()))
+    value = Math.round(Number(typed.trim()) * 100);
+  return value === 0
+    ? t.loyaltyThresholdZeroHint
+    : fill(t.loyaltyThresholdHint, { amount: money(value, locale, currency) });
+}
+
 /** "1 premio disponible" / "{n} premios disponibles". */
 export function rewardsText(n: number, locale: Locale) {
   const t = strings[locale];

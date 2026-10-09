@@ -9,6 +9,8 @@ import { requireRecentAuth } from "../access.js";
 import { audit, once } from "../orders.js";
 import { entitlement, requirePro } from "../entitlements.js";
 import { restaurantPrivacyUrl } from "../account-settings.js";
+import { legalConfig, type LegalConfig } from "../legal.js";
+import { clubLegalCovered } from "../../shared/legal.js";
 import { DomainError, type Session } from "../../shared/domain.js";
 import {
   LOYALTY_DEFAULTS,
@@ -92,6 +94,7 @@ export const clubView = (
 export async function getLoyaltySettings(
   tx: Tx,
   s: Session,
+  legal: LegalConfig = legalConfig(process.env),
 ): Promise<LoyaltySettingsView | LoyaltyClubView> {
   permit(s, operators);
   const p = await loadProgram(tx);
@@ -128,6 +131,7 @@ export async function getLoyaltySettings(
     hasMembers: (
       await tx`select exists (select 1 from loyalty_members where redacted_at is null) as held`
     )[0].held,
+    legalReady: clubLegalOpen(legal),
   };
 }
 
@@ -148,12 +152,28 @@ const FIELDS = [
 ] as const;
 
 /**
- * PUT /api/loyalty/settings (owner and manager, step-up). Turning the club on needs Pro, the
- * restaurant's privacy notice URL (031) and the attestation that the notice covers the club; the
- * attestation records who and when, and is kept while it stays checked. A stale expectedVersion
- * is stale_settings.
+ * Whether the platform's own documents allow turning the club on (LOYALTY-PRIVACY-4): published
+ * with the privacy notice and DPA version that cover the club in effect; unpublished only where
+ * draft documents may be used (LEGAL_UNPUBLISHED_SIGNUP=allow, never production).
  */
-export async function saveLoyaltySettings(tx: Tx, s: Session, raw: unknown) {
+export function clubLegalOpen(legal: LegalConfig, now = Date.now()) {
+  return legal.status === "published"
+    ? clubLegalCovered(legal.status, now)
+    : legal.unpublishedSignupAllowed;
+}
+
+/**
+ * PUT /api/loyalty/settings (owner and manager, step-up). Turning the club on needs Pro, the
+ * platform's documents that cover the club (loyalty_legal_required), the restaurant's privacy
+ * notice URL (031) and the attestation that the notice covers the club; the attestation records
+ * who and when, and is kept while it stays checked. A stale expectedVersion is stale_settings.
+ */
+export async function saveLoyaltySettings(
+  tx: Tx,
+  s: Session,
+  raw: unknown,
+  legal: LegalConfig = legalConfig(process.env),
+) {
   permit(s, managers);
   requireRecentAuth(s);
   const parsed = loyaltySettingsInput.safeParse(raw);
@@ -167,6 +187,9 @@ export async function saveLoyaltySettings(tx: Tx, s: Session, raw: unknown) {
       throw new DomainError("stale_settings", 409);
     if (p.enabled) {
       await requirePro(tx);
+      // Green Monkey processes members' data as encargado only under a DPA that lists it.
+      if (!before.enabled && !clubLegalOpen(legal))
+        throw new DomainError("loyalty_legal_required", 409);
       if (!(await restaurantPrivacyUrl(tx)))
         throw new DomainError("loyalty_privacy_notice_required", 409);
       if (!p.privacyAttested)
@@ -215,7 +238,7 @@ export async function saveLoyaltySettings(tx: Tx, s: Session, raw: unknown) {
       fields: changed,
       enabled: p.enabled,
     });
-    return getLoyaltySettings(tx, s);
+    return getLoyaltySettings(tx, s, legal);
   });
 }
 

@@ -7,12 +7,13 @@
 import { useEffect, useState } from "react";
 import { minor, type Locale, type Session } from "../../../shared/domain";
 import type { LoyaltySettingsView } from "../../../shared/loyalty";
-import { errorNotice } from "../../i18n";
+import { errorNotice, strings } from "../../i18n";
+import { focusRestaurantPrivacy } from "../public/PrivacyNoticeWarning";
 import { dateTime } from "../../datetime";
 import { Button, Field } from "../../components/ui";
 import { loyaltyApi, refreshClub } from "./loyaltyApi";
 import { LoyaltyImport } from "./LoyaltyImport";
-import { fill, money, tr } from "./format";
+import { fill, thresholdHint, tr } from "./format";
 import "./loyalty.css";
 
 const pesos = (n: number | null) => (n === null ? "" : (n / 100).toFixed(2));
@@ -112,12 +113,25 @@ export function LoyaltySettings({
             void save();
           }}
         >
+          {!view.legalReady && !view.enabled && (
+            <p className="warning-panel" role="note">
+              {t("loyaltyLegalPending")}
+            </p>
+          )}
           {view.privacyUrl ? (
             <p>
-              {fill(t("loyaltyPrivacyNotice"), { url: view.privacyUrl })}
+              {t("loyaltyPrivacyNotice")}{" "}
+              <a href={view.privacyUrl} target="_blank" rel="noopener noreferrer">
+                {view.privacyUrl}
+              </a>
             </p>
           ) : (
-            <p className="warning-panel">{t("loyaltyPrivacyMissing")}</p>
+            <div className="warning-panel" role="note">
+              <p>{t("loyaltyPrivacyMissing")}</p>
+              <Button onClick={() => focusRestaurantPrivacy()}>
+                {strings[locale].publicPrivacyMissingAction}
+              </Button>
+            </div>
           )}
           <label className="check">
             <input
@@ -139,7 +153,7 @@ export function LoyaltySettings({
             <input
               type="checkbox"
               checked={form.enabled}
-              disabled={!pro && !form.enabled}
+              disabled={(!pro || !view.legalReady) && !form.enabled}
               onChange={(e) => set("enabled", e.target.checked)}
             />
             {t("loyaltyEnabled")}
@@ -183,9 +197,7 @@ export function LoyaltySettings({
             </Field>
           </div>
           <p className="muted tiny">
-            {fill(t("loyaltyThresholdHint"), {
-              amount: money(view.stampThreshold || 40000, locale, session.restaurant.currency),
-            })}
+            {thresholdHint(form.stampThreshold, locale, session.restaurant.currency)}
           </p>
           <fieldset className="loyalty-country">
             <legend>{t("loyaltyRewardKind")}</legend>
