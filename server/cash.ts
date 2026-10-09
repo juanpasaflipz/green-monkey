@@ -122,6 +122,8 @@ export type DrawerTerminalRow = {
 };
 export type DrawerPlatformRow = {
   platform: PlatformCode;
+  /** «Otra»'s typed name (latest spelling of the group); null for a named platform. */
+  label: string | null;
   count: number;
   amount: number;
   refunds: number;
@@ -145,7 +147,7 @@ export async function drawerBreakdown(
   platforms: DrawerPlatformRow[];
 }> {
   const rows = await tx`with x as (
-      select t.method,t.terminal_id,t.platform,t.terminal_label,t.created_at,
+      select t.method,t.terminal_id,t.platform,t.terminal_label,t.platform_label,t.created_at,
         t.amount,t.tip,0 as refund,t.fee,t.fee_source,1 as n,
         (c.closed_at is not null and t.created_at>c.closed_at) as late,o.channel='kiosk' as kiosk
       from tenders t
@@ -153,12 +155,13 @@ export async function drawerBreakdown(
       join orders o on o.tenant_id=t.tenant_id and o.id=t.order_id
       where t.session_id=${drawerId} and t.method<>'cash'
       union all
-      select t.method,t.terminal_id,t.platform,t.terminal_label,r.created_at,
+      select t.method,t.terminal_id,t.platform,t.terminal_label,t.platform_label,r.created_at,
         0,0,r.amount,null,null,0,false,false
       from refunds r join tenders t on t.tenant_id=r.tenant_id and t.id=r.tender_id
       where r.session_id=${drawerId} and r.method<>'cash')
     select x.method,x.terminal_id,x.platform,
       (array_agg(x.terminal_label order by x.created_at desc) filter (where x.terminal_label is not null))[1] as snapshot,
+      (array_agg(x.platform_label order by x.created_at desc) filter (where x.platform_label is not null))[1] as platform_label,
       max(pt.name) as current_name,max(pt.kind) as kind,
       sum(x.n)::int as count,sum(x.amount)::int as amount,sum(x.tip)::int as tips,sum(x.refund)::int as refunds,
       coalesce(sum(x.amount+x.tip) filter (where x.late),0)::int as late,
@@ -167,8 +170,10 @@ export async function drawerBreakdown(
       coalesce(sum(x.fee) filter (where x.fee_source='provider'),0)::int as fee_provider,
       coalesce(sum(x.fee) filter (where x.fee_source='estimated'),0)::int as fee_estimated
     from x left join payment_terminals pt on pt.id=x.terminal_id
-    group by x.method,x.terminal_id,x.platform
-    order by x.method,max(pt.name) nulls last,x.terminal_id nulls last,x.platform`;
+    -- LD-75 / PAYMENTS-MONEY-8: each «Otra» name is its own row (case and spaces ignored).
+    group by x.method,x.terminal_id,x.platform,lower(btrim(x.platform_label))
+    order by x.method,max(pt.name) nulls last,x.terminal_id nulls last,x.platform,
+      lower(btrim(x.platform_label)) nulls first`;
   const byTerminal: DrawerTerminalRow[] = [];
   const platforms: DrawerPlatformRow[] = [];
   for (const r of rows) {
@@ -194,6 +199,7 @@ export async function drawerBreakdown(
     else
       platforms.push({
         platform: r.platform as PlatformCode,
+        label: r.platform_label ?? null,
         count: r.count,
         amount: r.amount,
         refunds: r.refunds,

@@ -7,6 +7,7 @@ import { archivedDrawerAmounts } from "../src/features/offline/format";
 import { exceptionDetail } from "../src/features/reports/exception-text";
 import { tenderColumns, toCsv } from "../src/features/reports/csv";
 import { money } from "../src/features/reports/format";
+import { referenceFromName } from "../shared/payments";
 import {
   buildCorteDocument,
   drawerRow,
@@ -128,6 +129,61 @@ describe("Excepciones and the tender CSV", () => {
         m,
       ),
     ).toContain("Reembolso por plataforma (sin efectivo) " + m(1500));
+  });
+  it("LD-75: a platform tender to review names the platform («Otra» by its name), why, the order's price list and its number", () => {
+    const pt = (reasonCode: string, detail: object) =>
+      ({
+        ...row("platform_tender", 38_000, detail),
+        reasonCode,
+      }) as ExceptionRow;
+    expect(
+      exceptionDetail(
+        pt("payments_platform_other", {
+          platform: "other",
+          label: "App",
+          priceList: null,
+          reference: null,
+        }),
+        "es",
+        m,
+      ),
+    ).toBe("App · Plataforma «Otra» · Precios de mostrador");
+    expect(
+      exceptionDetail(
+        pt("payments_platform_no_price_list", {
+          platform: "rappi",
+          label: null,
+          priceList: null,
+          reference: "88123",
+        }),
+        "en",
+        m,
+      ),
+    ).toBe(
+      "Rappi · Order without the platform's price list · Counter prices · #88123",
+    );
+    expect(
+      exceptionDetail(
+        pt("payments_platform_rule_skipped", {
+          platform: "didi_food",
+          label: null,
+          priceList: "didi_food",
+          reference: "4F2A",
+        }),
+        "es",
+        m,
+      ),
+    ).toBe(
+      "DiDi Food · Registrado sin conexión fuera de las reglas · Precios: DiDi Food · #4F2A",
+    );
+  });
+  it("PAYMENTS-UX-15: the order name prefills the platform order number", () => {
+    expect(referenceFromName("DiDi 4F2A")).toBe("4F2A");
+    expect(referenceFromName("Uber Eats #4F2A1")).toBe("#4F2A1");
+    expect(referenceFromName("rappi 88123")).toBe("88123");
+    expect(referenceFromName("Mesa 4")).toBe("");
+    expect(referenceFromName("DiDi")).toBe("");
+    expect(referenceFromName("")).toBe("");
   });
   it("the tender CSV carries terminal, provider, card, platform and fee columns", () => {
     const tender: TenderReportRow = {

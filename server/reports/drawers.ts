@@ -191,7 +191,8 @@ export async function loadDrawers(
           'feeProvider', g.fee_provider, 'feeEstimated', g.fee_estimated,
           'kioskCount', g.kiosk_count, 'kioskAmount', g.kiosk_amount,
           'expected', dc.expected, 'reported', dc.reported)
-          order by g.method, pt.name nulls last, g.terminal_id nulls last, g.platform), '[]'::jsonb) as splits
+          order by g.method, pt.name nulls last, g.terminal_id nulls last, g.platform,
+            lower(btrim(g.platform_label)) nulls first), '[]'::jsonb) as splits
       from (
         select u.method, u.terminal_id, u.platform,
           (array_agg(u.terminal_label order by u.created_at desc) filter (where u.terminal_label is not null))[1] as snapshot,
@@ -216,7 +217,8 @@ export async function loadDrawers(
             0, 0, r.amount, null, null, 0, false, false
           from refunds r join tenders t on t.tenant_id = r.tenant_id and t.id = r.tender_id
           where r.tenant_id = d.tenant_id and r.session_id = d.id and r.method <> 'cash') u
-        group by u.method, u.terminal_id, u.platform) g
+        -- LD-75 / PAYMENTS-MONEY-8: each «Otra» name is its own row.
+        group by u.method, u.terminal_id, u.platform, lower(btrim(u.platform_label))) g
       left join payment_terminals pt on pt.tenant_id = d.tenant_id and pt.id = g.terminal_id
       left join drawer_terminal_counts dc on dc.tenant_id = d.tenant_id and dc.drawer_id = d.id
         and g.method = 'external' and dc.terminal_id is not distinct from g.terminal_id) sp

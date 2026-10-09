@@ -840,6 +840,234 @@ try {
     assert.equal(audit.detail.platform, "didi_food");
   });
 
+  await test("7b. LD-75 (PAYMENTS-SECURITY-1, UX-9, SECURITY-4, SECURITY-5, MONEY-6, MONEY-8): platforms are off until enabled, Uber/Rappi/DiDi need their order number, never a dine-in order, a platform with its own prices pays only its list; Excepciones lists «Otra», off-list and rule-skipping tenders with actor and device; «Otra» names are reported apart", async () => {
+    // Off by default: no row means disabled, «Otra» included (restaurant B never saved any).
+    const optsB = await write(ownerB, (tx) => paymentOptions(tx, ownerB));
+    assert.deepEqual(optsB.platforms, []);
+    const viewB = await write(ownerB, (tx) => paymentSettingsView(tx, ownerB));
+    assert.ok(viewB.platforms.every((p) => !p.enabled));
+    const oB = await newOrder(ownerB, [{ product: ids.tacoB, quantity: 1 }]);
+    await rejects(
+      pay(ownerB, oB.id, platformBody(2000, { platform: "uber_eats" })),
+      "payments_platform_disabled",
+    );
+    const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    await rejects(
+      pay(
+        cashier,
+        o.id,
+        platformBody(4500, { platform: "other", platformLabel: "App" }),
+      ),
+      "payments_platform_disabled",
+    );
+    // The named platforms carry their order number (light format check).
+    for (const reference of ["", "  ", "x", "4F/2A"])
+      await rejects(
+        pay(cashier, o.id, platformBody(4500, { reference })),
+        "payments_platform_reference_required",
+      );
+    // Never a table or dine-in order; never a dine-in order or a disabled platform's list.
+    const dine = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }], {
+      mode: "dine_in",
+    });
+    await rejects(
+      pay(cashier, dine.id, platformBody(4500)),
+      "payments_platform_dine_in",
+    );
+    await rejects(
+      newOrder(cashier, [{ product: ids.taco, quantity: 1 }], {
+        mode: "dine_in",
+        pricePlatform: "didi_food",
+      }),
+      "payments_platform_dine_in",
+    );
+    await rejects(
+      newOrder(cashier, [{ product: ids.taco, quantity: 1 }], {
+        pricePlatform: "rappi",
+      }),
+      "payments_platform_disabled",
+    );
+    // A platform with prices of its own pays only orders rung at its list (MONEY-6). On
+    // restaurant B, so A's price list stays as the later checks expect.
+    await write(ownerB, (tx) =>
+      savePlatforms(tx, ownerB, {
+        operationId: randomUUID(),
+        platforms: [
+          {
+            platform: "didi_food",
+            enabled: true,
+            commissionBp: null,
+            expectedVersion: 0,
+          },
+        ],
+      }),
+    );
+    await write(ownerB, (tx) =>
+      savePlatformPrices(tx, ownerB, {
+        operationId: randomUUID(),
+        prices: [
+          {
+            productId: ids.tacoB,
+            platform: "didi_food",
+            price: 2400,
+            expectedVersion: 0,
+          },
+        ],
+      }),
+    );
+    assert.equal(
+      (await write(ownerB, (tx) => paymentOptions(tx, ownerB))).platforms.find(
+        (p) => p.platform === "didi_food",
+      )?.hasPrices,
+      true,
+    );
+    const counter = await newOrder(ownerB, [{ product: ids.tacoB, quantity: 1 }]);
+    await rejects(
+      pay(ownerB, counter.id, platformBody(2000)),
+      "payments_platform_needs_price_list",
+    );
+    const listed = await newOrder(ownerB, [{ product: ids.tacoB, quantity: 1 }], {
+      pricePlatform: "didi_food",
+    });
+    assert.equal(listed.total, 2400);
+    await pay(ownerB, listed.id, platformBody(2400, { reference: "#88 A" }));
+    const exB = await snapshotTenant(sql, B, (tx) =>
+      exceptionRows(tx, ownerB, {
+        from: today,
+        to: today,
+        kinds: "platform_tender",
+      }),
+    );
+    assert.deepEqual(exB.rows, [], "rung at its own list: nothing to review");
+    // «Otra» once enabled; two names, plus a DiDi tender on a counter-priced order.
+    await write(manager, (tx) =>
+      savePlatforms(tx, manager, {
+        operationId: randomUUID(),
+        platforms: [
+          {
+            platform: "other",
+            enabled: true,
+            commissionBp: null,
+            expectedVersion: 0,
+          },
+        ],
+      }),
+    );
+    const corner = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    await pay(
+      cashier,
+      corner.id,
+      platformBody(4500, {
+        platform: "other",
+        platformLabel: "Cornershop",
+        reference: "",
+      }),
+    );
+    const ifood = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    await pay(
+      cashier,
+      ifood.id,
+      platformBody(4500, { platform: "other", platformLabel: " ifood " }),
+    );
+    const ifood2 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    await pay(
+      cashier,
+      ifood2.id,
+      platformBody(4500, { platform: "other", platformLabel: "iFood" }),
+    );
+    const offList = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    await pay(cashier, offList.id, platformBody(4500, { reference: "D7X" }));
+    // Offline evidence keeps the money (OFF-8) but notes each online rule it broke (SECURITY-4).
+    const evidence = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    await write(cashier, (tx) =>
+      newTender(
+        tx,
+        cashier,
+        evidence.id,
+        {
+          method: "platform",
+          amount: 4500,
+          tip: 0,
+          received: 4500,
+          reference: "",
+          externalConfirmed: true,
+          platform: "rappi",
+        },
+        ids.drawer1,
+      ),
+    );
+    const [noted] = await asOwner(
+      A,
+      (tx) =>
+        tx`select detail from audit where entity_id=${evidence.id} and operation='payment.recorded'`,
+    );
+    assert.deepEqual(noted.detail.platformRulesSkipped, ["disabled", "reference"]);
+    assert.equal(noted.detail.platformNote, "payments_platform_rule_skipped");
+    const ex = await snapshotTenant(sql, A, (tx) =>
+      exceptionRows(tx, owner, {
+        from: today,
+        to: today,
+        kinds: "platform_tender",
+        limit: "500",
+      }),
+    );
+    const mine = new Map(
+      ex.rows.map((r) => [
+        r.orderId,
+        [r.reasonCode, r.actorName, r.deviceName, r.amount],
+      ]),
+    );
+    const at = (reason: string, amount = 4500) => [
+      reason,
+      "Carlos Caja",
+      "Caja mostrador",
+      amount,
+    ];
+    assert.deepEqual(mine.get(corner.id), at("payments_platform_other"));
+    assert.deepEqual(mine.get(ifood.id), at("payments_platform_other"));
+    assert.deepEqual(
+      mine.get(offList.id),
+      at("payments_platform_no_price_list"),
+    );
+    assert.deepEqual(
+      mine.get(evidence.id),
+      at("payments_platform_rule_skipped"),
+    );
+    assert.deepEqual(ex.rows.find((r) => r.orderId === corner.id)?.detail, {
+      platform: "other",
+      label: "Cornershop",
+      priceList: null,
+      reference: null,
+      source: "normal",
+      rulesSkipped: null,
+    });
+    // MONEY-8: «Otra» names are separate rows (case and spaces ignored), in reports and the drawer.
+    const summary = await snapshotTenant(sql, A, (tx) =>
+      salesSummary(tx, owner, { from: today, to: today }, "req-7b", ports),
+    );
+    assert.deepEqual(
+      summary.collections.byPlatform
+        .filter((p) => p.platform === "other")
+        .map((p) => [p.label, p.count, p.amount]),
+      [
+        ["Cornershop", 1, 4500],
+        ["iFood", 2, 9000],
+      ],
+    );
+    const drawer = await write(manager, (tx) =>
+      cashSummary(tx, manager, ids.drawer1),
+    );
+    assert.deepEqual(
+      drawer!.platforms
+        .filter((p) => p.platform === "other")
+        .map((p) => [p.label, p.count, p.amount]),
+      [
+        ["Cornershop", 1, 4500],
+        ["iFood", 2, 9000],
+      ],
+    );
+  });
+
   await test("recordPayment named terminal: label snapshot and fee on amount + tip; archived and unknown terminals refused online", async () => {
     const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
     const paid = await pay(cashier, o.id, terminalBody(4500, bbva.id, 500));
@@ -1563,7 +1791,8 @@ try {
         method: "platform",
         tip: 0,
         externalConfirmed: true,
-        reference: "",
+        // LD-75: DiDi tenders carry the platform's order number.
+        reference: "D9A1",
         platform: "didi_food",
       },
       3000,

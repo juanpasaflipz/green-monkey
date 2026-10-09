@@ -17,6 +17,7 @@ import {
   percentToBp,
   PLATFORMS,
   platformLabel,
+  platformReferenceProblem,
   TENDER_METHODS,
 } from "../shared/payments";
 import { listPrice, orderInput, quote, type Product } from "../shared/domain";
@@ -242,7 +243,9 @@ describe("validatePayment (PaymentDialog) platform and terminal branches", () =>
       ok: false,
       problem: { field: "amount", key: "payProblemPlatformFullBalance" },
     });
-    expect(validatePayment({ ...platform, platform: "rappi" })).toMatchObject({
+    expect(
+      validatePayment({ ...platform, platform: "rappi", reference: "88123" }),
+    ).toMatchObject({
       ok: false,
       problem: { field: "confirmed", key: "payProblemPlatformConfirm" },
     });
@@ -288,6 +291,81 @@ describe("validatePayment (PaymentDialog) platform and terminal branches", () =>
       ok: true,
       values: { platform: "other", platformLabel: "Pedidos Ya" },
     });
+  });
+  it("LD-75 (PAYMENTS-SECURITY-1): Uber Eats, Rappi and DiDi need their order number; never a dine-in order; a platform with its own prices pays only its list's orders", () => {
+    const ok = {
+      ...base,
+      method: "platform" as const,
+      confirmed: true,
+      reference: "4F2A",
+    };
+    for (const platform of ["uber_eats", "rappi", "didi_food"] as const) {
+      for (const reference of ["", "  ", "x", "4F2A/3", "x".repeat(41)])
+        expect(validatePayment({ ...ok, platform, reference })).toMatchObject({
+          ok: false,
+          problem: { field: "reference" },
+        });
+      expect(
+        validatePayment({ ...ok, platform, reference: "#4F2A 1" }).ok,
+      ).toBe(true);
+    }
+    // «Otra»'s number stays optional.
+    expect(
+      validatePayment({
+        ...ok,
+        platform: "other",
+        platformLabel: "PedidosYa",
+        reference: "",
+      }).ok,
+    ).toBe(true);
+    expect(
+      validatePayment({ ...ok, platform: "rappi", dineIn: true }),
+    ).toMatchObject({
+      ok: false,
+      problem: { field: "platform", key: "payProblemPlatformDineIn" },
+    });
+    expect(
+      validatePayment({ ...ok, platform: "rappi", pricePlatform: "didi_food" }),
+    ).toMatchObject({
+      ok: false,
+      problem: { field: "platform", key: "payProblemPlatformPriceList" },
+    });
+    expect(
+      validatePayment({ ...ok, platform: "rappi", platformHasPrices: true }),
+    ).toMatchObject({
+      ok: false,
+      problem: { field: "platform", key: "payProblemPlatformNeedsPriceList" },
+    });
+    expect(
+      validatePayment({
+        ...ok,
+        platform: "rappi",
+        platformHasPrices: true,
+        pricePlatform: "rappi",
+      }).ok,
+    ).toBe(true);
+    expect(platformReferenceProblem("uber_eats", " 4F2A1 ")).toBeNull();
+    expect(platformReferenceProblem("didi_food", "")).toBe(
+      "payments_platform_reference_required",
+    );
+  });
+  it("PAYMENTS-UX-4: with terminals to choose from, a card record names one (or «Otra terminal») deliberately", () => {
+    const ext = {
+      ...base,
+      method: "external" as const,
+      reference: "AUT-1",
+      confirmed: true,
+      terminalChoice: true,
+    };
+    expect(validatePayment({ ...ext, terminalId: undefined })).toMatchObject({
+      ok: false,
+      problem: { field: "terminal", key: "payProblemTerminalRequired" },
+    });
+    expect(validatePayment({ ...ext, terminalId: null })).toMatchObject({
+      ok: true,
+      values: { method: "external" },
+    });
+    expect(validatePayment({ ...ext, terminalChoice: false }).ok).toBe(true);
   });
   it("an external record carries its named terminal; cash never does", () => {
     const ext = validatePayment({

@@ -244,6 +244,9 @@ export const EXCEPTION_KINDS = [
   "open_price",
   "offline_archive",
   "offline_reconcile",
+  // payments (037, LD-75): a platform tender that is «Otra», on an order not rung at that
+  // platform's price list, or offline evidence that broke an online platform rule.
+  "platform_tender",
 ] as const;
 export type ExceptionKind = (typeof EXCEPTION_KINDS)[number];
 /**

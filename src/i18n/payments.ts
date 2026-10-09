@@ -14,9 +14,14 @@ export default defineArea({
     payTerminal: "Terminal",
     payUseAsDefault: "Usar siempre en este dispositivo",
     payDefaultSaved: "Terminal predeterminada guardada",
+    payDefaultTerminalIs: "Predeterminada en este dispositivo",
+    payDefaultFailed:
+      "No se pudo guardar la terminal predeterminada de este dispositivo.",
     payTerminalManualOnly: "solo manual",
     payPlatform: "Plataforma",
-    payPlatformOrderNumber: "Número de pedido de la plataforma (opcional)",
+    payPlatformOrderNumber: "Número de pedido de la plataforma",
+    payPlatformOrderNumberOptional:
+      "Número de pedido de la plataforma (opcional)",
     payPlatformConfirm: "La plataforma ya cobró este pedido",
     payPlatformPaidIn: "Pagado en {platform}",
     payPlatformOtherName: "Nombre de la plataforma",
@@ -91,6 +96,7 @@ export default defineArea({
     cashBatchDifference: "Diferencia del lote",
     cashPlatforms:
       "Pagado por plataformas (no cuenta como efectivo ni tarjeta)",
+    cashPlatformsNet: "Total plataformas",
     cashUnresolvedAttempts:
       "Hay cobros en terminal sin resolver. Un gerente debe resolverlos antes de cerrar.",
     cashTerminalFees: "Comisiones estimadas",
@@ -134,6 +140,22 @@ export default defineArea({
       "El número de pedido admite hasta 40 caracteres.",
     payProblemPlatformConfirm:
       "Confirma que la plataforma ya cobró este pedido.",
+    payProblemPlatformReferenceRequired:
+      "Escribe el número de pedido de la plataforma (letras y números).",
+    payProblemTerminalRequired:
+      "Elige la terminal con la que se cobró (o «Otra terminal»).",
+    payProblemPlatformDineIn:
+      "Una orden de mesa o para comer aquí no se cobra con una plataforma.",
+    payProblemPlatformPriceList:
+      "La orden se registró con precios de {list}: cóbrala con esa plataforma.",
+    payProblemPlatformNeedsPriceList:
+      "Esta orden se registró con precios de mostrador y {platform} tiene precios propios. Regístrala con «Precios: {platform}» para cobrarla con la plataforma.",
+    payExKindPlatformTender: "Pago por plataforma a revisar",
+    payExPlatformOther: "Plataforma «Otra»",
+    payExPlatformNoPriceList: "Orden sin la lista de precios de la plataforma",
+    payExPlatformRuleSkipped: "Registrado sin conexión fuera de las reglas",
+    payExPlatformPriceList: "Precios: {list}",
+    payExPlatformCounterPrices: "Precios de mostrador",
     payOpTerminalSaved: "Terminal guardada",
     payOpTerminalArchived: "Terminal archivada",
     payOpPlatformsSaved: "Plataformas guardadas",
@@ -148,9 +170,12 @@ export default defineArea({
     payTerminal: "Terminal",
     payUseAsDefault: "Always use on this device",
     payDefaultSaved: "Default terminal saved",
+    payDefaultTerminalIs: "Default on this device",
+    payDefaultFailed: "Could not save this device's default terminal.",
     payTerminalManualOnly: "manual only",
     payPlatform: "Platform",
-    payPlatformOrderNumber: "Platform order number (optional)",
+    payPlatformOrderNumber: "Platform order number",
+    payPlatformOrderNumberOptional: "Platform order number (optional)",
     payPlatformConfirm: "The platform already charged this order",
     payPlatformPaidIn: "Paid on {platform}",
     payPlatformOtherName: "Platform name",
@@ -220,6 +245,7 @@ export default defineArea({
     cashBatchTotal: "Batch total",
     cashBatchDifference: "Batch difference",
     cashPlatforms: "Paid by platforms (not cash or card)",
+    cashPlatformsNet: "Platforms total",
     cashUnresolvedAttempts:
       "There are unresolved terminal charges. A manager must resolve them before closing.",
     cashTerminalFees: "Estimated fees",
@@ -260,6 +286,22 @@ export default defineArea({
     payProblemPlatformReference: "The order number takes up to 40 characters.",
     payProblemPlatformConfirm:
       "Confirm that the platform already charged this order.",
+    payProblemPlatformReferenceRequired:
+      "Enter the platform's order number (letters and digits).",
+    payProblemTerminalRequired:
+      "Choose the terminal that took the charge (or «Other terminal»).",
+    payProblemPlatformDineIn:
+      "A table or dine-in order is never charged to a platform.",
+    payProblemPlatformPriceList:
+      "The order was rung at {list} prices: charge it to that platform.",
+    payProblemPlatformNeedsPriceList:
+      "This order was rung at counter prices and {platform} has its own prices. Ring it with «Prices: {platform}» to charge it to the platform.",
+    payExKindPlatformTender: "Platform payment to review",
+    payExPlatformOther: "«Other» platform",
+    payExPlatformNoPriceList: "Order without the platform's price list",
+    payExPlatformRuleSkipped: "Recorded offline outside the rules",
+    payExPlatformPriceList: "Prices: {list}",
+    payExPlatformCounterPrices: "Counter prices",
     payOpTerminalSaved: "Terminal saved",
     payOpTerminalArchived: "Terminal archived",
     payOpPlatformsSaved: "Platforms saved",
@@ -390,6 +432,18 @@ export default defineArea({
     payments_platform_price_list: [
       "La orden se registró con precios de otra plataforma. Cóbrala con esa plataforma.",
       "The order was rung at another platform's prices. Charge it with that platform.",
+    ],
+    payments_platform_needs_price_list: [
+      "Esta orden se registró con precios de mostrador y esa plataforma tiene precios propios. Regístrala con «Precios» de la plataforma para cobrarla con ella.",
+      "This order was rung at counter prices and that platform has its own prices. Ring it with the platform's «Prices» to charge it to the platform.",
+    ],
+    payments_platform_dine_in: [
+      "Una orden de mesa o para comer aquí no se cobra ni se registra con una plataforma.",
+      "A table or dine-in order is never charged to or rung at a platform.",
+    ],
+    payments_platform_reference_required: [
+      "Escribe el número de pedido de la plataforma (letras y números, hasta 40).",
+      "Enter the platform's order number (letters and digits, up to 40).",
     ],
     payments_platform_refund_requires_batch: [
       "Reembolsa los pagos por plataforma desde Reembolsar en la orden.",
