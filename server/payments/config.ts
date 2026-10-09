@@ -53,7 +53,8 @@ function loopbackHttp(raw: string): boolean {
 
 function apiUrl(env: Env, name: string, fallback: string, appEnv: AppEnv) {
   const raw = value(env, name);
-  if (raw === undefined || raw.replace(/\/+$/, "") === fallback) return fallback;
+  if (raw === undefined || raw.replace(/\/+$/, "") === fallback)
+    return fallback;
   if ((appEnv === "development" || appEnv === "test") && loopbackHttp(raw))
     return raw.replace(/\/+$/, "");
   throw new ConfigError("payments_api_url_not_allowed");

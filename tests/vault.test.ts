@@ -82,16 +82,30 @@ describe("vault: payments instance", () => {
   const tenantId = randomUUID();
   it("round-trips provider credentials bound to tenant, purpose and row", async () => {
     const r = ring(entry("2026-10", 1));
-    const b = { tenantId, purpose: "mp_credentials" as const, id: randomUUID() };
-    const { jwe, kid } = await paymentsVault.sealSecret(r, '{"accessToken":"x"}', b);
+    const b = {
+      tenantId,
+      purpose: "mp_credentials" as const,
+      id: randomUUID(),
+    };
+    const { jwe, kid } = await paymentsVault.sealSecret(
+      r,
+      '{"accessToken":"x"}',
+      b,
+    );
     expect(kid).toBe("2026-10");
     expect(jwe).not.toContain("accessToken");
-    expect(await paymentsVault.openSecret(r, jwe, b)).toBe('{"accessToken":"x"}');
+    expect(await paymentsVault.openSecret(r, jwe, b)).toBe(
+      '{"accessToken":"x"}',
+    );
     expect(
-      await code(paymentsVault.openSecret(r, jwe, { ...b, purpose: "clip_credentials" })),
+      await code(
+        paymentsVault.openSecret(r, jwe, { ...b, purpose: "clip_credentials" }),
+      ),
     ).toBe("payments_vault_binding");
     expect(
-      await code(paymentsVault.openSecret(r, jwe, { ...b, tenantId: randomUUID() })),
+      await code(
+        paymentsVault.openSecret(r, jwe, { ...b, tenantId: randomUUID() }),
+      ),
     ).toBe("payments_vault_binding");
   });
 
@@ -140,10 +154,14 @@ describe("vault: payments instance", () => {
       id,
     });
     expect(
-      Buffer.from(await paymentsVault.openUpload(r, box, { tenantId, id })).toString(),
+      Buffer.from(
+        await paymentsVault.openUpload(r, box, { tenantId, id }),
+      ).toString(),
     ).toBe('{"provider":"clip"}');
     expect(
-      await code(paymentsVault.openUpload(r, box, { tenantId, id: randomUUID() })),
+      await code(
+        paymentsVault.openUpload(r, box, { tenantId, id: randomUUID() }),
+      ),
     ).toBe("payments_vault_binding");
     const cfdiTyped = await sealUpload(pub, "{}", {
       typ: "gm-cfdi-csd",
@@ -158,7 +176,11 @@ describe("vault: payments instance", () => {
 
   it("rotation: a secret sealed under an old kid opens while that kid is listed and is re-sealed under the active one", async () => {
     const old = ring(entry("old", 1));
-    const b = { tenantId, purpose: "clip_credentials" as const, id: randomUUID() };
+    const b = {
+      tenantId,
+      purpose: "clip_credentials" as const,
+      id: randomUUID(),
+    };
     const sealed = await paymentsVault.sealSecret(old, "v", b);
     const rotated = ring(entry("new", 2), entry("old", 1));
     expect(paymentsVault.kidOf(sealed.jwe)).toBe("old");
@@ -169,7 +191,9 @@ describe("vault: payments instance", () => {
       await paymentsVault.openSecret(ring(entry("new", 2)), resealed.jwe, b),
     ).toBe("v");
     expect(
-      await code(paymentsVault.openSecret(ring(entry("new", 2)), sealed.jwe, b)),
+      await code(
+        paymentsVault.openSecret(ring(entry("new", 2)), sealed.jwe, b),
+      ),
     ).toBe("payments_vault_unknown_kid");
   });
 });

@@ -53,7 +53,11 @@ export async function rekeyPaymentSecrets(
     try {
       resealed += await tenant(sql, tenantId, async (tx) => {
         const rows = await tx<
-          { id: string; purpose: PaymentSecretPurpose; payload_secret: string }[]
+          {
+            id: string;
+            purpose: PaymentSecretPurpose;
+            payload_secret: string;
+          }[]
         >`select id, purpose, payload_secret from payment_secrets
           where purpose in ('mp_credentials','clip_credentials') and wiped_at is null
             and kid <> ${ring.active}
