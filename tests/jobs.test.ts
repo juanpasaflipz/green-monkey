@@ -3,13 +3,19 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 // The web entry's registration side effect (server/index.ts); the runner no
 // longer imports it (Wave 2.0, P-1).
 import "../server/jobs/handlers/index.js";
-import { backoffMs, failureState, jobErrorCode } from "../server/jobs/queue.js";
+import {
+  backoffMs,
+  CANCEL_REQUESTED,
+  failureState,
+  jobErrorCode,
+} from "../server/jobs/queue.js";
 import { createJobRunner, resolveOutcome } from "../server/jobs/runner.js";
 import { createWorkerRunners } from "../server/jobs/worker-lanes.js";
 import {
   clearJobHandlers,
   enqueueJob,
   handlers,
+  hasDeadHook,
   jobRegistration,
   JOB_KIND,
   MAX_ATTEMPTS,
@@ -238,6 +244,28 @@ describe("jobs API (Wave 2.0)", () => {
     } finally {
       clearWorkerJobHandlers();
     }
+  });
+
+  it("a worker kind registers an onDead hook exactly when WORKER_DEAD_HOOK_KINDS lists it (the web's staff cancel reads the list, P2-CONCURRENCY-6); a handler cannot forge the cancel marker", () => {
+    const hook = async () => {};
+    try {
+      expect(() =>
+        registerWorkerJobHandler("opsworker_hooked", noop, { onDead: hook }),
+      ).toThrow(/WORKER_DEAD_HOOK_KINDS/);
+      expect(() => registerWorkerJobHandler("payments_push", noop)).toThrow(
+        /WORKER_DEAD_HOOK_KINDS/,
+      );
+      registerWorkerJobHandler("payments_push", noop, { onDead: hook });
+      expect(workerHandlers().get("payments_push")?.onDead).toBe(hook);
+      expect(hasDeadHook("payments_push")).toBe(true);
+      expect(hasDeadHook("payments_credentials")).toBe(true);
+      expect(hasDeadHook("payments_poll")).toBe(false);
+      expect(hasDeadHook("kitchen_dispatch")).toBe(false);
+    } finally {
+      clearWorkerJobHandlers();
+    }
+    expect(jobErrorCode(CANCEL_REQUESTED)).toBe("handler_error");
+    expect(jobErrorCode("provider_down")).toBe("provider_down");
   });
 
   it("web and worker kinds are disjoint", () => {

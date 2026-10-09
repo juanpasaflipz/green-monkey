@@ -12,8 +12,9 @@
  * running job whose lease expired on its last allowed claim goes dead with
  * error_code lease_expired instead of being reclaimed (PLATFORM-OPS-3); staff
  * cancel a job with error_code cancelled and requeue dead ones
- * (server/jobs/queue.ts). Retention deletes done/dead jobs older than 30 days
- * and nothing else.
+ * (server/jobs/queue.ts; a kind with an onDead hook is written dead by its
+ * runner, with the hook, a few seconds after the cancel). Retention deletes
+ * done/dead jobs older than 30 days and nothing else.
  *
  * Wave 2.0: runAt defers the first claim; maxAttempts is per kind; worker-only
  * kinds register in server/jobs/worker-registry.ts and run in the worker
@@ -94,19 +95,43 @@ export type JobOutcome =
 export type JobHandler = (ctx: JobContext) => Promise<JobOutcome>;
 
 /**
- * Optional per kind: runs once after the runner wrote a job of this kind dead (its last allowed
- * claim failed, or its lease expired on that claim: `code` is then "lease_expired"), so the area
- * can leave what the job had half done in a state people can resolve (payments: an attempt left
- * `sending` becomes `unknown`). Same tenant scope and replay rules as the handler, no provider
- * call. A throw is logged (job_dead_hook_failed) and changes nothing else; a requeued job runs
- * the handler again as usual.
+ * Optional per kind: runs inside the transaction that writes a job of this kind dead (its last
+ * allowed claim failed, its lease expired on that claim: `code` "lease_expired", or a staff
+ * cancel: `code` "cancelled"), so the area leaves what the job had half done in a state people
+ * can resolve (payments: an attempt left `sending` becomes `unknown`). The dead write and the
+ * hook's writes commit together or not at all (P2-CONCURRENCY-6): a job is never dead without
+ * its effect. A throw rolls the dead write back and is logged (job_dead_hook_failed); the job
+ * stays running and the runner's lease-expiry pass writes it dead with its hook again (no
+ * handler run in between). Write only through `tx` (the job's tenant, RLS), lock the job's
+ * rows after the jobs row (payments: the attempt, LO-2c), and never call a provider. Whatever
+ * must happen only once the transaction committed (an alert) goes to `afterCommit`; it never
+ * runs for a rolled-back attempt.
  */
 export type JobDeadHook = (ctx: {
   job: ClaimedJob;
   code: string;
-  tenant<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
+  tx: Tx;
+  afterCommit(fn: () => void): void;
   log: Logger;
 }) => Promise<void>;
+
+/**
+ * Worker kinds that register an onDead hook; registerWorkerJobHandler refuses a mismatch either
+ * way. The web never imports the worker registry, yet a staff cancel there must not write such a
+ * job dead without its hook (the hook's writes are the worker's own transitions, 037): cancelJob
+ * hands those jobs to the runner instead (server/jobs/queue.ts CANCEL_REQUESTED).
+ */
+export const WORKER_DEAD_HOOK_KINDS: ReadonlySet<string> = new Set([
+  "payments_push",
+  "payments_credentials",
+]);
+
+/** True when a kind's dead write must run with its onDead hook (web registry or worker list). */
+export function hasDeadHook(kind: string): boolean {
+  return (
+    WORKER_DEAD_HOOK_KINDS.has(kind) || registry.get(kind)?.onDead !== undefined
+  );
+}
 
 export interface RegisteredHandler {
   handler: JobHandler;

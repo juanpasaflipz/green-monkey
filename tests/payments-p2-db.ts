@@ -27,7 +27,7 @@ import {
 import { setLogSink } from "../server/logging.js";
 import type { Alert } from "../server/ops/alerts.js";
 import { enqueueJob, handlers } from "../server/jobs.js";
-import { requeueJob } from "../server/jobs/queue.js";
+import { cancelJob, requeueJob } from "../server/jobs/queue.js";
 import { createJobRunner } from "../server/jobs/runner.js";
 import { workerHandlers } from "../server/jobs/worker-registry.js";
 import "../server/jobs/handlers/payments.js";
@@ -2056,6 +2056,111 @@ try {
       { outcome: "not_charged", note: NOTE, confirmed: true },
     );
     assert.equal(doneClip.attempt.state, "dismissed");
+  });
+
+  await test("staff cancel of a push (P2-CONCURRENCY-6): a manager cancels a payments_push that MP's 5xx keeps retrying; the web hands it to the worker (never claimed again, nothing sent), and the worker writes it dead together with its hook: the attempt is unknown with its recovery queued, never left «Enviando»", async () => {
+    const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    fake.next("mercadopago", "server5xx");
+    const view = await start(cashier, o.id, terminals.mp, o.total);
+    await round(A);
+    const pushJob = async () =>
+      (
+        await asOwner(
+          A,
+          (
+            tx,
+          ) => tx`select id,state,attempts,error_code,lease_until < now() as expired
+            from jobs where kind='payments_push' and dedupe_key=${view.id}`,
+        )
+      )[0] as Record<string, any>;
+    const before = await pushJob();
+    assert.deepEqual(
+      [before.state, before.attempts, before.error_code],
+      ["available", 1, "payments_provider_unreachable"],
+      "MP's 5xx: the push waits for its retry",
+    );
+    assert.equal(await stateOf(view.id), "sending");
+    const creates = () =>
+      fake.requests.filter(
+        (r) =>
+          r.method === "POST" &&
+          r.path === "/mp/v1/orders" &&
+          r.idempotencyKey === view.id,
+      ).length;
+    assert.equal(creates(), 1);
+    // «Cancelar» in Operaciones (the web login): the job is handed to the worker.
+    await write(manager, (tx) => cancelJob(tx, manager, before.id));
+    const handed = await pushJob();
+    assert.deepEqual(
+      [handed.state, handed.error_code, handed.expired],
+      ["running", "job_cancel_requested", true],
+    );
+    await rejects(
+      write(manager, (tx) => cancelJob(tx, manager, before.id)),
+      "job_not_cancellable",
+    );
+    // The running worker never claims it again (its expiry pass is not due): nothing is sent.
+    await round(A);
+    assert.equal(creates(), 1, "a cancelled push is never sent again");
+    assert.equal((await pushJob()).state, "running");
+    assert.equal(await stateOf(view.id), "sending");
+    // The worker's next lease-expiry pass writes it dead (cancelled) and runs pushDead with it.
+    const deadAlerts: string[] = [];
+    const alertsBefore = alerts.length;
+    const next = createJobRunner(worker, {
+      handlers: workerHandlers,
+      concurrency: 4,
+      sweepMs: 3_600_000,
+      onDead: (j, code) => deadAlerts.push(`${j.kind}:${code}`),
+    });
+    await next.drainTenant(A);
+    while (next.running() > 0) await sleep(10);
+    await next.stop(2000);
+    const after = await pushJob();
+    assert.deepEqual(
+      [after.state, after.error_code, after.attempts],
+      ["dead", "cancelled", 1],
+    );
+    assert.deepEqual(deadAlerts, [], "a staff cancel is not a dead-job alert");
+    const row = await attemptRow(view.id);
+    assert.deepEqual(
+      [row.state, row.error_code],
+      ["unknown", "payments_push_failed"],
+    );
+    assert.deepEqual((await eventsOf(view.id)).at(-1), {
+      kind: "unknown",
+      actor: "worker",
+      detail: { code: "payments_push_failed", before: "sending" },
+    });
+    assert.ok(
+      alerts
+        .slice(alertsBefore)
+        .some((a) =>
+          /payments_attempt_unknown .*reason=push_failed/.test(a.body),
+        ),
+      "the unknown outcome is alerted once the transaction committed",
+    );
+    assert.equal(
+      await count(
+        A,
+        (tx) => tx`select count(*) as n from jobs where kind='payments_webhook'
+          and dedupe_key=${`recover:${view.id}:dead`}`,
+      ),
+      1,
+      "its recovery is queued",
+    );
+    assert.equal(creates(), 1);
+    // The recovery's identical re-POST (same key) creates or finds MP's order; the cashier then
+    // cancels it from the POS like any pending charge.
+    assert.equal(
+      await drive(view.id, ["pending", "declined", "cancelled"]),
+      "pending",
+    );
+    assert.equal(creates(), 2, "one recovery re-POST, same key");
+    await write(cashier, (tx) =>
+      requestCancel(tx, cashier, view.id, { operationId: randomUUID() }),
+    );
+    assert.equal(await drive(view.id, ["cancelled"]), "cancelled");
   });
 
   await test("MP recovery (P2-MONEY-2, P2-MONEY-4, P2-PROVIDERS-2, P2-CONCURRENCY-5, P2-PROVIDERS-7): a refused re-POST is unknown, never declined, and the identical re-POST adopts the order MP made; a cashier's cancel learns the order id first; a push that died before MP saw it creates the order on recovery; a notification naming the attempt adopts a lost order; already_queued_order_for_terminal on a first send is «queue busy»", async () => {

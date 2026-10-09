@@ -52,7 +52,7 @@ acknowledged a critical alert within 15 minutes during service hours
 | `payments_attempt_unknown_<tenant>` (warning) | ntfy, from the worker | a terminal charge's outcome is unknown (`reason`: `create` = the provider did not answer the create (MP: one identical re-send follows to learn the order), `clip_create` = Clip's create answer was lost, `push_failed` = the push job went dead with the attempt sending (a recovery follows), `no_final_status` = no final status by the deadline (MP: expiry + 2 min; Clip: its own deadline, after a refused withdrawal), `account_unusable` = the deadline passed while the account could not be used, `paid_amount_unknown` = paid without an amount). Its terminal and order stay blocked: "Payments: unknown outcomes" below |
 | `payments_account_failed_<tenant>` (warning) | ntfy, from the worker | MP's or Clip's own verification call refused the restaurant's credentials (a token rotated in the provider's panel): the account is `failed`, live charges keep polling until their deadline. The owner reconnects (**Reemplazar credenciales**, allowed with charges live) and the worker re-reads every live charge |
 | `jobs_dead_payments_*` (warning) | ntfy, from the worker | a payments job used up its attempts. `payments_push`: the attempt becomes «Sin confirmar» (`payments_push_failed`, or declined `payments_provider_unavailable` if it was never sent) and a recovery follows; a manager resolves it ("Payments: unknown outcomes"). `payments_credentials`: its upload is wiped and a still-verifying account fails (`payments_provider_unreachable`); the owner saves again. `payments_devices`: the device list stays as it was. See "Payments: provider outage" below |
-| `job_dead_hook_failed` (log, error) | worker logs | a kind's dead hook threw after the job was marked dead (P2: payments_push, payments_credentials). It is not retried: for payments_push, requeue the dead job in Operaciones (the push then finds the attempt and recovers it: MP re-sends the identical create, Clip only withdraws); for payments_credentials, the owner saves the credentials again |
+| `job_dead_hook_failed` (log, error) | worker logs | a kind's dead hook (P2: payments_push, payments_credentials) threw inside the dead write's transaction, so the dead write rolled back with it: the job stays running and is not dead yet, and the runner's lease-expiry pass writes both again (`stage`: `fail` = the last claim, retried once its lease expires; `expiry` = the expiry pass, retried at the next one, every 5 s in the worker). Nothing to do for one line. The same job id repeating means its hook cannot complete (a statement timeout, a constraint): the attempt or account stays as it was («Enviando», «Verificando»), so report the job id and the error to engineering |
 | `payments_webhook_dropped` (log, info) | web logs | a provider notification was screened out (`reason`: `format`, `rate_ip`, `rate_hook`, `body_size`, `topic`, `no_match`, `coalesced` = another notification for that charge is already waiting); always answered 200. A steady `no_match` stream for one restaurant means the URL in MP or Clip is from an older connect: "Payments: notification failures" |
 | `webhook_rejected` (attempt event) | operator SQL on `payment_attempt_events` (attempt id, `kind='webhook_rejected'`; the POS does not show events) | an MP notification whose `x-signature` did not verify with the sealed secret; nothing changed and the provider was not read (polling continues). Many in a row: the secret in MP and the one entered in Configuración differ |
 | `payments_worker_disabled` (log, info) | worker startup | `PAYMENTS_PROVIDERS` is empty: integrated charging is off (`/capabilities` says `worker_not_configured`); manual terminals keep working |
@@ -348,7 +348,17 @@ code before the change, visible in `GET /api/audit`:
   job: it goes dead with `error_code` `cancelled`, a running holder loses its
   lease (its later writes match no row) and nothing claims it again. Use it
   for a job that keeps killing its process before its last attempt; requeue
-  it after the fix.
+  it after the fix. A kind with a dead hook (`payments_push`,
+  `payments_credentials`) is cancelled by its runner, never without the hook
+  (P2-CONCURRENCY-6): the job shows `running` with `error_code`
+  `job_cancel_requested` (a second cancel is refused, nothing claims it) until
+  the worker's next lease-expiry pass, within seconds, writes it dead
+  (`cancelled`) together with the hook. A push's attempt still «Enviando»
+  then becomes «Sin confirmar» (`payments_push_failed`) and its recovery runs
+  (MP: the identical create is re-sent, so the charge may still reach the
+  terminal; the cashier cancels it from the POS); a credentials job's upload
+  is wiped and a still-verifying account fails. With the worker down it
+  waits for the worker.
 
 A job whose process dies on its last allowed claim goes dead by itself
 (`lease_expired`) and alerts `jobs_dead_<kind>`; earlier crashes are retried

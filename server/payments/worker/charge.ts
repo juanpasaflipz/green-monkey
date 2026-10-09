@@ -13,7 +13,7 @@
  * - an approval is checked (reference, terminal, account, amount, currency) before it is
  *   `approved`; a mismatch is flagged for review, never settled.
  */
-import type { JobContext, JobOutcome } from "../../jobs.js";
+import type { JobContext, JobDeadHook, JobOutcome } from "../../jobs.js";
 import type { Tx } from "../../db.js";
 import { enqueueJob } from "../../jobs.js";
 import { ProviderError } from "./http.js";
@@ -893,54 +893,55 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
 }
 
 /**
- * payments_push went dead (its last claim threw, or its lease expired on that claim) with the
- * attempt still `sending`: the provider may hold the charge (MP keeps the order under the attempt
- * id, Clip's create may have reached the reader), so the attempt becomes `unknown`
- * (`payments_push_failed`) through the worker's own transition, alerted like any unknown outcome.
- * The POS then offers «Volver a consultar» and a manager's «Resolver cobro», and Excepciones lists
- * it after 10 minutes. A recovery job follows (queueRecovery): MP re-POSTs the identical create
- * under the same idempotency key (the attempt id) to learn the order id; Clip only withdraws by
- * serial, a Clip create is never repeated. A `created` attempt never reached the provider
- * (`sending` is committed before the call) and stays cancellable from the POS.
+ * payments_push went dead (its last claim threw, its lease expired on that claim, or a manager
+ * cancelled it in Operaciones) with the attempt still `sending`: the provider may hold the charge
+ * (MP keeps the order under the attempt id, Clip's create may have reached the reader), so the
+ * attempt becomes `unknown` (`payments_push_failed`) through the worker's own transition, alerted
+ * like any unknown outcome. The POS then offers «Volver a consultar» and a manager's «Resolver
+ * cobro», and Excepciones lists it after 10 minutes. A recovery job follows (queueRecovery): MP
+ * re-POSTs the identical create under the same idempotency key (the attempt id) to learn the order
+ * id; Clip only withdraws by serial, a Clip create is never repeated. A `created` attempt never
+ * reached the provider (`sending` is committed before the call) and is declined.
+ *
+ * It runs in the dead write's transaction (P2-CONCURRENCY-6): jobs row first, then the attempt
+ * (LO-2c). A throw rolls the dead write back and the runner's lease-expiry pass tries both again,
+ * so a dead push never leaves its attempt `sending`.
  */
-export async function pushDead(ctx: {
-  job: JobContext["job"];
-  tenant: JobContext["tenant"];
-}): Promise<void> {
+export const pushDead: JobDeadHook = async (ctx) => {
   const attemptId = id((ctx.job.payload as { attemptId?: unknown })?.attemptId);
   if (!attemptId) return;
   const tenantId = ctx.job.tenantId;
-  const moved = await ctx.tenant(async (tx) => {
-    const a = await lockAttempt(tx, attemptId);
-    if (a?.state === "created") {
-      // Never sent (no worker runtime for three claims, or its first step kept failing): nothing
-      // reached the provider, so it is declined and the order and terminal are free again
-      // (P2-MONEY-7; before, it stayed created, live, and only its own device could cancel it).
-      await tx`update payment_attempts set state='sending',sent_at=now(),version=version+1
-        where id=${attemptId}`;
-      await tx`update payment_attempts set state='declined',error_code='payments_provider_unavailable',
-          decided_at=now(),version=version+1 where id=${attemptId}`;
-      await workerEvent(tx, tenantId, attemptId, "declined", {
-        code: "payments_provider_unavailable",
-        before: "created",
-      });
-      return false;
-    }
-    if (a?.state !== "sending") return false;
-    await tx`update payment_attempts set state='unknown',error_code='payments_push_failed',
-        version=version+1 where id=${attemptId}`;
-    await workerEvent(tx, tenantId, attemptId, "unknown", {
-      code: "payments_push_failed",
-      before: "sending",
+  const tx = ctx.tx;
+  const a = await lockAttempt(tx, attemptId);
+  if (a?.state === "created") {
+    // Never sent (no worker runtime for three claims, or its first step kept failing): nothing
+    // reached the provider, so it is declined and the order and terminal are free again
+    // (P2-MONEY-7; before, it stayed created, live, and only its own device could cancel it).
+    await tx`update payment_attempts set state='sending',sent_at=now(),version=version+1
+      where id=${attemptId}`;
+    await tx`update payment_attempts set state='declined',error_code='payments_provider_unavailable',
+        decided_at=now(),version=version+1 where id=${attemptId}`;
+    await workerEvent(tx, tenantId, attemptId, "declined", {
+      code: "payments_provider_unavailable",
+      before: "created",
     });
-    // Not a dead end (P2-CONCURRENCY-5): MP re-POSTs the identical create to learn the order id;
-    // Clip withdraws whatever the reader has not taken (delete by serial). Never a Clip create.
-    await queueRecovery(tx, tenantId, attemptId, "dead", 5_000);
-    return true;
+    return;
+  }
+  if (a?.state !== "sending") return;
+  await tx`update payment_attempts set state='unknown',error_code='payments_push_failed',
+      version=version+1 where id=${attemptId}`;
+  await workerEvent(tx, tenantId, attemptId, "unknown", {
+    code: "payments_push_failed",
+    before: "sending",
   });
-  const rt = paymentsRuntime();
-  if (moved && rt) raise(rt, unknownAlert(tenantId, "push_failed"));
-}
+  // Not a dead end (P2-CONCURRENCY-5): MP re-POSTs the identical create to learn the order id;
+  // Clip withdraws whatever the reader has not taken (delete by serial). Never a Clip create.
+  await queueRecovery(tx, tenantId, attemptId, "dead", 5_000);
+  ctx.afterCommit(() => {
+    const rt = paymentsRuntime();
+    if (rt) raise(rt, unknownAlert(tenantId, "push_failed"));
+  });
+};
 
 /**
  * A Clip create with an unknown outcome: withdraw whatever the reader has not picked up yet

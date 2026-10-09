@@ -6,7 +6,7 @@
  * or a log line (acceptance 4).
  */
 import { randomUUID } from "node:crypto";
-import type { JobContext, JobOutcome } from "../../jobs.js";
+import type { JobContext, JobDeadHook, JobOutcome } from "../../jobs.js";
 import type { Tx } from "../../db.js";
 import { enqueueJob } from "../../jobs.js";
 import { paymentsVault } from "../../vault/vault.js";
@@ -71,32 +71,36 @@ async function currentUpload(tx: Tx, provider: Provider, uploadId: string) {
 }
 
 /** Fails the account if it still waits for this upload; the upload is wiped either way. */
+async function failIn(
+  tx: Tx,
+  provider: Provider,
+  uploadId: string,
+  code: string,
+) {
+  const a = await currentUpload(tx, provider, uploadId);
+  if (a)
+    await tx`update payment_provider_accounts set state='failed',error_code=${code},
+        version=version+1,updated_at=now()
+      where provider=${provider}`;
+  // A superseded upload holds the owner's plaintext too (P2-SECURITY-1).
+  await wipeSecret(tx, uploadId);
+}
 async function fail(
   ctx: Pick<JobContext, "tenant">,
   provider: Provider,
   uploadId: string,
   code: string,
 ) {
-  await ctx.tenant(async (tx) => {
-    const a = await currentUpload(tx, provider, uploadId);
-    if (a)
-      await tx`update payment_provider_accounts set state='failed',error_code=${code},
-          version=version+1,updated_at=now()
-        where provider=${provider}`;
-    // A superseded upload holds the owner's plaintext too (P2-SECURITY-1).
-    await wipeSecret(tx, uploadId);
-  });
+  await ctx.tenant((tx) => failIn(tx, provider, uploadId, code));
 }
 
 /**
  * payments_credentials went dead (no worker runtime for three claims, a throw or a lost lease on
- * the last one): its upload is wiped, and the account, if it still waits for that upload, fails
- * (payments_provider_unreachable) instead of staying «Verificando» (P2-SECURITY-1).
+ * the last one, or a manager's cancel in Operaciones): its upload is wiped, and the account, if it
+ * still waits for that upload, fails (payments_provider_unreachable) instead of staying
+ * «Verificando» (P2-SECURITY-1). In the dead write's transaction (P2-CONCURRENCY-6).
  */
-export async function credentialsDead(ctx: {
-  job: JobContext["job"];
-  tenant: JobContext["tenant"];
-}): Promise<void> {
+export const credentialsDead: JobDeadHook = async (ctx) => {
   const p = ctx.job.payload as { provider?: unknown; uploadSecretId?: unknown };
   const provider = providerOf(p?.provider);
   const uploadId =
@@ -104,8 +108,8 @@ export async function credentialsDead(ctx: {
       ? p.uploadSecretId
       : null;
   if (!provider || !uploadId) return;
-  await fail(ctx, provider, uploadId, "payments_provider_unreachable");
-}
+  await failIn(ctx.tx, provider, uploadId, "payments_provider_unreachable");
+};
 
 /** payments_credentials: verifying → active (or failed). The upload is wiped in every branch. */
 export async function credentialsHandler(ctx: JobContext): Promise<JobOutcome> {

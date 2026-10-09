@@ -36,7 +36,7 @@
  * a slot gives up after sweepMs, so one hung handler never stalls a tenant.
  */
 import type postgres from "postgres";
-import { tenant } from "../db.js";
+import { tenant, type Tx } from "../db.js";
 import { log as rootLog, type Logger } from "../logging.js";
 import {
   handlers as registeredHandlers,
@@ -51,6 +51,7 @@ import {
   extendLease,
   failJob,
   jobErrorCode,
+  type ExpiredJob,
 } from "./queue.js";
 
 /** Longest wait between a poke and its discovery (pokes inside the window coalesce). */
@@ -173,24 +174,52 @@ export function createJobRunner(
     reservedByKind.set(kind, (reservedByKind.get(kind) ?? 0) + n);
   };
 
-  /** The kind's onDead hook, after the dead write (server/jobs.ts JobDeadHook). */
-  async function deadHook(
-    job: ClaimedJob,
-    entry: RegisteredHandler,
-    code: string,
-    jobLog: Logger,
-  ) {
-    if (!entry.onDead) return;
-    try {
-      await entry.onDead({
-        job,
-        code,
-        log: jobLog,
-        tenant: (fn) => tenant(sql, job.tenantId, fn),
-      });
-    } catch (error) {
-      jobLog.error("job_dead_hook_failed", { code }, error);
-    }
+  const jobLogger = (job: ClaimedJob) =>
+    log.child({ jobId: job.id, kind: job.kind, tenantId: job.tenantId });
+
+  /**
+   * The kind's onDead hook as the dead write's transaction runs it (server/jobs.ts JobDeadHook,
+   * P2-CONCURRENCY-6). What it hands to afterCommit is kept per job and run by `committed` only
+   * for jobs the committed transaction wrote dead; a retried transaction (40P01/40001) or a
+   * rolled-back savepoint runs the hook again from scratch. `threw` tells a hook's own throw
+   * from a failed queue write.
+   */
+  function deadHook(entry: RegisteredHandler) {
+    const onDead = entry.onDead;
+    if (!onDead) return null;
+    const after = new Map<string, (() => void)[]>();
+    const thrown = new WeakSet<object>();
+    return {
+      run: async (tx: Tx, job: ClaimedJob, code: string) => {
+        const effects: (() => void)[] = [];
+        after.set(job.id, effects);
+        try {
+          await onDead({
+            job,
+            code,
+            tx,
+            log: jobLogger(job),
+            afterCommit: (fn) => void effects.push(fn),
+          });
+        } catch (error) {
+          after.delete(job.id);
+          if (error && typeof error === "object") thrown.add(error);
+          throw error;
+        }
+      },
+      committed(job: ClaimedJob) {
+        const effects = after.get(job.id) ?? [];
+        after.delete(job.id);
+        for (const fn of effects)
+          try {
+            fn();
+          } catch (error) {
+            jobLogger(job).error("job_dead_effect_failed", {}, error);
+          }
+      },
+      threw: (error: unknown) =>
+        !!error && typeof error === "object" && thrown.has(error),
+    };
   }
 
   function execute(job: ClaimedJob, entry: RegisteredHandler) {
@@ -221,6 +250,7 @@ export function createJobRunner(
       leaseTimer.unref();
     };
     armLease(entry.leaseSeconds);
+    const hook = deadHook(entry);
     const promise = (async () => {
       let result:
         { ok: true; outcome: JobOutcome } | { ok: false; error: unknown };
@@ -269,19 +299,31 @@ export function createJobRunner(
         const state = await failJob(sql, job, {
           ...action,
           maxAttempts: entry.maxAttempts,
+          onDead: hook?.run,
         });
         const attrs = { code: action.code, attempts: job.attempts, state };
         if (state === "lost") jobLog.warn("job_lease_lost", { stage: "fail" });
         else if (state === "dead") {
           jobLog.error("job_dead", attrs);
           o.onDead?.(job, action.code);
-          await deadHook(job, entry, action.code, jobLog);
+          hook?.committed(job);
         } else jobLog.info("job_failed", attrs);
         if (!result.ok && state !== "lost")
           jobLog.warn("job_handler_error", { code: action.code }, result.error);
       } catch (error) {
-        // The lease expires and the job is reclaimed on a later drain.
-        jobLog.error("job_state_write_failed", {}, error);
+        // Nothing was written: the job keeps its lease, then is reclaimed on a later drain or,
+        // on its last claim, written dead with its hook by the lease-expiry pass.
+        if (hook?.threw(error))
+          jobLog.error(
+            "job_dead_hook_failed",
+            {
+              code: action.action === "fail" ? action.code : null,
+              stage: "fail",
+              attempts: job.attempts,
+            },
+            error,
+          );
+        else jobLog.error("job_state_write_failed", {}, error);
       }
     })();
     active.set(job.id, { kind: job.kind, promise, abort });
@@ -316,21 +358,37 @@ export function createJobRunner(
       // statement, not two (PLAT-HR-7). The claim itself still reclaims a lost job
       // that has attempts left.
       const expire = expiryDue(tenantId, kind);
+      const hook = expire ? deadHook(entry) : null;
+      const hookFailures: { jobId: string; error: unknown }[] = [];
       let jobs: ClaimedJob[];
-      let expired: ClaimedJob[];
+      let expired: ExpiredJob[];
       try {
-        ({ jobs, expired } = await tenant(sql, tenantId, async (tx) => ({
-          expired: expire
-            ? await expireLostJobs(tx, kind, entry.maxAttempts)
-            : [],
-          jobs: await claimJobs(
-            tx,
-            [kind],
-            free,
-            entry.leaseSeconds,
-            entry.maxAttempts,
-          ),
-        })));
+        ({ jobs, expired } = await tenant(sql, tenantId, async (tx) => {
+          hookFailures.length = 0; // a retried transaction starts over
+          return {
+            expired: expire
+              ? await expireLostJobs(
+                  tx,
+                  kind,
+                  entry.maxAttempts,
+                  hook
+                    ? {
+                        run: hook.run,
+                        failed: (jobId, error) =>
+                          void hookFailures.push({ jobId, error }),
+                      }
+                    : undefined,
+                )
+              : [],
+            jobs: await claimJobs(
+              tx,
+              [kind],
+              free,
+              entry.leaseSeconds,
+              entry.maxAttempts,
+            ),
+          };
+        }));
       } finally {
         reserve(kind, -free);
       }
@@ -339,19 +397,25 @@ export function createJobRunner(
       claimed += jobs.length;
       if (jobs.length === free) saturated = true;
       for (const job of expired) {
-        const jobLog = log.child({
-          jobId: job.id,
-          kind: job.kind,
-          tenantId: job.tenantId,
-        });
-        jobLog.error("job_dead", {
-          code: "lease_expired",
-          attempts: job.attempts,
-          state: "dead",
-        });
-        o.onDead?.(job, "lease_expired");
-        await deadHook(job, entry, "lease_expired", jobLog);
+        const jobLog = jobLogger(job);
+        // A staff cancel the web handed over (CANCEL_REQUESTED) is no incident: no alert.
+        if (job.code === "cancelled")
+          jobLog.info("job_cancelled", { attempts: job.attempts });
+        else {
+          jobLog.error("job_dead", {
+            code: job.code,
+            attempts: job.attempts,
+            state: "dead",
+          });
+          o.onDead?.(job, job.code);
+        }
+        hook?.committed(job);
       }
+      // The job stays running and lost: the next expiry pass (sweepMs) tries the dead write again.
+      for (const { jobId, error } of hookFailures)
+        log
+          .child({ jobId, kind, tenantId })
+          .error("job_dead_hook_failed", { stage: "expiry" }, error);
     }
     return { claimed, saturated };
   }
