@@ -399,35 +399,49 @@ describe("mapPointOrder: the status table (§4.8)", () => {
 });
 
 describe("cancel, fee, account, terminals", () => {
-  it("cancel adds x-allow-cancelable-status only for at_terminal and keys the request by attempt", async () => {
-    const fetchMock = mockFetch([200, {}], [200, {}]);
-    await cancelPointOrder(c, {
-      orderId: "ORD1",
-      attemptId,
-      atTerminal: false,
+  it("every cancel sends x-allow-cancelable-status: at_terminal (ignored for created) and its own operation key (MP MX cancel-order; P2-PROVIDERS-6)", async () => {
+    const fetchMock = mockFetch(
+      [200, { id: "ORD1", status: "canceled" }],
+      [200, { id: "ORD1", status: "canceled" }],
+    );
+    const k1 = "0b9f3c1e-5d1a-4e2b-9c3d-7a1b2c3d4e5f";
+    const k2 = "1c8e2d0f-4e2b-4f3c-8d4e-6b2c3d4e5f60";
+    expect(await cancelPointOrder(c, { orderId: "ORD1", key: k1 })).toEqual({
+      cancelled: true,
     });
-    await cancelPointOrder(c, { orderId: "ORD1", attemptId, atTerminal: true });
+    await cancelPointOrder(c, { orderId: "ORD1", key: k2 });
     const [url, first] = call(fetchMock, 0);
     expect(url).toBe(`${BASE}/v1/orders/ORD1/cancel`);
     expect(first.method).toBe("POST");
-    expect(headers(first)["x-allow-cancelable-status"]).toBeUndefined();
-    expect(headers(first)["X-Idempotency-Key"]).toBe(`${attemptId}:cancel`);
-    expect(headers(call(fetchMock, 1)[1])["x-allow-cancelable-status"]).toBe(
-      "at_terminal",
-    );
+    expect(headers(first)["x-allow-cancelable-status"]).toBe("at_terminal");
+    expect(headers(first)["X-Idempotency-Key"]).toBe(k1);
+    const second = call(fetchMock, 1)[1];
+    expect(headers(second)["x-allow-cancelable-status"]).toBe("at_terminal");
+    expect(headers(second)["X-Idempotency-Key"]).toBe(k2);
   });
 
-  it("a refused cancel is not a cancel; 5xx throws for a retry", async () => {
-    mockFetch([409, { errors: [{ code: "order_not_cancelable" }] }]);
-    expect(
-      await cancelPointOrder(c, { orderId: "O", attemptId, atTerminal: true }),
-    ).toEqual({
+  it("202 for an order on the device is a request, never a cancel; a refused cancel is not a cancel; 5xx throws for a retry", async () => {
+    mockFetch([202, { id: "O", status: "at_terminal" }]);
+    expect(await cancelPointOrder(c, { orderId: "O", key: "k" })).toEqual({
       cancelled: false,
-      code: "order_not_cancelable",
+      requested: true,
+      code: null,
+    });
+    mockFetch([409, { errors: [{ code: "cannot_cancel_order" }] }]);
+    expect(await cancelPointOrder(c, { orderId: "O", key: "k" })).toEqual({
+      cancelled: false,
+      requested: false,
+      code: "cannot_cancel_order",
+    });
+    mockFetch([409, { errors: [{ code: "order_already_canceled" }] }]);
+    expect(await cancelPointOrder(c, { orderId: "O", key: "k" })).toEqual({
+      cancelled: false,
+      requested: false,
+      code: "order_already_canceled",
     });
     mockFetch([502, {}]);
     await expect(
-      cancelPointOrder(c, { orderId: "O", attemptId, atTerminal: false }),
+      cancelPointOrder(c, { orderId: "O", key: "k" }),
     ).rejects.toMatchObject({ retryable: true });
   });
 

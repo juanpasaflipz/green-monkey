@@ -797,6 +797,10 @@ export default defineArea({
       "La terminal no está conectada.",
       "The terminal is not connected.",
     ],
+    payments_cancel_sent: [
+      "La cancelación se envió a la terminal; esperando que la confirme.",
+      "The cancel was sent to the terminal; waiting for it to confirm.",
+    ],
     payments_provider_may_charge: [
       "La terminal todavía puede cobrar este cargo. Cancélalo en la terminal y vuelve a consultar; en Mercado Pago también puedes esperar a que venza (unos minutos).",
       "The terminal may still take this charge. Cancel it on the terminal and check again; with Mercado Pago you can also wait for it to expire (a few minutes).",

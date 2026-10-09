@@ -424,6 +424,40 @@ async function ensureChain(tx: Tx, tenantId: string, attemptId: string) {
     );
 }
 
+/**
+ * A cashier's cancel must outlive its own job (P2-PROVIDERS-5, P2-CONCURRENCY-4): spec §4.7 has
+ * the poll honour cancel_requested_at by handing off to payments_cancel. The push does it when it
+ * records the provider's answer, every poll link does it while no cancel job is queued, and it
+ * stops once the provider refused (cancel on the device) or accepted it for the device (202).
+ */
+async function handOffCancel(
+  tx: Tx,
+  tenantId: string,
+  a: WorkerAttempt,
+  why: string,
+) {
+  if (
+    !a.cancel_requested_at ||
+    (a.state !== "pending" && a.state !== "unknown") ||
+    a.error_code === "payments_cancel_on_terminal" ||
+    a.error_code === "payments_cancel_sent"
+  )
+    return;
+  const [queued] = await tx`select 1 from jobs
+    where kind='payments_cancel' and state in ('queued','available','running')
+      and payload->>'attemptId'=${a.id} limit 1`;
+  if (queued) return;
+  await enqueueJob(
+    tx,
+    { tenantId },
+    {
+      kind: "payments_cancel",
+      dedupeKey: `${a.id}:cancel:${why}`,
+      payload: { attemptId: a.id },
+    },
+  );
+}
+
 /** MP's create body for an attempt: identical on every send (the idempotency key's contract). */
 async function mpCreateInput(tx: Tx, a: WorkerAttempt) {
   const [o] = a.order_id
@@ -504,6 +538,12 @@ async function adoptReference(
     before: "unknown",
   });
   await ensureChain(tx, tenantId, attemptId);
+  await handOffCancel(
+    tx,
+    tenantId,
+    { ...a, state: "pending", provider_reference: found.reference },
+    "adopt",
+  );
   return true;
 }
 
@@ -830,6 +870,13 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
     await tx`update payment_attempts set state='pending',provider_reference=${reference},
         version=version+1 where id=${attemptId}`;
     await workerEvent(tx, tenantId, attemptId, "pending", { reference });
+    // A cancel requested while this push was sending: hand it on now (the provider has an id).
+    await handOffCancel(
+      tx,
+      tenantId,
+      { ...now, state: "pending", provider_reference: reference },
+      "push",
+    );
     await schedulePoll(
       tx,
       tenantId,
@@ -1062,6 +1109,7 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
         );
         return;
       }
+      await handOffCancel(tx, tenantId, now, `poll:${chain}:${seq}`);
       await schedulePoll(tx, tenantId, attemptId, chain, seq + 1, afterMs);
     });
   if (!usable(loaded)) {
@@ -1119,8 +1167,9 @@ export async function cancelHandler(ctx: JobContext): Promise<JobOutcome> {
   const head = await ctx.tenant((tx) => readAttempt(tx, attemptId));
   if (!head) return { status: "done" };
   if (head.state === "created" || head.state === "sending")
-    // The push has not recorded the provider's answer yet.
-    return { status: "retry", code: "payments_cancel_waiting", afterMs: 2000 };
+    // The push has not recorded the provider's answer yet. It hands the request on itself when it
+    // does (handOffCancel), and so does every poll link: this wait is only for latency.
+    return { status: "retry", code: "payments_cancel_waiting", afterMs: 5000 };
   if (head.state !== "pending" && head.state !== "unknown")
     return { status: "done" };
   const loaded = await load(ctx, rt, attemptId);
@@ -1158,13 +1207,29 @@ export async function cancelHandler(ctx: JobContext): Promise<JobOutcome> {
     a.provider === "mercadopago"
       ? await cancelPointOrder(mpClient(rt, l.account, ctx.signal), {
           orderId: a.provider_reference!,
-          attemptId,
-          atTerminal: read?.atTerminal ?? false,
+          // One key per cancel operation, stable across this job's retries (P2-PROVIDERS-6).
+          key: ctx.job.id,
         })
-      : await cancelPinPadPayment(
-          clipClient(rt, l.account, ctx.signal),
-          a.provider_reference!,
-        );
+      : {
+          ...(await cancelPinPadPayment(
+            clipClient(rt, l.account, ctx.signal),
+            a.provider_reference!,
+          )),
+          requested: false,
+        };
+  if (!result.cancelled && !result.requested) {
+    // Refused: read once more and apply what the provider says (MP's 409 order_already_canceled
+    // is a cancel; a charge paid meanwhile is an approval), before telling staff to cancel on
+    // the device.
+    const again = await readProvider(rt, l, ctx.signal).catch(() => null);
+    if (again && again.outcome !== "pending") {
+      const final = again;
+      await ctx.tenant((tx) =>
+        applyRead(tx, rt, tenantId, attemptId, final, "cancel"),
+      );
+      return { status: "done" };
+    }
+  }
   await ctx.tenant(async (tx) => {
     const now = await lockAttempt(tx, attemptId);
     if (now?.state !== "pending" && now?.state !== "unknown") return;
@@ -1174,11 +1239,22 @@ export async function cancelHandler(ctx: JobContext): Promise<JobOutcome> {
       await workerEvent(tx, tenantId, attemptId, "cancelled", {
         source: "cancel",
       });
+    } else if (result.requested) {
+      // MP asked the device (202): the order stays at_terminal until it confirms; the poll's
+      // read decides (cancelled, or paid if the diner was faster). Never cancelled from here.
+      if (now.state === "pending")
+        await tx`update payment_attempts set error_code='payments_cancel_sent',version=version+1
+          where id=${attemptId}`;
+      await workerEvent(tx, tenantId, attemptId, "cancel_sent", {
+        source: "cancel",
+      });
     } else {
-      await tx`update payment_attempts set error_code='payments_cancel_on_terminal',version=version+1
-        where id=${attemptId}`;
+      // An unknown attempt keeps its own code (a watched Clip request stays watched).
+      if (now.state === "pending")
+        await tx`update payment_attempts set error_code='payments_cancel_on_terminal',version=version+1
+          where id=${attemptId}`;
       await workerEvent(tx, tenantId, attemptId, "cancel_refused", {
-        providerCode: result.code,
+        providerCode: "code" in result ? result.code : null,
       });
     }
   });

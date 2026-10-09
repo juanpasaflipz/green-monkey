@@ -75,6 +75,8 @@ type Charge = {
   detail: string;
   approval: Approval | null;
   uncancellable: boolean;
+  /** MP: a cancel accepted for the device (202); the device confirms on the next read. */
+  cancelRequested?: boolean;
   createdAt: number;
 };
 
@@ -427,24 +429,41 @@ export async function startPaymentsFake(
             readLimit--;
             return send(res, 429, {});
           }
+          if (c.cancelRequested && c.status === "at_terminal") {
+            // The device confirms the cancel MP asked for.
+            c.status = "canceled";
+            c.detail = "canceled_on_terminal";
+          }
           return send(res, 200, mpOrder(c));
         }
+        // MP MX reference, cancel-order: the header is required for at_terminal and ignored for
+        // created; created → 200 canceled; at_terminal → 202, the order stays at_terminal
+        // (cancellation_requested) until the device confirms; refusals are 409.
         if (req.method === "POST" && order[2]) {
           if (!key) violations.push("mp cancel without X-Idempotency-Key");
-          if (
-            c.status === "created" ||
-            (c.status === "at_terminal" &&
-              req.headers["x-allow-cancelable-status"] === "at_terminal" &&
-              !c.uncancellable)
-          ) {
+          const header = req.headers["x-allow-cancelable-status"];
+          if (header !== "at_terminal")
+            violations.push("mp cancel without x-allow-cancelable-status");
+          if (c.status === "canceled")
+            return send(res, 409, {
+              errors: [{ code: "order_already_canceled", message: "canceled" }],
+            });
+          if (c.status === "created") {
             c.status = "canceled";
-            c.detail = "canceled";
+            c.detail = "canceled_by_api";
             return send(res, 200, mpOrder(c));
           }
+          if (
+            c.status === "at_terminal" &&
+            header === "at_terminal" &&
+            !c.uncancellable
+          ) {
+            c.cancelRequested = true;
+            c.detail = "cancellation_requested";
+            return send(res, 202, mpOrder(c));
+          }
           return send(res, 409, {
-            errors: [
-              { code: "order_not_cancelable", message: "cannot cancel" },
-            ],
+            errors: [{ code: "cannot_cancel_order", message: "cannot cancel" }],
           });
         }
       }

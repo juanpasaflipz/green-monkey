@@ -2198,6 +2198,65 @@ try {
     assert.equal(paid.paid, o2.total);
   });
 
+  await test("cancel outlives its job (P2-PROVIDERS-5, P2-CONCURRENCY-4, P2-PROVIDERS-6): a cancel requested while a slow MP push is still sending ends cancelled even when its own job dies first; MP's 202 for an order on the device is not a cancel (the diner who pays first is recorded); every MP cancel carries the at_terminal header and its own key", async () => {
+    // (a) MP is slow: the first create fails, the cashier cancels while the attempt is sending,
+    // and the cancel job's budget runs out before the push records MP's answer.
+    const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    fake.next("mercadopago", "server5xx");
+    const v = await start(cashier, o.id, terminals.mp, o.total);
+    await round(A);
+    assert.equal(await stateOf(v.id), "sending");
+    await write(cashier, (tx) =>
+      requestCancel(tx, cashier, v.id, { operationId: randomUUID() }),
+    );
+    await admin`update jobs set state='dead', error_code='test_budget_spent'
+      where tenant_id=${A} and kind='payments_cancel' and payload->>'attemptId'=${v.id}`;
+    assert.equal(await drive(v.id, ["cancelled"]), "cancelled");
+    assert.equal(fake.chargeFor(v.id)!.status, "canceled", "cancelled at MP");
+    // (b) The order is on the device: MP answers the cancel 202 and asks the device; the diner
+    // taps first, so MP processes it. The attempt waits for the read and settles.
+    const o2 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const a2 = await pending(o2, terminals.mp);
+    fake.atTerminal(a2.ref);
+    await write(cashier, (tx) =>
+      requestCancel(tx, cashier, a2.id, { operationId: randomUUID() }),
+    );
+    await hold(A, ["payments_poll"]);
+    await round(A, { due: false });
+    const row2 = await attemptRow(a2.id);
+    assert.deepEqual(
+      [row2.state, row2.error_code],
+      ["pending", "payments_cancel_sent"],
+      "a 202 is not a cancel",
+    );
+    fake.approve(a2.ref, { ...TEST_CARD });
+    assert.equal(await drive(a2.id, ["settled", "cancelled"]), "settled");
+    // (c) Asked again for a device that confirms: cancelled by the read, not by the 202.
+    const o3 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const a3 = await pending(o3, terminals.mp);
+    fake.atTerminal(a3.ref);
+    await write(cashier, (tx) =>
+      requestCancel(tx, cashier, a3.id, { operationId: randomUUID() }),
+    );
+    assert.equal(await drive(a3.id, ["cancelled", "settled"]), "cancelled");
+    const cancels = fake.requests.filter(
+      (r) =>
+        r.method === "POST" &&
+        (r.path === `/mp/v1/orders/${a2.ref}/cancel` ||
+          r.path === `/mp/v1/orders/${a3.ref}/cancel`),
+    );
+    assert.equal(cancels.length, 2);
+    assert.notEqual(cancels[0].idempotencyKey, cancels[1].idempotencyKey);
+    assert.ok(
+      cancels.every((r) =>
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+          r.idempotencyKey ?? "",
+        ),
+      ),
+      "one UUID per cancel operation",
+    );
+  });
+
   await test("13. provider outcomes: declined, expired and refunded-before-settle (review, then dismissed by a manager); 429 on reads backs off without touching the attempt", async () => {
     const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
     const d = await pending(o, terminals.mp);

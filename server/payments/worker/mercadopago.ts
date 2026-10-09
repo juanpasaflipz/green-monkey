@@ -332,31 +332,50 @@ export function mapPointOrder(
   return { ...base, undocumented: true };
 }
 
+export type MpCancelResult =
+  | { cancelled: true }
+  /** requested: MP accepted it for a device that holds the order (202); a read confirms it. */
+  | { cancelled: false; requested: boolean; code: string | null };
+
 /**
- * POST /v1/orders/{id}/cancel. A 2xx cancelled it; MP refusing (4xx) means it cannot be
- * cancelled from here now (on the device, or already final): {cancelled:false}. 5xx, 429 and
- * network failures throw (retry).
+ * POST /v1/orders/{id}/cancel (MP MX reference, in-person-payments/point/orders cancel-order;
+ * P2-PROVIDERS-6):
+ * - x-allow-cancelable-status: at_terminal on every cancel: "required to cancel an order with
+ *   status=at_terminal ... For orders with status=created, the header is ignored", and the device
+ *   usually takes an order within a second of its creation;
+ * - X-Idempotency-Key: one per cancel operation ("Clave única por solicitud"), stable across the
+ *   retries of that operation (the caller passes its job id);
+ * - 200: cancelled (an order still `created`); 202: MP asked the device, the order stays
+ *   at_terminal "until a Webhook notification confirms" and the 202 "must not be interpreted as
+ *   final confirmation": {cancelled:false, requested:true}, and a read decides;
+ * - 4xx (409 cannot_cancel_order, order_already_canceled, ...): refused, {cancelled:false, code};
+ *   the caller re-reads; 5xx, 429 and network failures throw (retry).
  */
 export async function cancelPointOrder(
   c: MpClient,
-  o: { orderId: string; attemptId: string; atTerminal: boolean },
-): Promise<{ cancelled: true } | { cancelled: false; code: string | null }> {
+  o: { orderId: string; key: string },
+): Promise<MpCancelResult> {
   const r = await providerRequest({
     method: "POST",
     url: `${c.baseUrl}/v1/orders/${encodeURIComponent(o.orderId)}/cancel`,
     headers: {
       ...auth(c),
-      "X-Idempotency-Key": `${o.attemptId}:cancel`,
-      ...(o.atTerminal ? { "x-allow-cancelable-status": "at_terminal" } : {}),
+      "X-Idempotency-Key": o.key,
+      "x-allow-cancelable-status": "at_terminal",
     },
     signal: c.signal,
   });
-  if (r.status >= 200 && r.status <= 299) return { cancelled: true };
+  if (r.status >= 200 && r.status <= 299) {
+    const status = (str(obj(r.body).status) ?? "").toLowerCase();
+    if (r.status === 202 || (status !== "" && status !== "canceled"))
+      return { cancelled: false, requested: true, code: null };
+    return { cancelled: true };
+  }
   const t = transientError(r);
   if (t) throw t;
   if (r.status === 401 || r.status === 403)
     throw new ProviderError("payments_credentials_rejected", r.status);
-  return { cancelled: false, code: providerCodeOf(r) };
+  return { cancelled: false, requested: false, code: providerCodeOf(r) };
 }
 
 /**
