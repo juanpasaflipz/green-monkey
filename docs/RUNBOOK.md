@@ -49,10 +49,12 @@ acknowledged a critical alert within 15 minutes during service hours
 | `cfdi_csd_expiring:*` (info) | ntfy, from the worker | a restaurant's CSD expires within 30 days: the owner uploads a new one |
 | `public_order_limited` (log, warn) | web logs | a public QR/kiosk order hit a durable cap (`code`: `public_order_limit`, `public_ordering_busy` or `public_order_churn`); the line names the code's `ref` (the "Ref. 7A3F" staff see in Mesas or Configuración), its kind and the client's `ipHash`, never a token or a path. Repeated lines for one `ref` from one `ipHash`: "Online ordering abuse" below |
 | `rate_limited` with `limiter: public-*` (log, warn) | web logs | a client hit a public ordering per-IP or per-link limit (in memory, per replica); one diner retrying is normal, a steady stream from one `ipHash` is abuse |
-| `payments_attempt_unknown_<tenant>` (warning) | ntfy, from the worker | a terminal charge's outcome is unknown (`reason`: `create` = the provider did not answer the create, `clip_create` = Clip's create answer was lost, `no_final_status` = no final status within the expiry + 2 min, `paid_amount_unknown` = paid without an amount). Its terminal and order stay blocked: "Payments: unknown outcomes" below |
-| `jobs_dead_payments_*` (warning) | ntfy, from the worker | a payments job used up its attempts (`payments_credentials` / `payments_devices`: the provider kept failing, the account stays as it was; `payments_push`: the attempt can stay «Enviando», which no screen resolves yet: check the device and the provider for the charge and report the attempt id to engineering). See "Payments: provider outage" below |
-| `payments_webhook_dropped` (log, info) | web logs | a provider notification was screened out (`reason`: `format`, `rate_ip`, `rate_hook`, `body_size`, `topic`, `no_match`); always answered 200. A steady `no_match` stream for one restaurant means the URL in MP or Clip is from an older connect: "Payments: notification failures" |
-| `webhook_rejected` (attempt event) | Cobros en terminal → the attempt, `payment_attempt_events` | an MP notification whose `x-signature` did not verify with the sealed secret; nothing changed and the provider was not read (polling continues). Many in a row: the secret in MP and the one entered in Configuración differ |
+| `payments_attempt_unknown_<tenant>` (warning) | ntfy, from the worker | a terminal charge's outcome is unknown (`reason`: `create` = the provider did not answer the create (MP: one identical re-send follows to learn the order), `clip_create` = Clip's create answer was lost, `push_failed` = the push job went dead with the attempt sending (a recovery follows), `no_final_status` = no final status by the deadline (MP: expiry + 2 min; Clip: its own deadline, after a refused withdrawal), `account_unusable` = the deadline passed while the account could not be used, `paid_amount_unknown` = paid without an amount). Its terminal and order stay blocked: "Payments: unknown outcomes" below |
+| `payments_account_failed_<tenant>` (warning) | ntfy, from the worker | MP's or Clip's own verification call refused the restaurant's credentials (a token rotated in the provider's panel): the account is `failed`, live charges keep polling until their deadline. The owner reconnects (**Reemplazar credenciales**, allowed with charges live) and the worker re-reads every live charge |
+| `jobs_dead_payments_*` (warning) | ntfy, from the worker | a payments job used up its attempts. `payments_push`: the attempt becomes «Sin confirmar» (`payments_push_failed`, or declined `payments_provider_unavailable` if it was never sent) and a recovery follows; a manager resolves it ("Payments: unknown outcomes"). `payments_credentials`: its upload is wiped and a still-verifying account fails (`payments_provider_unreachable`); the owner saves again. `payments_devices`: the device list stays as it was. See "Payments: provider outage" below |
+| `job_dead_hook_failed` (log, error) | worker logs | a kind's dead hook threw after the job was marked dead (P2: payments_push, payments_credentials). It is not retried: for payments_push, requeue the dead job in Operaciones (the push then finds the attempt and recovers it: MP re-sends the identical create, Clip only withdraws); for payments_credentials, the owner saves the credentials again |
+| `payments_webhook_dropped` (log, info) | web logs | a provider notification was screened out (`reason`: `format`, `rate_ip`, `rate_hook`, `body_size`, `topic`, `no_match`, `coalesced` = another notification for that charge is already waiting); always answered 200. A steady `no_match` stream for one restaurant means the URL in MP or Clip is from an older connect: "Payments: notification failures" |
+| `webhook_rejected` (attempt event) | operator SQL on `payment_attempt_events` (attempt id, `kind='webhook_rejected'`; the POS does not show events) | an MP notification whose `x-signature` did not verify with the sealed secret; nothing changed and the provider was not read (polling continues). Many in a row: the secret in MP and the one entered in Configuración differ |
 | `payments_worker_disabled` (log, info) | worker startup | `PAYMENTS_PROVIDERS` is empty: integrated charging is off (`/capabilities` says `worker_not_configured`); manual terminals keep working |
 | `jobs_dead_cfdi_*` (warning) | ntfy, from the worker | a cfdi job used up its attempts. The global tick's recovery sweep re-enqueues what the document needs within a day (or a manager presses **Reintentar** on it); a dead `cfdi_global` tick already scheduled the next one, and the chain also restarts at the next worker deploy and operator sign-in ([CFDI](CFDI.md) "Jobs") |
 
@@ -481,13 +483,25 @@ completó»). Money may or may not have been taken. Nothing retries on its own.
 1. At the terminal: look at the device's screen and its last transactions (MP Point: the
    activity list; Clip: the reader's history or the Clip app). Any operator can press
    **Volver a consultar** (Cobros en terminal → the charge): the worker reads the provider
-   again, and a found approval settles by itself.
+   again, and a found approval settles by itself. With no provider reference (the create's
+   answer was lost, or the push died), MP re-sends the identical create under the same
+   idempotency key to learn the order (only while the order could still be live) and Clip
+   withdraws the reader's request by serial number (never a second Clip create). A Clip
+   request the reader held at its deadline stays «Sin confirmar» and is still read every
+   minute: a payment or a cancel on the reader ends it by itself.
 2. Still unknown: a manager presses **Resolver cobro** and chooses, with a note and the
    confirmation that they checked the provider's history (PIN asked):
-   - **Sí se cobró: registrar en la orden** (type the provider's reference when the screen asks):
-     records the tender (no card data; the terminal's estimated fee);
-   - **No se cobró**: the order is free to be charged again (refused if the provider last
-     said paid).
+   - **Sí se cobró: registrar en la orden**: records the tender with what the provider
+     reported (a review keeps its amount, tip, card and fee); from an unknown outcome, type the
+     provider's reference when there is none and the amount charged its history shows, which
+     must be the amount + tip sent (no card data; the terminal's estimated fee). A reference
+     already on another charge is refused («Esa referencia ya está registrada…»);
+   - **No se cobró**: the order is free to be charged again. Refused if the provider last said
+     paid, and while it may still take the charge («La terminal todavía puede cobrar este
+     cargo…»): MP until its order expires plus 2 minutes, counted from the last send; Clip with
+     a request id until a cancel or a read ends it (cancel it on the reader, then **Volver a
+     consultar**); Clip without one until the delete by serial number found nothing of it on
+     the reader.
 3. `review` («El cobro se aprobó pero la orden cambió»): the customer paid but the order no
    longer takes it (paid another way, changed, or the approval was flagged). If the order can
    take it now, anyone presses **Registrar el cobro aprobado**; otherwise a manager refunds it in
@@ -517,7 +531,10 @@ completó»). Money may or may not have been taken. Nothing retries on its own.
 4. Operator: a worker-wide problem (`/capabilities` shows `worker_not_configured`, the worker
    log has `payments_worker_disabled`, or every restaurant fails) is the worker's
    `PAYMENTS_PROVIDERS` / `CREDENTIAL_ENCRYPTION_KEY` or the provider; one restaurant failing
-   is its account (Configuración shows «Error: …»): the owner reconnects.
+   is its account (Configuración shows «Error: …»): the owner reconnects with **Reemplazar
+   credenciales** (allowed while charges are live; they keep polling meanwhile and are
+   re-read once the account is active). A single 401/403 on an order never fails an account:
+   only the provider's own verification call refusing the same credentials does.
 
 **Payments: notification failures.** Notifications only make the worker read sooner: charges
 still settle by polling (every 2 s for 3 minutes, then every 10 s), so a broken notification
@@ -553,6 +570,36 @@ test merchant), charges are real and low-value:
 4. Verify MP's `reference_id` and the last-4 source against the receipt (LD-76 deviation 8),
    and that every rehearsal charge is refunded in the provider's app (Clip is production
    only).
+4b. Provider facts the code assumes that no source verified (P2-PROVIDERS-11; record each
+   observed answer, ids and codes only, and encode every confirmed shape in
+   `tests/fakes/payments-fake.ts`):
+   a. MP idempotency replay: re-POST an order create with the same X-Idempotency-Key and the
+      identical body (for example by forcing a lost answer): the status code and that the
+      body is the original order (its current status, or the one at creation).
+   b. MP `409 already_queued_order_for_terminal` with an order of our own waiting, and its
+      body shape (`errors[0].code`).
+   c. MP `403 forbidden_checking_terminal_owner` for a device of another account (body shape).
+   d. MP cancel of an order still `created` (200 `canceled`) and of one `at_terminal` with
+      `x-allow-cancelable-status: at_terminal` (202, then the device confirms: how long until
+      the read says `canceled`); a cancel the device refuses; `409 order_already_canceled`.
+   e. MP cancel keys: two cancel operations on one order with two UUID keys.
+   f. MP order webhook body: whether `data.external_reference` is present on order.processed.
+   g. MP declined card: the payment `status_detail` of a refused card (e.g. insufficient_amount).
+   h. MP expiration: an order left on the device past `expiration_time` reads `expired`.
+   i. Clip with a tip: `amount`, `amount_paid` and `tip_amount` when the POS sends tip_amount
+      (and that the reader shows no tip screen).
+   j. Clip preferences: that `is_mci_enabled`, `is_dcc_enabled` and `is_retry_enabled` false are
+      accepted, and the owner's choice for `is_msi_enabled` (left to the account).
+   k. Clip request lifetime: a request left on the reader for 15 minutes: its status, and that
+      DELETE /payment/{id} withdraws it before the reader takes it and answers 400
+      PAYMENT_REQUEST_ISSUE after.
+   l. Clip DELETE /payment/serial-number/{serial}: the 200 body (pinpad_request_id,
+      reference) with a request waiting, 400 PAYMENT_PENDING with one taken, and the answer
+      with nothing on the reader.
+   m. Clip decline then retry on the reader: the status sequence of one request.
+   n. Clip notification: the body (`id`, `origin`, `event_type`) for an approval and a cancel.
+   o. Clip `GET /payment` 404 timing for a fresh pinpad_request_id (right after the create).
+   p. Account defaults on Juanberto's MP and Clip accounts for installments and DCC.
 5. Evidence (timings, screenshots, attempt events with ids only) stays local under the LD-67
    evidence-directory pattern; nothing with a token, a key or a card beyond the last 4.
 6. Afterwards: disconnect both accounts in Configuración (the worker wipes the credentials)
