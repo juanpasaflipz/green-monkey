@@ -324,11 +324,18 @@ async function applyRead(
   }
   if (read.outcome === "approved" || read.outcome === "refunded") {
     if (read.paidAmount === null) {
-      // Paid at the provider but no amount to record: a manager decides (never a guess).
+      // Paid at the provider but no amount to record: a manager decides (never a guess). An
+      // attempt already unknown (a deadline, an account error) takes the same status and code
+      // (a same-state update): «No se cobró» refuses a charge the provider's latest read says
+      // was paid (P2V-FIXES-5; before, it kept a stale provider_status such as at_terminal).
       if (a.state === "pending")
         await tx`update payment_attempts set state='unknown',provider_status=${status},
             error_code='payments_provider_mismatch',version=version+1
           where id=${attemptId}`;
+      else
+        await tx`update payment_attempts set provider_status=${status},
+            error_code='payments_provider_mismatch',version=version+1
+          where id=${attemptId} and state='unknown'`;
       await workerEvent(tx, tenantId, attemptId, "unknown", {
         status,
         mismatch: read.mismatch ?? "paid_amount_unknown",

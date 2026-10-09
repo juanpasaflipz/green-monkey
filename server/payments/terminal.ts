@@ -936,9 +936,13 @@ export async function resolveAttempt(
       if (p.outcome === "not_charged") {
         if (a.state !== "unknown")
           throw new DomainError("payments_not_approved", 409);
+        // payments_provider_mismatch on an unknown attempt: the provider read it as paid with
+        // no usable amount (P2V-FIXES-5), whatever its status text (MP processed, Clip
+        // completed).
         if (
           a.paid_amount !== null ||
-          a.provider_status?.startsWith("processed")
+          a.provider_status?.startsWith("processed") ||
+          a.error_code === "payments_provider_mismatch"
         )
           throw new DomainError("payments_provider_says_paid", 409);
         if (providerMayStillCharge(a))

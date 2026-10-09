@@ -66,6 +66,8 @@ type Approval = {
   fee?: number | null;
   externalReference?: string;
   terminalId?: string;
+  /** MP: the payment carries neither amount nor paid_amount (no usable amount to record). */
+  amountless?: boolean;
 };
 type Charge = {
   provider: "mercadopago" | "clip";
@@ -173,10 +175,10 @@ export async function startPaymentsFake(
         payments: [
           {
             id: `PAY${c.id.slice(3)}`,
-            amount: pesos(c.amount),
+            ...(approved?.amountless ? {} : { amount: pesos(c.amount) }),
             ...(approved
               ? {
-                  paid_amount: pesos(paid),
+                  ...(approved.amountless ? {} : { paid_amount: pesos(paid) }),
                   ...(approved.tip ? { tip_amount: pesos(approved.tip) } : {}),
                   reference_id: `9${c.id.replace(/\D/g, "").slice(0, 10) || "1"}`,
                   payment_method: {

@@ -1810,6 +1810,51 @@ try {
     }
   });
 
+  await test("an unknown charge later read as paid with no usable amount (P2V-FIXES-5): the attempt takes the provider's status and payments_provider_mismatch, «No se cobró» is refused (payments_provider_says_paid), and a manager records it", async () => {
+    const mgr = fresh(A, ids.manager, "manager");
+    const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const c = await pending(o, terminals.mp);
+    // Its deadline passes while MP's reads fail: unknown, with a stale provider status.
+    await asOwner(
+      A,
+      (
+        tx,
+      ) => tx`update payment_attempts set sent_at = now() - interval '13 minutes'
+        where id=${c.id}`,
+    );
+    fake.rateLimitReads(1);
+    await round(A);
+    const before = await attemptRow(c.id);
+    assert.deepEqual(
+      [before.state, before.error_code],
+      ["unknown", "payments_attempt_timeout"],
+    );
+    // «Volver a consultar»: MP says processed, with no amount fields at all.
+    fake.approve(c.ref, { ...TEST_CARD, amountless: true });
+    await resolve(cashier, c.id, { outcome: "check" });
+    await round(A);
+    const after = await attemptRow(c.id);
+    assert.deepEqual(
+      [after.state, after.provider_status, after.error_code],
+      ["unknown", "processed/accredited", "payments_provider_mismatch"],
+    );
+    await rejects(
+      resolve(mgr, c.id, {
+        outcome: "not_charged",
+        note: NOTE,
+        confirmed: true,
+      }),
+      "payments_provider_says_paid",
+    );
+    await resolve(mgr, c.id, {
+      outcome: "record",
+      note: NOTE,
+      confirmed: true,
+      charged: o.total,
+    });
+    assert.equal(await stateOf(c.id), "settled");
+  });
+
   await test("13. MP create with a lost answer is retried with the same idempotency key (one order at MP); a 429 on create backs off and retries; «No se cobró» dismisses an unknown outcome only when MP never said paid", async () => {
     const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
     fake.next("mercadopago", "timeout");
