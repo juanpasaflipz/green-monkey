@@ -16,8 +16,9 @@ export const PLATFORM_KEYS: Record<PlatformCode, Key> = {
 
 /**
  * Payments (037): "Pagado por plataforma". The platform covers the whole
- * balance with no tip (Q6); the platform's order number is optional and the
- * cashier confirms the platform already charged the order.
+ * balance with no tip (Q6); Uber Eats, Rappi and DiDi need the platform's
+ * order number (LD-75; «Otra»'s is optional) and the cashier confirms the
+ * platform already charged the order.
  */
 export function PlatformFields({
   platforms,
@@ -33,6 +34,7 @@ export function PlatformFields({
   disabled,
   problem,
   errorIdOf,
+  values,
 }: {
   platforms: PlatformOption[];
   platform: PlatformCode | null;
@@ -47,12 +49,17 @@ export function PlatformFields({
   disabled?: boolean;
   problem: { field: string; key: string } | null;
   errorIdOf: (field: string) => string | undefined;
+  /** Values for the problem text's {platform} and {list} (LD-75 price-list problems). */
+  values?: Record<string, string>;
 }) {
   const t = (k: Key) => strings[locale][k];
   const inline = (field: string) =>
     problem?.field === field ? (
       <p className="error field-error" id={errorIdOf(field)}>
-        {t(problem.key as Key)}
+        {Object.entries(values ?? {}).reduce(
+          (text, [name, value]) => text.replaceAll(`{${name}}`, value),
+          String(t(problem.key as Key)),
+        )}
       </p>
     ) : null;
   return (
@@ -88,7 +95,13 @@ export function PlatformFields({
         </Field>
       )}
       {inline("platform")}
-      <Field label={t("payPlatformOrderNumber")}>
+      <Field
+        label={t(
+          platform === "other"
+            ? "payPlatformOrderNumberOptional"
+            : "payPlatformOrderNumber",
+        )}
+      >
         <input
           value={reference}
           maxLength={PAYMENTS_LIMITS.platformReferenceMax}

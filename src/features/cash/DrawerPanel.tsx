@@ -4,7 +4,7 @@ import { Badge, Button } from "../../components/ui";
 import { strings, type Key } from "../../i18n";
 import { tenderLabel } from "../../labels";
 import { PLATFORM_KEYS } from "../payments/PlatformFields";
-import type { PlatformCode } from "../../../shared/payments";
+import { platformLabel, type PlatformCode } from "../../../shared/payments";
 import { countText, fill } from "../discounts/format";
 import { DrawerCloseDialog, type DrawerView } from "./DrawerCloseDialog";
 import type { DrawerFact } from "./drawer-cache";
@@ -279,6 +279,7 @@ export function DrawerPanel({
                         <th>{t("payTerminal")}</th>
                         <th>{t("discountsDrawerCardSales")}</th>
                         <th>{t("discountsDrawerCardTips")}</th>
+                        <th>{t("discountsDrawerCardRefunds")}</th>
                         <th>{t("discountsDrawerCardNet")}</th>
                         {manager && <th>{t("cashTerminalFees")}</th>}
                       </tr>
@@ -289,6 +290,9 @@ export function DrawerPanel({
                           <td>{r.label ?? t("payOtherTerminal")}</td>
                           <td>{money(r.amount)}</td>
                           <td>{money(r.tips)}</td>
+                          <td>
+                            {r.refunds ? `−${money(r.refunds)}` : money(0)}
+                          </td>
                           <td>{money(r.net)}</td>
                           {manager && (
                             <td>
@@ -309,8 +313,15 @@ export function DrawerPanel({
                 <h2>{t("cashPlatforms")}</h2>
                 <dl className="cash-figures">
                   {(data.platforms ?? []).map((p) => (
-                    <div key={p.platform} className="contents">
-                      <dt>{t(PLATFORM_KEYS[p.platform as PlatformCode])}</dt>
+                    <div
+                      key={`${p.platform}:${p.label ?? ""}`}
+                      className="contents"
+                    >
+                      <dt>
+                        {p.label
+                          ? platformLabel(p.platform, p.label, locale)
+                          : t(PLATFORM_KEYS[p.platform as PlatformCode])}
+                      </dt>
                       <dd>
                         {money(p.net)}
                         {manager &&
@@ -322,7 +333,7 @@ export function DrawerPanel({
                     </div>
                   ))}
                   <dt>
-                    <strong>{t("discountsDrawerCardNet")}</strong>
+                    <strong>{t("cashPlatformsNet")}</strong>
                   </dt>
                   <dd>
                     <strong>{money(data.platform.net)}</strong>

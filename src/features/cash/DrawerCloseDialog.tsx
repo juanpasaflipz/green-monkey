@@ -55,6 +55,8 @@ export type DrawerView = {
   platform?: { sales: number; refunds: number; net: number; count: number };
   platforms?: {
     platform: string;
+    /** «Otra»'s typed name (absent on an older cached copy). */
+    label?: string | null;
     count: number;
     amount: number;
     refunds: number;

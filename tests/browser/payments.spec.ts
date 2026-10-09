@@ -85,7 +85,13 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
   const row = panel.locator("tr").filter({ hasText: terminal });
   await expect(row).toContainText("1.75 %");
   await expect(row).toContainText("Manual");
-  // DiDi Food's estimated commission.
+  // Platforms are off until the owner turns them on (LD-75): Uber Eats on, and DiDi Food's
+  // estimated commission.
+  await expect(
+    panel.getByLabel("Uber Eats", { exact: true }),
+  ).not.toBeChecked();
+  await expect(panel.getByLabel("Otra", { exact: true })).not.toBeChecked();
+  await panel.getByLabel("Uber Eats", { exact: true }).check();
   await panel
     .getByLabel("Comisión estimada (%) · DiDi Food", { exact: true })
     .fill("25");
@@ -133,11 +139,15 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
     "La plataforma cubre todo el saldo: $59.00. Sin propina.",
   );
   await expect(dialog.getByLabel("Propina", { exact: true })).toHaveCount(0);
+  // Uber Eats needs its order number (LD-75).
+  await dialog.getByLabel("La plataforma ya cobró este pedido").check();
+  await expect(
+    dialog.getByRole("button", { name: "Confirmar cobro", exact: true }),
+  ).toBeDisabled();
   await dialog
-    .getByLabel("Número de pedido de la plataforma (opcional)")
+    .getByLabel("Número de pedido de la plataforma", { exact: true })
     .fill("UE-1");
   await axe(page, "dialog");
-  await dialog.getByLabel("La plataforma ya cobró este pedido").check();
   await dialog
     .getByRole("button", { name: "Confirmar cobro", exact: true })
     .click();
@@ -179,7 +189,8 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
   await expect(byTerminal).toContainText("Tarjeta por terminal");
   await expect(byTerminal).toContainText("$45.00");
 
-  // Undo: archive the terminal, clear the price, restore DiDi's commission.
+  // Undo: archive the terminal, clear the price, turn Uber Eats off and clear DiDi's commission
+  // (both platforms back to their default: off).
   const view = await call(page, "/payments/settings");
   const created = view.terminals.find((t: any) => t.name === terminal);
   await call(page, `/payments/terminals/${created.id}/archive`, {
@@ -202,17 +213,15 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
       },
     ],
   });
-  const didi = view.platforms.find((p: any) => p.platform === "didi_food");
   await call(page, "/payments/platforms", {
     operationId: uuid(),
-    platforms: [
-      {
-        platform: "didi_food",
-        enabled: true,
-        commissionBp: null,
-        expectedVersion: didi.version,
-      },
-    ],
+    platforms: ["didi_food", "uber_eats"].map((code) => ({
+      platform: code,
+      enabled: false,
+      commissionBp: null,
+      expectedVersion: view.platforms.find((p: any) => p.platform === code)
+        .version,
+    })),
   });
   const after = await call<any[]>(page, "/catalog");
   expect(after.some((p) => p.platformPrices)).toBe(false);
