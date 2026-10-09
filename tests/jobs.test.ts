@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import "../server/jobs/handlers/index.js";
 import { backoffMs, failureState, jobErrorCode } from "../server/jobs/queue.js";
 import { createJobRunner, resolveOutcome } from "../server/jobs/runner.js";
+import { createWorkerRunners } from "../server/jobs/worker-lanes.js";
 import {
   clearJobHandlers,
   enqueueJob,
@@ -555,6 +556,64 @@ describe("runner limits and liveness (PLATFORM-OPS-1, OPS-3, OPS-5, OPS-6)", () 
     }).toEqual({ claimed: 200, ran: 200, left: 0 });
     await runner.stop(100);
   }, 30_000);
+
+  it("worker lanes (P2-CONCURRENCY-3): four long cfdi calls hold the general lane while a payments_push is claimed in the same drain", async () => {
+    const queues = new Map([
+      [
+        "t-1",
+        [
+          ...[1, 2, 3, 4].map((n) => ({
+            kind: "cfdi_stamp",
+            id: `stamp-${n}`,
+          })),
+          { kind: "payments_push", id: "push" },
+        ],
+      ],
+    ]);
+    let release!: () => void;
+    const facturapi = new Promise<void>((r) => (release = r));
+    const ran: string[] = [];
+    // cfdi registers first (server/worker.ts imports its register before payments').
+    const registry = new Map<string, RegisteredHandler>([
+      [
+        "cfdi_stamp",
+        jobRegistration(
+          "cfdi_stamp",
+          (async ({ job }: { job: { id: string } }) => {
+            ran.push(job.id);
+            await facturapi; // a slow Facturapi call
+          }) as never,
+          { concurrency: 4, leaseSeconds: 60 },
+        ),
+      ],
+      [
+        "payments_push",
+        jobRegistration(
+          "payments_push",
+          (async ({ job }: { job: { id: string } }) => {
+            ran.push(job.id);
+          }) as never,
+          { concurrency: 4 },
+        ),
+      ],
+    ]);
+    const runners = createWorkerRunners(queueSql({ queues }) as never, {
+      handlers: () => registry,
+      discover: async () => [],
+      sweepMs: 1000,
+    });
+    const drain = runners.drainTenant("t-1");
+    for (let i = 0; i < 100 && !ran.includes("push"); i++)
+      await new Promise((r) => setTimeout(r, 5));
+    expect(ran.filter((id) => id.startsWith("stamp-")).length).toBe(4);
+    expect(
+      ran,
+      "the charge reached the provider while cfdi held 4 slots",
+    ).toContain("push");
+    release();
+    await drain;
+    await runners.stop(100);
+  });
 
   it("a handler that ignores its abort signal stops counting at lease expiry; the tenant's drain finishes and its next job runs", async () => {
     vi.useFakeTimers();

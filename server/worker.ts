@@ -19,7 +19,8 @@ import { billingWorker } from "./billing-runtime.js";
 import { configureAlerts, sendAlert } from "./ops/alerts.js";
 import { createWatchdog } from "./ops/watchdog.js";
 import { checkWorkerRole, connectWorker, waitForDatabase } from "./db.js";
-import { createJobRunner, type JobRunner } from "./jobs/runner.js";
+import type { JobRunner } from "./jobs/runner.js";
+import { createWorkerRunners } from "./jobs/worker-lanes.js";
 import { discoverTenants, workerHandlers } from "./jobs/worker-registry.js";
 // >>> worker areas: imports (one line per area module; e.g. cfdi's register and boot modules)
 import "./cfdi/worker/register.js";
@@ -127,13 +128,13 @@ if (config.workerDatabaseUrl) {
   // A misconfigured login (not a gm_jobs_worker member, or more privileged)
   // is fatal: Railway keeps the previous deployment.
   await waitForDatabase(sql, { check: checkWorkerRole });
-  jobs = createJobRunner(sql, {
+  // Two lanes (server/jobs/worker-lanes.ts): payments_* kinds have their own slots, so a cfdi
+  // backlog never delays a charge reaching the terminal (P2-CONCURRENCY-3).
+  jobs = createWorkerRunners(sql, {
     handlers: workerHandlers,
-    concurrency: 4,
     sweepMs: 5000,
     log: log.child({ loop: "worker-jobs" }),
-    discover: async () => {
-      const kinds = [...workerHandlers().keys()];
+    discover: async (kinds) => {
       // With no worker kind registered discovery sends no query, so prove the
       // jobs login still reaches the database before ticking (LD-14 OQ-6):
       // losing it turns /healthz 503 and /api/ops/status worker "stale".
