@@ -258,19 +258,6 @@ export function Selling({
    * receipt dialog of its order, where the cashier looks (LOYALTY-UX-3).
    */
   const [clubResult, setClubResult] = useState<{ orderId: string; text: string } | null>(null);
-  /**
-   * The club's after-payment work for the cart's own settled order: link, reconcile and toast;
-   * their failure is a notice, never an error.
-   */
-  function paymentSettled(order: Order) {
-    void loyalty.afterPayment(order).then((text) => {
-      if (!text) return;
-      setClubResult({ orderId: order.id, text });
-      // No receipt for this order on screen: the cart shows it instead.
-      if (receiptRef.current?.id !== order.id && currentRef.current?.id === order.id)
-        setNotice(text);
-    });
-  }
   const currentRef = useRef(current);
   currentRef.current = current;
   /** ACC-PR-2: the payment dialog and the receipt, as a late answer sees them. */
@@ -1124,13 +1111,36 @@ export function Selling({
     setError("");
     setNotice("");
   }
-  /** payments (037, critic R18): every server-settled payment ends here once. */
-  function onPaymentSettled(order: Order) {
+  /**
+   * payments (037, critic R18): every server-settled payment ends here once.
+   * `cartOwn`: the order is the cart's own (owned, same context epoch) and its
+   * receipt replaces the cart; otherwise the cart moved on from it.
+   */
+  function onPaymentSettled(order: Order, cartOwn: boolean) {
     try {
       onPaymentSettledProp?.(order);
     } catch {
       // A consumer's failure never hides the receipt of money already taken.
     }
+    // loyalty (038, R18): the club's after-payment work hangs only on this
+    // exit; its failure is a notice, never an error. The cart's own order:
+    // link the cart's member if needed, reconcile, and show the result in the
+    // receipt status. An order the cart moved on from: reconcile only, never
+    // linking the cart's current member to it.
+    if (!cartOwn) {
+      loyalty.reconcileOnly(order);
+      return;
+    }
+    void loyalty.afterPayment(order).then((text) => {
+      if (!text) return;
+      setClubResult({ orderId: order.id, text });
+      // No receipt for this order on screen: the cart shows it instead.
+      if (
+        receiptRef.current?.id !== order.id &&
+        currentRef.current?.id === order.id
+      )
+        setNotice(text);
+    });
   }
   /**
    * SVC-R2: the in-flight flag is set synchronously on the tap and cleared
@@ -1233,13 +1243,16 @@ export function Selling({
                 : null;
               await settleActiveAttempt(orderId ?? null, (result, owned) => {
                 setPayment(false);
-                onPaymentSettled(result);
+                // R18: "Recuperar pago" takes the one exit too (LOYALTY-MONEY-7). An empty
+                // new cart shows the receipt, but the order is not its own: the club only
+                // reconciles it, so a member picked for the new cart is never linked to it.
+                onPaymentSettled(
+                  result,
+                  owned && currentRef.current?.id === result.id,
+                );
                 if (owned) {
                   setCurrent(result);
                   setReceipt(result);
-                  // R18: every settled payment of the cart on screen takes the one exit, this
-                  // retried attempt too (the club's after-payment link, LOYALTY-MONEY-7).
-                  paymentSettled(result);
                 } else
                   setNotice(
                     t("servicePaidAfterSwitch").replace(
@@ -1268,8 +1281,9 @@ export function Selling({
     const settled = (result: Order, owned = true) => {
       setPendingPayment(false);
       setPayment(false);
-      onPaymentSettled(result);
-      if (!owned || epoch !== contextEpoch.current) {
+      const cartOwn = owned && epoch === contextEpoch.current;
+      onPaymentSettled(result, cartOwn);
+      if (!cartOwn) {
         setNotice(
           t("servicePaidAfterSwitch").replace("{n}", numberText(result)),
         );
@@ -1277,7 +1291,6 @@ export function Selling({
       }
       setCurrent(result);
       setReceipt(result);
-      paymentSettled(result);
     };
     try {
       const hadAttempt = !!(await db.cache.get(attemptId));

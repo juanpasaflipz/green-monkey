@@ -184,8 +184,20 @@ export function useLoyaltyCheckout({
         void link(o, member, LINK_BUDGET_MS);
     },
     /**
-     * payments' onPaymentSettled exit (R18): link if the order is not linked yet (a create-and-pay
-     * collect), then reconcile and return the toast. Never throws.
+     * payments' onPaymentSettled exit (R18) for an order the cart moved on from: reconcile only.
+     * The cart's member belongs to another order now and is never linked to this one; whatever
+     * link the order has earns. Fire-and-forget, never throws (the settle job stamps anyway).
+     */
+    reconcileOnly(o: Order) {
+      if (!club || !online || !isServerOrder(o)) return;
+      void loyaltyApi
+        .reconcile(o.id)
+        .then(() => forgetLoyaltyReceipt(o.id))
+        .catch(() => {});
+    },
+    /**
+     * payments' onPaymentSettled exit (R18) for the cart's own order: link if the order is not
+     * linked yet (a create-and-pay collect), then reconcile and return the toast. Never throws.
      */
     async afterPayment(o: Order): Promise<string> {
       if (!club || !online || !isServerOrder(o)) return "";
