@@ -31,6 +31,7 @@ import {
   thresholdHint,
 } from "../src/features/loyalty/format";
 import { rewardLineFor } from "../src/features/loyalty/RedeemReward";
+import loyaltyArea from "../src/i18n/loyalty";
 import type { Order } from "../shared/domain";
 import { CLUB_RATES, kioskMemberLimiter } from "../server/routes/loyalty";
 import { MemberSheet } from "../src/features/loyalty/Members";
@@ -542,6 +543,16 @@ describe("the stamp threshold hint follows what the owner typed (LOYALTY-UX-18)"
     expect(thresholdHint("250", "es", "MXN")).toContain("$250.00");
     expect(thresholdHint("250", "es", "MXN")).not.toContain("$400.00");
     expect(thresholdHint("abc", "es", "MXN")).toContain("$400.00");
+  });
+});
+
+describe("the club's strings write money as es-MX does (restaurant-day G3)", () => {
+  it("every literal amount has its cents: $0.00, never $0", () => {
+    for (const locale of ["es", "en"] as const)
+      for (const [key, text] of Object.entries(loyaltyArea[locale]))
+        for (const m of String(text).matchAll(/\$[\d,]*(?:\.\d+)?/g))
+          expect(m[0], `${locale}.${key}`).toMatch(/^\$\d{1,3}(,\d{3})*\.\d{2}$/);
+    expect(thresholdHint("400", "es", "MXN")).toContain("Usa $0.00 para dar siempre 1 sello.");
   });
 });
 

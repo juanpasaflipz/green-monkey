@@ -16,7 +16,7 @@ export default defineArea({
     loyaltyStampsRequired: "Sellos para un premio",
     loyaltyThreshold: "Un sello extra por cada",
     loyaltyThresholdHint:
-      "Cada compra pagada da 1 sello, más 1 por cada {amount} pagados. Usa $0 para dar siempre 1 sello.",
+      "Cada compra pagada da 1 sello, más 1 por cada {amount} pagados. Usa $0.00 para dar siempre 1 sello.",
     loyaltyMaxStamps: "Máximo de sellos por compra (opcional)",
     loyaltyRewardKind: "Premio",
     loyaltyRewardItem: "Un producto gratis",
@@ -276,7 +276,7 @@ export default defineArea({
     loyaltyStampsRequired: "Stamps for a reward",
     loyaltyThreshold: "One extra stamp for every",
     loyaltyThresholdHint:
-      "Each paid purchase earns 1 stamp, plus 1 for every {amount} paid. Use $0 to always give 1 stamp.",
+      "Each paid purchase earns 1 stamp, plus 1 for every {amount} paid. Use $0.00 to always give 1 stamp.",
     loyaltyMaxStamps: "Maximum stamps per purchase (optional)",
     loyaltyRewardKind: "Reward",
     loyaltyRewardItem: "One free item",
