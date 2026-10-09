@@ -38,13 +38,18 @@ stub" below).
 4. When it runs: the check settles or is all voided (hooks in `refreshCheckState`), a refund is
    written (last statement of `insertRefundBatch`), a reward discount is removed (`reverseDiscount`),
    an order is linked or relinked (inline), and Vender calls `POST /api/loyalty/orders/:id/reconcile`
-   after a payment (for the toast). A paid table check that returns to open does not reconcile.
+   after a payment (for the toast). A paid table check that returns to open keeps its linked
+   member's stamps until it settles again (a reconcile meanwhile, e.g. a reward discount's job,
+   plans nothing for that member); each settle is its own job (`settle:<id>:<paid>:<version>`), so
+   paid → open → paid with the same tenders reconciles again. Any link row, a removed one included,
+   makes the hooks enqueue (a redemption stays the first member's).
 5. Card completion: overflow carries over (9 + 3 → 1 reward, 2 stamps). A lowered `stamps_required`
    completes on the member's next posting; past rows never change.
 6. A reversal that leaves the card negative withdraws an available reward; when the reward was
    already redeemed the card stays negative ("Ajuste pendiente") and future stamps repay it.
 7. A reward is restored when its discount is removed, or when its units were all voided and the order
-   closed (at most once per discount).
+   is settled or closed (a paid table check included, which "Liberar mesa" closes later with no
+   hook; at most once per discount).
 8. Club off: no new earnings (the target never exceeds what is posted); reversals and restorations
    still post.
 9. Link window: an order takes a member while open or up to `link_window_days` (default 7) after it

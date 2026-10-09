@@ -197,6 +197,19 @@ describe("planReconcile (§2.2)", () => {
       })),
     };
   };
+  it("a paid table check that returns to open keeps its stamps until it settles again (§2.2.4, LOYALTY-MONEY-3, CONCURRENCY-2)", () => {
+    const earned = { id: A, deleted: false, stamps: 5, rewards: 0, posted: 2 };
+    expect(planReconcile(base({ settled: false, live: true, members: [earned] }))).toEqual([]);
+    // Settled again with the same base: nothing; a voided or cancelled one still reverses.
+    expect(planReconcile(base({ settled: true, base: 90000 - 40000, members: [earned] }))).toEqual([]);
+    expect(planReconcile(base({ settled: false, live: false, members: [earned] }))).toEqual([
+      { memberId: A, kind: "earn_reversal", stampsDelta: -2, rewardsDelta: 0, base: 15000 },
+    ]);
+    // Another member's stamps on a relinked, reopened check still move.
+    expect(planReconcile(base({ settled: false, live: true, linkMemberId: B, members: [earned, { id: B, deleted: false, stamps: 0, rewards: 0, posted: 0 }] }))).toEqual([
+      { memberId: A, kind: "earn_reversal", stampsDelta: -2, rewardsDelta: 0, base: 15000 },
+    ]);
+  });
   it("first earn, then a repeat plans nothing", () => {
     const i = base();
     expect(planReconcile(i)).toEqual([

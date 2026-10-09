@@ -71,7 +71,7 @@ export async function refreshCheckState(
   orderId: string,
 ): Promise<CheckState> {
   const [o] =
-    await tx`select o.mode,o.table_id,o.channel,o.total,o.state,o.check_state,
+    await tx`select o.mode,o.table_id,o.channel,o.total,o.state,o.check_state,o.version,
       coalesce((select sum(t.amount) from tenders t where t.tenant_id=o.tenant_id and t.order_id=o.id),0)::int as paid,
       (select count(*) from order_lines l where l.tenant_id=o.tenant_id and l.order_id=o.id)::int as lines,
       (select count(*) from order_lines l where l.tenant_id=o.tenant_id and l.order_id=o.id
@@ -98,12 +98,12 @@ export async function refreshCheckState(
         await tx`update orders set check_state='paid' where id=${orderId}`;
         await issueDueTicket(tx, s, orderId); // fiscal 027: open → paid issues the ticket
         // loyalty (038, R16): the only coupling between payments and stamps (LO-R10).
-        await loyaltyOrderSettled(tx, s, orderId, o.paid);
+        await loyaltyOrderSettled(tx, s, orderId, o.paid, o.version);
       }
       return "paid";
     }
     await issueDueTicket(tx, s, orderId); // fiscal 027: before close, so the ticket audit precedes check.closed
-    await loyaltyOrderSettled(tx, s, orderId, o.paid); // loyalty (038, R16)
+    await loyaltyOrderSettled(tx, s, orderId, o.paid, o.version); // loyalty (038, R16)
     await close(tx, s, orderId, "settled", money);
     return "closed";
   }

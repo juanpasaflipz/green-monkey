@@ -189,6 +189,12 @@ export type ReconcileInput = {
   rule: ProgramRule;
   /** paid, or closed settled/released, and not in recovery (§2.1). */
   settled: boolean;
+  /**
+   * Not settled but still live (not voided, cancelled or in recovery): a paid table check that
+   * returned to open keeps the linked member's stamps until it settles again (§2.2.4,
+   * LOYALTY-MONEY-3). Absent means false.
+   */
+  live?: boolean;
   base: number;
   linkMemberId: string | null;
   members: {
@@ -205,6 +211,7 @@ export type ReconcileInput = {
     restored: boolean;
     discountReversed: boolean;
     activeAmount: number;
+    /** The order is closed or settled (a paid table check): a voided allocation is final. */
     orderClosed: boolean;
   }[];
 };
@@ -224,7 +231,13 @@ export function planReconcile(i: ReconcileInput): PlannedLedgerRow[] {
   for (const m of members) {
     if (m.deleted) continue;
     let target =
-      i.settled && m.id === i.linkMemberId ? stampsFor(i.base, i.rule) : 0;
+      m.id !== i.linkMemberId
+        ? 0
+        : i.settled
+          ? stampsFor(i.base, i.rule)
+          : i.live
+            ? Math.max(0, m.posted)
+            : 0;
     if (!i.enabled) target = Math.min(target, Math.max(0, m.posted));
     const delta = target - m.posted;
     if (delta === 0) continue;

@@ -182,6 +182,11 @@ export async function reconcileOrderHeld(
       maxStampsPerOrder: program.maxStampsPerOrder,
     },
     settled,
+    live:
+      !settled &&
+      !String(o.state).startsWith("recovery") &&
+      o.state !== "cancelled" &&
+      o.check_state !== "closed",
     base,
     linkMemberId: again?.member_id ?? null,
     members: members.map((m) => ({
@@ -197,7 +202,9 @@ export async function reconcileOrderHeld(
       restored: r.restored,
       discountReversed: r.reversed,
       activeAmount: r.active,
-      orderClosed: o.check_state === "closed",
+      // A voided allocation never comes back: settled (a paid table check included, which may
+      // be released later with no hook) is final, like closed (LOYALTY-MONEY-1).
+      orderClosed: o.check_state === "closed" || settled,
     })),
   });
   for (const r of rows) await postLedger(tx, tenantId, { ...r, orderId });

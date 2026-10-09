@@ -14,8 +14,9 @@ import { checkRole, connect, tenant, type Tx } from "../server/db.js";
 import { makeRoute } from "../server/http.js";
 import { apiErrorHandler } from "../server/api-errors.js";
 import { setLogSink } from "../server/logging.js";
-import { createOrder, getOrder, recordPayment } from "../server/orders.js";
+import { addRound, createOrder, getOrder, recordPayment } from "../server/orders.js";
 import { voidLines } from "../server/voids.js";
+import { closeCheck } from "../server/checks.js";
 import { recordRefund } from "../server/refunds.js";
 import { applyDiscount, reverseDiscount } from "../server/discounts.js";
 import { approvalFor } from "../server/routes/discounts.js";
@@ -612,14 +613,14 @@ try {
     return run(f.s.manager, (tx) => recordRefund(tx, f.s.manager, orderId, body, a));
   }
 
-  await test("L4. link, then a $150 cash payment: refreshCheckState enqueues loyalty_reconcile settle:<id>:15000 and the handler posts earn 1; $900 at a $400 threshold posts 3; rerunning the job or the reconcile posts nothing", async () => {
+  await test("L4. link, then a $150 cash payment: refreshCheckState enqueues loyalty_reconcile settle:<id>:15000:<version> and the handler posts earn 1; $900 at a $400 threshold posts 3; rerunning the job or the reconcile posts nothing", async () => {
     const f = await clubTenant("ganar");
     const ana = await enroll(f);
     const o = await newOrder(f, [{ product: f.p.combo, quantity: 1 }]);
     const linked = await link(f, o.id, ana.id);
     assert.deepEqual([linked.earned, linked.settled, linked.linkable], [0, false, true]);
-    await pay(f, o.id, 15000);
-    assert.deepEqual(await jobKeys(f, o.id), [`settle:${o.id}:15000`]);
+    const paidO = await pay(f, o.id, 15000);
+    assert.deepEqual(await jobKeys(f, o.id), [`settle:${o.id}:15000:${paidO.version}`]);
     assert.equal((await member(f, ana.id)).stamps, 0, "nothing posts inside the payment");
     assert.equal(await runJobs(f, o.id), 1);
     assert.deepEqual(await ledgerKinds(f, o.id), ["earn:1"]);
@@ -641,8 +642,8 @@ try {
     // A tip never counts; a table check that becomes "paid" earns from the paid branch.
     const mesa = await newOrder(f, [{ product: f.p.taco, quantity: 1 }], { table: true });
     await link(f, mesa.id, ana.id);
-    await pay(f, mesa.id, 4500, { tip: 50000, method: "external" });
-    assert.deepEqual(await jobKeys(f, mesa.id), [`settle:${mesa.id}:4500`]);
+    const paidMesa = await pay(f, mesa.id, 4500, { tip: 50000, method: "external" });
+    assert.deepEqual(await jobKeys(f, mesa.id), [`settle:${mesa.id}:4500:${paidMesa.version}`]);
     await runJobs(f, mesa.id);
     assert.deepEqual(await ledgerKinds(f, mesa.id), ["earn:1"]);
   });
@@ -1009,6 +1010,98 @@ try {
     assert.deepEqual(await jobKeys(f, x.id), [`void:${x.id}`]);
     await runJobs(f, x.id);
     assert.deepEqual(await ledgerKinds(f, x.id), ["reward_redeemed:0", "reward_restored:0"]);
+  });
+
+  await test("L25. a table check whose comped unit was voided restores the reward once it is paid, before and without Liberar mesa (LOYALTY-MONEY-1, CONCURRENCY-1); after Quitar cliente a voided check still restores the reward (LOYALTY-MONEY-2)", async () => {
+    const f = await clubTenant("mesa-premio");
+    const ana = await enroll(f);
+    await giveStamps(f, ana.id, 0, 2);
+    const voidAll = async (orderId: string, lines: { lineId: string; quantity: number }[]) => {
+      const latest = await run(f.s.manager, (tx) => getOrder(tx, orderId));
+      await run(f.s.manager, (tx) =>
+        voidLines(tx, f.s.manager, orderId, {
+          operationId: randomUUID(),
+          expectedVersion: latest.version,
+          lines,
+          reason: "Se acabó",
+          stockDisposition: "no_return",
+        }, f.ids.manager),
+      );
+    };
+    // Mesa 4: the burrito is comped, the kitchen is out of it, the rest is paid: 'paid', not closed.
+    const t = await newOrder(f, [{ product: f.p.burrito, quantity: 1 }, { product: f.p.taco, quantity: 1 }], { table: true });
+    await redeem(f, t.id, ana.id, lineOf(t, f.p.burrito));
+    await voidAll(t.id, [{ lineId: lineOf(t, f.p.burrito), quantity: 1 }]);
+    const paid = await pay(f, t.id, 4500);
+    assert.equal(paid.checkState, "paid");
+    await runJobs(f, t.id);
+    assert.deepEqual(await ledgerKinds(f, t.id), ["reward_redeemed:0", "earn:1", "reward_restored:0"]);
+    assert.equal((await member(f, ana.id)).rewards, 2);
+    // Liberar mesa afterwards changes nothing, and a reconcile plans nothing more.
+    await run(f.s.cashier, (tx) => closeCheck(tx, f.s.cashier, t.id, { operationId: randomUUID() }));
+    await run(f.s.cashier, (tx) => reconcileOrderRoute(tx, f.s.cashier, t.id));
+    assert.deepEqual(await ledgerKinds(f, t.id), ["reward_redeemed:0", "earn:1", "reward_restored:0"]);
+    // Quitar cliente on an open check with a redemption (no PIN), then every line voided.
+    const q = await newOrder(f, [{ product: f.p.burrito, quantity: 1 }, { product: f.p.taco, quantity: 1 }], { table: true });
+    await redeem(f, q.id, ana.id, lineOf(q, f.p.burrito));
+    assert.equal((await member(f, ana.id)).rewards, 1);
+    await change(f, q.id, null, ana.id);
+    await voidAll(q.id, q.lines.map((l) => ({ lineId: l.id, quantity: 1 })));
+    assert.deepEqual(await jobKeys(f, q.id), [`void:${q.id}`]);
+    await runJobs(f, q.id);
+    assert.deepEqual(await ledgerKinds(f, q.id), ["reward_redeemed:0", "reward_restored:0"]);
+    assert.equal((await member(f, ana.id)).rewards, 2);
+  });
+
+  await test("L26. a paid table check that returns to open keeps its stamps, and settling again with the same tenders gets its own job (LOYALTY-MONEY-3, CONCURRENCY-2; fiscal tickets off, the only way a paid check reopens)", async () => {
+    const f = await clubTenant("reabrir");
+    const ana = await enroll(f);
+    const before = process.env.FISCAL_TICKETS_ENABLED;
+    process.env.FISCAL_TICKETS_ENABLED = "false";
+    try {
+      const mesa = await newOrder(f, [{ product: f.p.molcajete, quantity: 1 }], { table: true });
+      await link(f, mesa.id, ana.id);
+      const paid = await pay(f, mesa.id, 21000);
+      assert.equal(paid.checkState, "paid");
+      await runJobs(f, mesa.id);
+      assert.deepEqual(await ledgerKinds(f, mesa.id), ["earn:1"]);
+      // A coffee rung on the paid check by mistake: open again; a reconcile now keeps the stamp.
+      const reopened = await run(f.s.cashier, (tx) =>
+        addRound(tx, f.s.cashier, mesa.id, {
+          operationId: randomUUID(),
+          expectedVersion: paid.version,
+          lines: [{ id: randomUUID(), productId: f.p.taco, quantity: 1, options: [], note: "" }],
+          mode: "dine_in",
+          tableId: f.table,
+          name: "Club",
+          note: "",
+          channel: "pos",
+        }),
+      );
+      assert.equal(reopened.checkState, "open");
+      await run(f.s.cashier, (tx) => reconcileOrderRoute(tx, f.s.cashier, mesa.id));
+      assert.deepEqual(await ledgerKinds(f, mesa.id), ["earn:1"], "§2.2.4: stamps stay while it is open again");
+      // Voided: paid again with the same tenders, a new settle key (the version moved).
+      const coffee = reopened.lines.find((l) => l.productId === f.p.taco)!;
+      await run(f.s.manager, (tx) =>
+        voidLines(tx, f.s.manager, mesa.id, {
+          operationId: randomUUID(),
+          expectedVersion: reopened.version,
+          lines: [{ lineId: coffee.id, quantity: 1 }],
+          reason: "Por error",
+          stockDisposition: "no_return",
+        }, f.ids.manager),
+      );
+      const keys = await jobKeys(f, mesa.id);
+      assert.equal(keys.length, 2, keys.join(", "));
+      assert.deepEqual(keys.map((k) => k.split(":").slice(0, 3).join(":")), [`settle:${mesa.id}:21000`, `settle:${mesa.id}:21000`]);
+      assert.equal(await runJobs(f, mesa.id), 1);
+      assert.deepEqual(await ledgerKinds(f, mesa.id), ["earn:1"]);
+      assert.equal((await member(f, ana.id)).stamps, 1);
+    } finally {
+      if (before === undefined) delete process.env.FISCAL_TICKETS_ENABLED;
+      else process.env.FISCAL_TICKETS_ENABLED = before;
+    }
   });
 
   // ------------------------------------------------------------------ L13–L15 members, ARCO, retention
