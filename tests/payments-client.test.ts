@@ -2,7 +2,11 @@
 // drawer totals, Excepciones text, the tender CSV and the corte of a drawer with terminals and
 // platforms. Pure: no database, no browser.
 import { describe, expect, it } from "vitest";
-import { tenderLabel, tenderMethodLabel } from "../src/labels";
+import {
+  offlineMethodKey,
+  tenderLabel,
+  tenderMethodLabel,
+} from "../src/labels";
 import { archivedDrawerAmounts } from "../src/features/offline/format";
 import { exceptionDetail } from "../src/features/reports/exception-text";
 import { tenderColumns, toCsv } from "../src/features/reports/csv";
@@ -46,12 +50,36 @@ describe("tender labels (receipts, Órdenes, Caja)", () => {
       tenderMethodLabel("external", undefined, "es"),
     );
     expect(tenderLabel({ method: "cash" }, "es")).toBe("Efectivo");
+    // PAYMENTS-MONEY-4: a recovered platform or card payment keeps its method; only recovered
+    // cash reads «Efectivo recuperado».
     expect(
       tenderLabel(
         { method: "platform", platform: "rappi", source: "offline_recovery" },
         "es",
       ),
-    ).toBe(tenderMethodLabel("platform", "offline_recovery", "es"));
+    ).toBe("Pagado en Rappi (recuperado)");
+    expect(
+      tenderLabel(
+        {
+          method: "external",
+          terminal_label: "BBVA",
+          source: "offline_recovery",
+        },
+        "en",
+      ),
+    ).toBe("Card · BBVA (recovered)");
+    expect(
+      tenderLabel({ method: "cash", source: "offline_recovery" }, "es"),
+    ).toBe("Efectivo recuperado");
+    expect(tenderMethodLabel("platform", "offline_recovery", "es")).toBe(
+      "Plataforma (recuperado)",
+    );
+    expect(tenderMethodLabel("external", "offline_recovery", "es")).not.toMatch(
+      /Efectivo/,
+    );
+    expect(offlineMethodKey("platform")).toBe("payMethodPlatform");
+    expect(offlineMethodKey("cash")).toBe("offlineMethodCash");
+    expect(offlineMethodKey("card")).toBe("serviceTenderOther");
     // Never cash: an unknown method prints as "Otro".
     expect(tenderMethodLabel("platform", undefined, "es")).toBe("Plataforma");
     expect(tenderLabel({ method: "card" }, "es")).toBe(

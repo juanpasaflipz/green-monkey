@@ -97,6 +97,8 @@ export default defineArea({
     cashPlatforms:
       "Pagado por plataformas (no cuenta como efectivo ni tarjeta)",
     cashPlatformsNet: "Total plataformas",
+    payRecovered: "{label} (recuperado)",
+    payReviewPlatform: "Revisar pago por plataforma",
     cashBatchRequired: "escribe su total del lote",
     cashBatchAllOrNone:
       "Escribe el total del lote de cada terminal que cobró, o deja todos en blanco.",
@@ -249,6 +251,8 @@ export default defineArea({
     cashBatchDifference: "Batch difference",
     cashPlatforms: "Paid by platforms (not cash or card)",
     cashPlatformsNet: "Platforms total",
+    payRecovered: "{label} (recovered)",
+    payReviewPlatform: "Review platform payment",
     cashBatchRequired: "enter its batch total",
     cashBatchAllOrNone:
       "Enter the batch total of every terminal that took money, or leave them all blank.",
