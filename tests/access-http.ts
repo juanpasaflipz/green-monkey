@@ -12,7 +12,7 @@ import { signInGoogleOwner } from "../server/owner-accounts.js";
 const target = new URL(process.env.DATABASE_URL ?? "");
 if (
   target.hostname !== "127.0.0.1" ||
-  !/^\/green_monkey(_[a-z]+)?_dev$/.test(target.pathname) ||
+  !/^\/green_monkey(_[a-z][a-z0-9]*)?_dev$/.test(target.pathname) ||
   !process.env.MIGRATION_DATABASE_URL
 )
   throw Error(
