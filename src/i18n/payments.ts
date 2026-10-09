@@ -182,7 +182,7 @@ export default defineArea({
       "Primero se cancela en esta terminal; al confirmarse, eliges la otra.",
     payManualFallback: "Cobrar sin integración",
     payManualFallbackHint:
-      "Cambia la terminal a modo independiente, cobra ahí y registra la referencia.",
+      "Cobra en la terminal sin integración y registra la referencia. Mercado Pago: un gerente cambia la terminal a modo independiente (Configuración → Cambiar modo) y se reinicia. Clip: cobra desde la app de Clip.",
     payApproved: "Cobro aprobado",
     payDeclined: "La terminal rechazó el cobro ({reason})",
     payCancelled: "Cobro cancelado",
@@ -191,6 +191,12 @@ export default defineArea({
       "No sabemos si el cobro se completó. Revisa la pantalla de la terminal antes de intentar otra vez.",
     payUnknownPushFailed:
       "No pudimos confirmar el envío a {terminal}. Revisa la pantalla de la terminal antes de intentar otra vez; un gerente resuelve el cobro.",
+    payUnknownUnreachable:
+      "No pudimos confirmar el envío con el proveedor; lo seguimos consultando. Si no aparece, un gerente lo resuelve (la orden queda bloqueada mientras tanto).",
+    payUnknownTimeout:
+      "La terminal no dio un resultado a tiempo. Un gerente lo resuelve después de revisar la terminal.",
+    payUnknownNoAccount:
+      "La cuenta del proveedor no está disponible: el propietario la reconecta en Configuración y el cobro se vuelve a consultar solo.",
     payRecheck: "Volver a consultar",
     payRecheckSent: "Consultando al proveedor…",
     payCancelOnTerminal:
@@ -483,7 +489,7 @@ export default defineArea({
       "It cancels on this terminal first; once confirmed, you pick the other one.",
     payManualFallback: "Charge without integration",
     payManualFallbackHint:
-      "Switch the terminal to standalone mode, charge there and enter the reference.",
+      "Charge on the terminal without the integration and enter the reference. Mercado Pago: a manager switches the terminal to standalone mode (Settings → Change mode) and it restarts. Clip: charge from the Clip app.",
     payApproved: "Charge approved",
     payDeclined: "The terminal declined the charge ({reason})",
     payCancelled: "Charge cancelled",
@@ -492,6 +498,12 @@ export default defineArea({
       "We don't know whether the charge went through. Check the terminal's screen before trying again.",
     payUnknownPushFailed:
       "We could not confirm the charge reached {terminal}. Check the terminal's screen before trying again; a manager resolves the charge.",
+    payUnknownUnreachable:
+      "We could not confirm the send with the provider; we keep checking. If it does not show up, a manager resolves it (the order stays blocked meanwhile).",
+    payUnknownTimeout:
+      "The terminal gave no result in time. A manager resolves it after checking the terminal.",
+    payUnknownNoAccount:
+      "The provider account is unavailable: the owner reconnects it in Settings and the charge is checked again on its own.",
     payRecheck: "Check again",
     payRecheckSent: "Asking the provider…",
     payCancelOnTerminal:
@@ -620,8 +632,8 @@ export default defineArea({
   },
   errors: {
     payments_provider_unavailable: [
-      "El cobro integrado no está disponible por ahora. Usa Terminal externa.",
-      "Integrated charging is not available right now. Use External terminal.",
+      "El cobro integrado no está disponible por ahora. En Tarjeta, elige una terminal manual u «Otra terminal».",
+      "Integrated charging is not available right now. Under Card, choose a manual terminal or “Other terminal”.",
     ],
     payments_provider_not_configured: [
       "Conecta la cuenta del proveedor en Configuración antes de usar esta terminal integrada.",

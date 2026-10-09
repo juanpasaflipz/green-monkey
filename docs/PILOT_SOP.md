@@ -202,7 +202,7 @@ Todo el comportamiento está en [recuperación sin conexión](OFFLINE_RECOVERY.m
   no funcionan sin conexión.
 - **Qué se puede hacer sin conexión** (con la configuración de fábrica):
   - Órdenes nuevas **cobradas completas**. En «Cobrar», con «Efectivo», el botón dice
-    «Guardar cobro en este dispositivo»; con «Terminal externa», «Guardar cobro con
+    «Guardar cobro en este dispositivo»; con «Tarjeta», «Guardar cobro con
     terminal» (confirma la aprobación y escribe la referencia; no se verifica con el
     banco).
   - El recibo muestra un número provisional («Número provisional …» y «El número
@@ -343,7 +343,7 @@ una sucursal» y escribe el domicilio de este local. Sin esos datos, cada ticket
 ## 5. Moneda: solo pesos mexicanos (MXN)
 
 Esta versión cobra **solo en pesos**. No existe una forma de pago en dólares ni
-conversión de moneda: los métodos de cobro son «Efectivo» y «Terminal externa», en la
+conversión de moneda: los métodos de cobro son «Efectivo», «Tarjeta» y «Plataforma», en la
 moneda del restaurante.
 
 - La moneda del restaurante está en «Configuración» → «Datos del restaurante» →
@@ -373,7 +373,7 @@ cómo conservar la bitácora.
    de cambio, pesos escritos en «Efectivo recibido», cambio entregado e iniciales de
    quien cobró. Si el cliente deja propina en dólares y la registras en «Propina»,
    conviértela igual, escríbela en pesos y anótala.
-5. **No uses «Terminal externa»** para registrar dólares en efectivo. Este procedimiento
+5. **No uses «Tarjeta»** para registrar dólares en efectivo. Este procedimiento
    cubre solo efectivo en dólares.
 6. **Al cerrar caja** (sección 4.3): cuenta los pesos; cuenta los dólares del sobre y
    compáralos con el total de dólares de la bitácora; multiplica los dólares contados
@@ -487,18 +487,28 @@ entonces usa el registro manual.
    «Sin datos») → importe y propina → «Enviar a {terminal}». El cliente paga en la terminal;
    la pantalla dice «Esperando el pago en {terminal}…» y el cobro queda registrado solo al
    aprobarse. Mientras espera: «Cancelar cobro» o «Cambiar de terminal». Si la terminal lo
-   rechaza: «Reintentar» u «Otra forma de pago». Si falla la integración (terminal sin
-   conexión, proveedor caído): «Cobrar sin integración» y lo registras a mano en la misma
-   terminal. Sin internet, las terminales integradas solo se registran a mano.
+   rechaza: «Reintentar» u «Otra forma de pago». Si la terminal está sin conexión o tiene
+   otro cobro en espera: «Cobrar sin integración» y lo registras a mano en la misma
+   terminal (Mercado Pago: un gerente la cambia a «Independiente» en Configuración y se
+   reinicia; Clip: cobra desde la app de Clip). Si el proveedor no contesta, el cobro
+   queda «sin confirmar» (paso 6) y bloquea esa orden hasta resolverlo: deja de enviar a
+   ese proveedor y cobra las siguientes órdenes sin integración. Sin internet, las
+   terminales integradas solo se registran a mano.
 5. Cerrar la ventana no cancela el cobro: sigue en «Cobros en terminal en curso» (en Vender
    y Órdenes) y se registra solo al aprobarse.
 6. Cobro sin confirmar («No sabemos si el cobro se completó…» o «No pudimos confirmar el
    envío a {terminal}…»): **nunca cobres otra vez a ciegas.** Revisa la pantalla de la
    terminal y toca «Volver a consultar». Si sigue igual, un gerente abre «Resolver cobro»,
    revisa el historial en la app del proveedor, marca «Revisé el historial del proveedor» y
-   elige «Sí se cobró: registrar en la orden» (con la referencia del proveedor), «No se
-   cobró» o, en un cobro por revisar, «Se cobró y se reembolsó en la terminal», con el
-   motivo. La caja no cierra mientras tenga un cobro en terminal en curso o sin resolver.
+   elige «Sí se cobró: registrar en la orden» (con la referencia y el importe cobrado que
+   muestra el historial del proveedor), «No se cobró» o, en un cobro por revisar, «Se cobró
+   y se reembolsó en la terminal», con el motivo. «No se cobró» espera a que el proveedor ya
+   no pueda cobrarlo: en Mercado Pago, hasta que vence (unos 12 minutos desde el envío); en
+   Clip, cancela primero el cobro en el lector y toca «Volver a consultar» (si el lector lo
+   canceló, la orden queda libre sola). La caja no cierra mientras tenga un cobro en
+   terminal en curso o sin resolver. Si la cuenta del proveedor dice «Error» con cobros en
+   curso, el propietario la reconecta con «Reemplazar credenciales» (se permite con cobros
+   en curso) y los cobros se vuelven a consultar solos.
 7. Desconectar (propietario): «Desconectar», solo sin cobros en curso; las terminales
    integradas quedan para registro manual.
 

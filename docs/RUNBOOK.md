@@ -496,15 +496,22 @@ completó»). Money may or may not have been taken. Nothing retries on its own.
 4. Every outcome is in Reportes → Excepciones (`terminal_attempt_*` kinds), and the drawer
    cannot close while a charge is live or in review.
 
-**Payments: provider outage** (the provider's status page, `payments_provider_unreachable`
-declines, `jobs_dead_payments_*`). The POS keeps selling:
+**Payments: provider outage** (the provider's status page, charges going «Sin confirmar» with
+`payments_provider_unreachable`, `jobs_dead_payments_*`). The POS keeps selling:
 
-1. Cashiers use **Cobrar sin integración** (shown after such a decline, and always offline): the
-   same terminal recorded manually. Switch the device to standalone mode first (MP Point:
-   Configuración → Mercado Pago → **Cambiar modo** to «Independiente», then restart the
-   terminal; Clip: open the Clip app on the reader), charge on the device, type its
-   approval reference and confirm.
-2. Live charges stay blocked until the provider answers or a manager resolves them (above).
+1. An unreachable provider never declines: the create may have reached it, so the charge is
+   **unknown** («No sabemos si el cobro se completó… No pudimos confirmar el envío con el
+   proveedor»), its order and terminal stay blocked, and the worker re-sends MP's identical
+   create once (same idempotency key) to learn whether the order exists. The floor stops
+   sending to that provider and records the next orders manually: **Cobrar sin integración**
+   (shown after a decline for an offline terminal, a queued order or an unusable account, and
+   always offline) or «Tarjeta» with a manual terminal. Switch the device to standalone mode
+   first (MP Point: a manager uses Configuración → Mercado Pago → **Cambiar modo** to
+   «Independiente», then restarts the terminal; Clip: charge from the Clip app), charge on the
+   device, type its approval reference and confirm.
+2. Each blocked order is resolved as an unknown outcome (above): «No se cobró» is accepted once
+   MP's order has expired (about 12 minutes after the last send); for Clip, cancel the request
+   on the reader and press **Volver a consultar**, which frees the order by itself.
 3. When the provider is back: switch MP devices back to «Integrado (PDV)» (restart), and
    charge one small order per terminal (**Cobro de prueba**) before relying on it.
 4. Operator: a worker-wide problem (`/capabilities` shows `worker_not_configured`, the worker

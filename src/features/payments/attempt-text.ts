@@ -31,13 +31,23 @@ const FLAGGED = new Set([
   "payments_provider_mismatch",
   "payments_refunded_before_settle",
 ]);
-/** A decline that means "the integration is down", not "the card was refused". */
+/**
+ * A decline that means "the integration is down", not "the card was refused". An unreachable
+ * provider never declines (the charge may be on the terminal: it is unknown, P2-UX-3); an account
+ * that cannot be used declines a charge that was never sent.
+ */
 const FALLBACK = new Set([
   "payments_terminal_offline",
-  "payments_provider_unreachable",
   "payments_terminal_queue_busy",
   "payments_provider_unavailable",
+  "payments_provider_not_configured",
 ]);
+/** What an unknown outcome adds to «No sabemos si el cobro se completó» (P2-UX-3). */
+const UNKNOWN_HINTS: Record<string, Key> = {
+  payments_provider_unreachable: "payUnknownUnreachable",
+  payments_attempt_timeout: "payUnknownTimeout",
+  payments_provider_not_configured: "payUnknownNoAccount",
+};
 
 export const STATE_KEYS: Record<AttemptState, Key> = {
   created: "payStateCreated",
@@ -147,7 +157,9 @@ export function attemptStatus(
         message:
           a.errorCode === "payments_push_failed"
             ? terminal("payUnknownPushFailed")
-            : t("payUnknown"),
+            : a.errorCode && UNKNOWN_HINTS[a.errorCode]
+              ? `${t("payUnknown")} ${t(UNKNOWN_HINTS[a.errorCode])}`
+              : t("payUnknown"),
         tone: "warning",
         live,
         actions: ["recheck", ...(o.manager ? (["resolve"] as const) : [])],
@@ -186,4 +198,3 @@ export function resolveOptions(
         : ["record", "refunded_at_provider"];
   return [];
 }
-

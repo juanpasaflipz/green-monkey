@@ -669,6 +669,40 @@ describe("integrated charges (P2): what the waiting panel says and offers", () =
       resolveOptions({ ...fits, errorCode: "payments_refunded_before_settle" }),
     ).toEqual(["refunded_at_provider"]);
   });
+  it("P2-UX-3: an unknown outcome says why (unreachable provider, no result in time, account unavailable); «Cobrar sin integración» follows an unusable account, never an unreachable provider (that charge is unknown)", () => {
+    const unknown = (errorCode: string) =>
+      attemptStatus(attempt({ state: "unknown", errorCode }), "es", cashier)
+        .message;
+    expect(unknown("payments_provider_unreachable")).toBe(
+      "No sabemos si el cobro se completó. Revisa la pantalla de la terminal antes de intentar otra vez. No pudimos confirmar el envío con el proveedor; lo seguimos consultando. Si no aparece, un gerente lo resuelve (la orden queda bloqueada mientras tanto).",
+    );
+    expect(unknown("payments_attempt_timeout")).toMatch(
+      /Un gerente lo resuelve después de revisar la terminal\.$/,
+    );
+    expect(unknown("payments_provider_not_configured")).toMatch(
+      /el propietario la reconecta en Configuración/,
+    );
+    expect(
+      attemptStatus(
+        attempt({
+          state: "declined",
+          errorCode: "payments_provider_not_configured",
+        }),
+        "es",
+        cashier,
+      ).actions,
+    ).toEqual(["retry", "otherMethod", "manualFallback"]);
+    expect(
+      attemptStatus(
+        attempt({
+          state: "declined",
+          errorCode: "payments_provider_unreachable",
+        }),
+        "es",
+        cashier,
+      ).actions,
+    ).toEqual(["retry", "otherMethod"]);
+  });
   it("P2-UX-1: a re-tap replays the same start operation until a definite answer; new values are a new operation", () => {
     let n = 0;
     const fresh = () => `op-${++n}`;
