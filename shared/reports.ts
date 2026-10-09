@@ -244,6 +244,11 @@ export const EXCEPTION_KINDS = [
   "open_price",
   "offline_archive",
   "offline_reconcile",
+  // payments (037 P2): terminal charges approved but unapplied, resolved by a manager, or
+  // still unknown after 10 minutes (critic R13: the kiosk reuses them).
+  "terminal_attempt_review",
+  "terminal_attempt_dismissed",
+  "terminal_attempt_unknown_open",
 ] as const;
 export type ExceptionKind = (typeof EXCEPTION_KINDS)[number];
 /**

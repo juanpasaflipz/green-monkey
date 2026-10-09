@@ -62,6 +62,8 @@ import {
   syncAttemptCore,
 } from "../server/payments/terminal.js";
 import { webhookRoute } from "../server/payments/webhooks.js";
+import { exceptionRows } from "../server/reports/exceptions.js";
+import { snapshotTenant } from "../server/reports/snapshot.js";
 import { businessDate, type Order, type Session } from "../shared/domain.js";
 import type { AttemptState, AttemptView } from "../shared/payments.js";
 import type { SessionAccess } from "../shared/access.js";
@@ -1273,7 +1275,7 @@ try {
     assert.equal((await tenderOf(a.id)).length, 1);
   });
 
-  await test("7. review path: an offline sale fills the balance while a charge is approved → review (never a second tender); retry is refused while it does not fit; the manager's «reembolsado en el proveedor» (step-up, note) dismisses it", async () => {
+  await test("7. review path: an offline sale fills the balance while a charge is approved → review (never a second tender); retry is refused while it does not fit; the manager's «reembolsado en el proveedor» (step-up, note) dismisses it; Excepciones lists both", async () => {
     const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
     const a = await pending(o, terminals.mp);
     fake.approve(a.ref, { ...TEST_CARD });
@@ -1363,6 +1365,40 @@ try {
         (x) => x.id === a.id,
       ),
       "a dismissed charge leaves the banner",
+    );
+    // Excepciones lists both steps: the review and the manager's resolution with its note.
+    const ex = await snapshotTenant(sql, A, (tx) =>
+      exceptionRows(tx, owner, {
+        from: today,
+        to: today,
+        kinds: "terminal_attempt_review,terminal_attempt_dismissed",
+      }),
+    );
+    const mine = ex.rows.filter((r) => r.detail.attemptId === a.id);
+    assert.deepEqual(
+      mine
+        .map((r) => [r.kind, r.amount, r.orderId, r.reasonCode, r.note])
+        .sort(),
+      [
+        [
+          "terminal_attempt_dismissed",
+          o.total,
+          o.id,
+          "refunded_at_provider",
+          NOTE,
+        ],
+        [
+          "terminal_attempt_review",
+          o.total,
+          o.id,
+          "payments_settle_order_changed",
+          "",
+        ],
+      ],
+    );
+    assert.equal(
+      mine.find((r) => r.kind === "terminal_attempt_dismissed")?.approverName,
+      "Marisol Vega",
     );
   });
 

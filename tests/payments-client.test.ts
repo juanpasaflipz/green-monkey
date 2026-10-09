@@ -6,7 +6,7 @@ import { tenderLabel, tenderMethodLabel } from "../src/labels";
 import { archivedDrawerAmounts } from "../src/features/offline/format";
 import { exceptionDetail } from "../src/features/reports/exception-text";
 import { tenderColumns, toCsv } from "../src/features/reports/csv";
-import { money } from "../src/features/reports/format";
+import { exceptionKindLabel, money } from "../src/features/reports/format";
 import {
   buildCorteDocument,
   drawerRow,
@@ -128,6 +128,51 @@ describe("Excepciones and the tender CSV", () => {
         m,
       ),
     ).toContain("Reembolso por plataforma (sin efectivo) " + m(1500));
+  });
+  it("terminal charges in Excepciones (P2): the terminal, and a manager's resolution in words; the kinds are labelled in both languages", () => {
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_review", 4500, { terminal: "MP Caja" }),
+        "es",
+        m,
+      ),
+    ).toBe("MP Caja");
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_dismissed", 4500, {
+          terminal: "Clip Caja",
+          resolution: "refunded_at_provider",
+        }),
+        "es",
+        m,
+      ),
+    ).toBe("Clip Caja · reembolsado en el proveedor");
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_dismissed", 4500, {
+          terminal: "MP Caja",
+          resolution: "not_charged",
+        }),
+        "en",
+        m,
+      ),
+    ).toBe("MP Caja · not charged");
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_unknown_open", 4500, { terminal: null }),
+        "en",
+        m,
+      ),
+    ).toBe("");
+    expect(exceptionKindLabel("terminal_attempt_review", "es")).toBe(
+      "Cobro en terminal por revisar",
+    );
+    expect(exceptionKindLabel("terminal_attempt_dismissed", "en")).toBe(
+      "Terminal charge resolved by a manager",
+    );
+    expect(exceptionKindLabel("terminal_attempt_unknown_open", "es")).toBe(
+      "Cobro en terminal sin confirmar",
+    );
   });
   it("the tender CSV carries terminal, provider, card, platform and fee columns", () => {
     const tender: TenderReportRow = {

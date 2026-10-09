@@ -926,6 +926,72 @@ try {
     "34. two concurrent prints of one corte Z get print numbers 1 and 2 (no unique or check violation)",
   );
 
+  // ---- payments (037 P2): integrated terminal charges on yesterday's legacy drawer, as the worker
+  // and the settle leave them: one approved but unapplied (review), one a manager resolved (not
+  // charged, by Olga), both on oy, and one on oRev whose outcome is still unknown after more than
+  // 10 minutes.
+  const MP = id(),
+    attemptReview = id(),
+    attemptDismissed = id(),
+    attemptUnknown = id();
+  await scoped(async (tx) => {
+    await tx`insert into payment_terminals(tenant_id,id,name,kind,provider_device_id,fee_bp,created_by,updated_by)
+      values(${T},${MP},'MP Caja','mercadopago_point','NEWLAND_N950__FIXTURE01',350,${E.manager},${E.manager})`;
+    const attempt = (
+      attemptId: string,
+      o: {
+        amount: number;
+        tip: number;
+        state: string;
+        created: string;
+        orderId?: string;
+        paid?: number;
+        error?: string;
+        resolution?: { kind: string; note: string; by: string; at: string };
+      },
+    ) => tx`insert into payment_attempts(tenant_id,id,operation_id,settle_operation_id,target,origin,order_id,
+        terminal_id,provider,provider_device_id,terminal_label,amount,tip,currency,employee_id,device_id,session_id,
+        cash_session_id,state,provider_reference,paid_amount,error_code,resolution,resolution_note,resolved_by,
+        resolved_at,created_at)
+      values(${T},${attemptId},${id()},${id()},'order','pos',${o.orderId ?? oy.id},${MP},'mercadopago','NEWLAND_N950__FIXTURE01',
+        'MP Caja',${o.amount},${o.tip},'MXN',${E.cashier},${D.d1},${id()},${DR.legacyY},${o.state},
+        ${"ORDFIXTURE" + attemptId.slice(0, 8)},${o.paid ?? null},${o.error ?? null},${o.resolution?.kind ?? null},
+        ${o.resolution?.note ?? null},${o.resolution?.by ?? null},${o.resolution?.at ?? null},${o.created})`;
+    await attempt(attemptReview, {
+      amount: 9000,
+      tip: 0,
+      paid: 9000,
+      state: "review",
+      error: "payments_settle_order_changed",
+      created: at(yesterday, "13:02:00"),
+    });
+    await tx`insert into payment_attempt_events(tenant_id,id,attempt_id,kind,actor,detail,created_at)
+      values(${T},${id()},${attemptReview},'review','job',
+        ${tx.json({ code: "payments_settle_order_changed", via: "job" })},${at(yesterday, "13:06:00")})`;
+    await attempt(attemptDismissed, {
+      amount: 4500,
+      tip: 500,
+      state: "dismissed",
+      error: "payments_provider_unreachable",
+      created: at(yesterday, "15:00:00"),
+      resolution: {
+        kind: "not_charged",
+        note: "Revisado en la app del proveedor",
+        by: E.owner,
+        at: at(yesterday, "15:30:00"),
+      },
+    });
+    await attempt(attemptUnknown, {
+      amount: 3000,
+      tip: 0,
+      state: "unknown",
+      error: "payments_attempt_timeout",
+      created: at(yesterday, "21:00:00"),
+      // One live charge per order (payment_attempts_order_live): oy's is in review.
+      orderId: oRev.id,
+    });
+  });
+
   // ---- exceptions: every kind with its amount, actor, approver, order and device (spec DB test
   // 19, reports-rebase test 11), and the summary equals the listed rows (test 21). The archive
   // goes through offline-sync's real command; the corte Z reprints are the prints above.
@@ -954,7 +1020,7 @@ try {
   assert.deepEqual(
     [...new Set(every.rows.map((r: any) => r.kind))].sort(),
     [...EXCEPTION_KINDS].sort(),
-    "all twelve kinds",
+    "all fifteen kinds",
   );
   const view = (r: any) => ({
     kind: r.kind,
@@ -1161,6 +1227,57 @@ try {
       method: "external",
     },
   );
+  // payments (037 P2): the three terminal-charge kinds, with the charge's terminal and outcome.
+  const attemptRow = (kind: string, attemptId: string) => {
+    const r = only(kind);
+    assert.equal(r.detail.attemptId, attemptId, kind);
+    assert.equal(r.detail.terminal, "MP Caja", kind);
+    assert.equal(r.detail.provider, "mercadopago", kind);
+    return { ...view(r), code: r.reasonCode, note: r.note };
+  };
+  assert.deepEqual(attemptRow("terminal_attempt_review", attemptReview), {
+    ...expected(
+      "terminal_attempt_review",
+      9000,
+      "Carlos",
+      null,
+      oy.id,
+      "Caja mostrador",
+    ),
+    code: "payments_settle_order_changed",
+    note: "",
+  });
+  assert.deepEqual(attemptRow("terminal_attempt_dismissed", attemptDismissed), {
+    ...expected(
+      "terminal_attempt_dismissed",
+      4500 + 500,
+      "Carlos",
+      "Olga",
+      oy.id,
+      "Caja mostrador",
+    ),
+    code: "not_charged",
+    note: "Revisado en la app del proveedor",
+  });
+  assert.equal(
+    only("terminal_attempt_dismissed").detail.resolution,
+    "not_charged",
+  );
+  assert.deepEqual(
+    attemptRow("terminal_attempt_unknown_open", attemptUnknown),
+    {
+      ...expected(
+        "terminal_attempt_unknown_open",
+        3000,
+        "Carlos",
+        null,
+        oRev.id,
+        "Caja mostrador",
+      ),
+      code: "payments_attempt_timeout",
+      note: "",
+    },
+  );
   // The summary is exactly the listed rows' summary; spot-check the per-kind and per-employee figures.
   assert.deepEqual(every.summary, exceptionSummary(every.rows));
   const byKind = Object.fromEntries(
@@ -1198,7 +1315,7 @@ try {
     amount: 4500 + 4500 + 3000 + 4500 + 4500 + 500,
   });
   ok(
-    "19/21. exceptions: all twelve kinds (void, discount and its reversal, refund, paid-out, drawer and terminal differences, receipt and corte Z reprints, open price, offline archive, both offline reconcile paths) with amount, actor, approver, order and device; the summary equals the listed rows",
+    "19/21. exceptions: all fifteen kinds (void, discount and its reversal, refund, paid-out, drawer and terminal differences, receipt and corte Z reprints, open price, offline archive, both offline reconcile paths, terminal charges to review, resolved by a manager and unknown after 10 minutes) with amount, actor, approver, order and device; the summary equals the listed rows",
   );
 
   // ---- corte del día and its print.
