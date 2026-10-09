@@ -1,5 +1,17 @@
 # Delivery status
 
+**Production, October 9, 2026.** Production is live at `https://app.greenmonkey.online`
+(07:35 Mexico City; LD-73). Deploy run 37937786778 put `739131a` on `web` and `worker`,
+applied migrations 001–036 as `gm_migrator`, and passed all six smoke checks on the custom
+domain; the worker runs its jobs. Configured: the domain (DNS-only), Google sign-in, the
+CFDI `organizations` provider in test mode with the owner's Facturapi User key, and the
+support operator login `gm_support_lead` for the pilot's Pro grant. No restaurant is
+onboarded, and owner signup is paused until the legal values are published. Still to do
+([LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) section 2): step 10 (the first production backup
+and restore drill), step 11 (`OPS_LIVE_ENVIRONMENTS`) and step 12 (the Juanberto's pilot,
+with its cutover checklist). Wave 4 (payments 037, loyalty 038, kiosk 039) is being built,
+is not live, and comes before the pilot. The paragraphs below predate the launch.
+
 **Wave 3, October 8, 2026 (`integration/v1`).** Landed since the October 6 status: the W3-1
 polish (kitchen paper and offline lists dated with the business day, "#10 · 5 oct"; support
 references readable aloud; unexpected 4xx answers logged with their request id; LD-44, LD-48,
