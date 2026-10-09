@@ -1876,9 +1876,9 @@ export function Selling({
         {!online && !current && !offline.tableService && (
           <p className="muted tiny">{t("offlineTableServiceOffHint")}</p>
         )}
-        {/* Guardar borrador, Descuento, the club's Canjear premio and the saved note wrap on
-            a portrait tablet instead of pushing the page sideways (restaurant-day L6). */}
-        <div className="row between wrap">
+        {/* Guardar borrador, Descuento, the club's Canjear premio and the saved note
+            (.cart-actions in styles.css: they wrap only on narrow screens). */}
+        <div className="row between cart-actions">
           <button
             className="text-button"
             disabled={!draft.lines.length || busy}
