@@ -29,8 +29,10 @@ stub" below).
 ## Stamp rules (`shared/loyalty.ts` `planReconcile`, the single statement of them)
 
 1. Target per order: `base ≤ 0 → 0`; threshold 0 → 1; else `1 + floor(base / threshold)`, capped by
-   `max_stamps_per_order`. Defaults: 10 stamps a card, $400.00 threshold (pos-lite's rule on the
-   paid amount instead of the order total).
+   `max_stamps_per_order` and never above 1,000 (one ledger row's bound). Defaults: 10 stamps a card,
+   $400.00 threshold (pos-lite's rule on the paid amount instead of the order total). An order keeps
+   the rule of its first earn (recorded on its earn rows): a refund, relink or requeue after the
+   owner changes the threshold or cap re-targets it by that rule, never by the new one.
 2. Target 0 when the order is not settled, is voided, is in recovery, has no member, or its member is
    deleted.
 3. Reconcile, not increment: post `target − posted` (`earn` or `earn_reversal`). Running it again
@@ -46,7 +48,8 @@ stub" below).
 5. Card completion: overflow carries over (9 + 3 → 1 reward, 2 stamps). A lowered `stamps_required`
    completes on the member's next posting; past rows never change.
 6. A reversal that leaves the card negative withdraws an available reward; when the reward was
-   already redeemed the card stays negative ("Ajuste pendiente") and future stamps repay it.
+   already redeemed the card stays negative ("Ajuste pendiente") and future stamps repay it. A
+   reward restored onto a negative card is withdrawn the same way (it repays the card first).
 7. A reward is restored when its discount is removed, or when its units were all voided and the order
    is settled or closed (a paid table check included, which "Liberar mesa" closes later with no
    hook; at most once per discount).

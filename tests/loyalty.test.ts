@@ -107,6 +107,10 @@ describe("stampsFor and the stamp base", () => {
     expect(stampsFor(40000, rule)).toBe(2);
     expect(stampsFor(90000, rule)).toBe(3);
   });
+  it("never more stamps for one order than one ledger row holds (LOYALTY-MONEY-5, CONCURRENCY-4)", () => {
+    expect(stampsFor(1_200_000, { stampThreshold: 1000, maxStampsPerOrder: null })).toBe(1000);
+    expect(stampsFor(1_200_000, { stampThreshold: 1000, maxStampsPerOrder: 20 })).toBe(20);
+  });
   it("threshold 0 gives always one stamp; the cap applies", () => {
     expect(stampsFor(500000, { stampThreshold: 0, maxStampsPerOrder: null })).toBe(1);
     expect(stampsFor(90000, { stampThreshold: 40000, maxStampsPerOrder: 2 })).toBe(2);
@@ -208,6 +212,20 @@ describe("planReconcile (§2.2)", () => {
     // Another member's stamps on a relinked, reopened check still move.
     expect(planReconcile(base({ settled: false, live: true, linkMemberId: B, members: [earned, { id: B, deleted: false, stamps: 0, rewards: 0, posted: 0 }] }))).toEqual([
       { memberId: A, kind: "earn_reversal", stampsDelta: -2, rewardsDelta: 0, base: 15000 },
+    ]);
+  });
+  it("a restored reward on a card left negative by a refund pays the card back (LOYALTY-MONEY-6)", () => {
+    // Ana: X's refund left −1 with her reward already redeemed on Y; Y's reward is then removed.
+    const rows = planReconcile(
+      base({
+        settled: false,
+        members: [{ id: A, deleted: false, stamps: -1, rewards: 0, posted: 0 }],
+        redemptions: [{ memberId: A, discountId: "d", restored: false, discountReversed: true, activeAmount: 0, orderClosed: false }],
+      }),
+    );
+    expect(rows).toEqual([
+      { memberId: A, kind: "reward_restored", stampsDelta: 0, rewardsDelta: 1, discountId: "d" },
+      { memberId: A, kind: "reward_unearned", stampsDelta: 10, rewardsDelta: -1, stampsRequired: 10 },
     ]);
   });
   it("first earn, then a repeat plans nothing", () => {

@@ -142,6 +142,10 @@ CREATE TABLE loyalty_ledger (
   discount_id uuid,
   stamps_required integer CHECK (stamps_required BETWEEN 2 AND 50),
   base integer CHECK (base >= 0),             -- earn/earn_reversal: the order's stamp base used
+  -- earn/earn_reversal: the rule the order earns under, from its first earn; later reconciles of
+  -- the order (a refund, a relink, a requeue) keep it (§2.2.8: new rules apply to new orders)
+  stamp_threshold integer CHECK (stamp_threshold = 0 OR stamp_threshold BETWEEN 1000 AND 10000000),
+  max_stamps_per_order integer CHECK (max_stamps_per_order BETWEEN 1 AND 20),
   reason text CHECK (reason ~ '^[a-z_]{2,40}$'),
   note text NOT NULL DEFAULT '' CHECK (char_length(note) <= 200),
   actor_id uuid,                               -- null for the reconciler and the join page
@@ -155,9 +159,9 @@ CREATE TABLE loyalty_ledger (
   FOREIGN KEY (tenant_id, actor_id) REFERENCES employees(tenant_id, id),
   CONSTRAINT loyalty_ledger_shape CHECK (
     (kind = 'earn' AND stamps_delta > 0 AND rewards_delta = 0 AND order_id IS NOT NULL
-       AND discount_id IS NULL AND base IS NOT NULL) OR
+       AND discount_id IS NULL AND base IS NOT NULL AND stamp_threshold IS NOT NULL) OR
     (kind = 'earn_reversal' AND stamps_delta < 0 AND rewards_delta = 0 AND order_id IS NOT NULL
-       AND discount_id IS NULL AND base IS NOT NULL) OR
+       AND discount_id IS NULL AND base IS NOT NULL AND stamp_threshold IS NOT NULL) OR
     (kind = 'reward_earned' AND stamps_required IS NOT NULL AND stamps_delta = -stamps_required
        AND rewards_delta = 1) OR
     (kind = 'reward_unearned' AND stamps_required IS NOT NULL AND stamps_delta = stamps_required

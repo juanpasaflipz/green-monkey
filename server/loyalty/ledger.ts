@@ -23,10 +23,13 @@ import {
   type MemberSummary,
   type OrderLoyaltyView,
   type PlannedLedgerRow,
+  type ProgramRule,
 } from "../../shared/loyalty.js";
 import { loadProgram, type Program } from "./settings.js";
 
 export type LedgerInsert = PlannedLedgerRow & {
+  /** earn/earn_reversal: the rule the order earns under (§2.2.8, LOYALTY-MONEY-4). */
+  rule?: ProgramRule;
   orderId?: string | null;
   actorId?: string | null;
   operationId?: string | null;
@@ -42,9 +45,10 @@ export async function postLedger(
 ): Promise<string> {
   const ledgerId = randomUUID();
   await tx`insert into loyalty_ledger(tenant_id,id,member_id,kind,stamps_delta,rewards_delta,order_id,
-      discount_id,stamps_required,base,reason,note,actor_id,operation_id)
+      discount_id,stamps_required,base,stamp_threshold,max_stamps_per_order,reason,note,actor_id,operation_id)
     values(${tenantId},${ledgerId},${r.memberId},${r.kind},${r.stampsDelta},${r.rewardsDelta},
       ${r.orderId ?? null},${r.discountId ?? null},${r.stampsRequired ?? null},${r.base ?? null},
+      ${r.rule?.stampThreshold ?? null},${r.rule?.maxStampsPerOrder ?? null},
       ${r.reason ?? null},${r.note ?? ""},${r.actorId ?? null},${r.operationId ?? null})`;
   return ledgerId;
 }
@@ -158,6 +162,14 @@ export async function reconcileOrderHeld(
   const [o] =
     await tx`select state,check_state,close_reason,total from orders where id=${orderId}`;
   if (!o) throw new DomainError("not_found", 404);
+  // The rule the order earns under: its first earn's, else today's (§2.2.8). A refund, relink or
+  // requeue of an old order never re-targets it under a rule changed since (LOYALTY-MONEY-4).
+  const [first] =
+    await tx`select stamp_threshold,max_stamps_per_order from loyalty_ledger
+      where order_id=${orderId} and kind='earn' order by created_at,id limit 1`;
+  const rule: ProgramRule = first
+    ? { stampThreshold: first.stamp_threshold, maxStampsPerOrder: first.max_stamps_per_order }
+    : { stampThreshold: program.stampThreshold, maxStampsPerOrder: program.maxStampsPerOrder };
   const settled = isSettled(o);
   const base = settled ? await orderStampBase(tx, orderId, o.total) : 0;
   const sums =
@@ -177,10 +189,7 @@ export async function reconcileOrderHeld(
   const rows = planReconcile({
     enabled: program.enabled,
     stampsRequired: program.stampsRequired,
-    rule: {
-      stampThreshold: program.stampThreshold,
-      maxStampsPerOrder: program.maxStampsPerOrder,
-    },
+    rule,
     settled,
     live:
       !settled &&
@@ -207,7 +216,12 @@ export async function reconcileOrderHeld(
       orderClosed: o.check_state === "closed" || settled,
     })),
   });
-  for (const r of rows) await postLedger(tx, tenantId, { ...r, orderId });
+  for (const r of rows)
+    await postLedger(tx, tenantId, {
+      ...r,
+      orderId,
+      ...(r.kind === "earn" || r.kind === "earn_reversal" ? { rule } : {}),
+    });
   return orderLoyaltyView(tx, orderId, program);
 }
 

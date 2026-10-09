@@ -1215,6 +1215,9 @@ export function Selling({
                 if (owned) {
                   setCurrent(result);
                   setReceipt(result);
+                  // R18: every settled payment of the cart on screen takes the one exit, this
+                  // retried attempt too (the club's after-payment link, LOYALTY-MONEY-7).
+                  paymentSettled(result);
                 } else
                   setNotice(
                     t("servicePaidAfterSwitch").replace(

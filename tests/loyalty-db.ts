@@ -818,6 +818,32 @@ try {
     assert.deepEqual(await ledgerKinds(f, e.id), ["earn:3", "earn_reversal:-3"]);
   });
 
+  await test("L30. an order keeps the rule it earned under: after the owner lowers the threshold, a partial refund of an old order reverses by the old rule instead of earning by the new one (§2.2.8, LOYALTY-MONEY-4)", async () => {
+    const f = await clubTenant("regla");
+    const ana = await enroll(f);
+    const o = await newOrder(f, [{ product: f.p.banquete, quantity: 1 }]);
+    await link(f, o.id, ana.id);
+    await pay(f, o.id, 90000);
+    await runJobs(f, o.id);
+    assert.deepEqual(await ledgerKinds(f, o.id), ["earn:3"]);
+    const [earn] = await asAdmin(f.tenantId, (tx) => tx`select stamp_threshold,max_stamps_per_order from loyalty_ledger
+      where order_id=${o.id} and kind='earn'`);
+    assert.deepEqual({ ...earn }, { stamp_threshold: 40000, max_stamps_per_order: null });
+    await saveSettings(f, { stampThreshold: 10000 });
+    await refundAmount(f, o.id, 2000); // 88000: still 3 at $400 (it would be 9 at $100)
+    await runJobs(f, o.id);
+    assert.deepEqual(await ledgerKinds(f, o.id), ["earn:3"]);
+    await refundAmount(f, o.id, 10000); // 78000: 2 at $400
+    await runJobs(f, o.id);
+    assert.deepEqual(await ledgerKinds(f, o.id), ["earn:3", "earn_reversal:-1"]);
+    // A new order earns by the new rule.
+    const n = await newOrder(f, [{ product: f.p.molcajete, quantity: 1 }]);
+    await link(f, n.id, ana.id);
+    await pay(f, n.id, 21000);
+    await runJobs(f, n.id);
+    assert.deepEqual(await ledgerKinds(f, n.id), ["earn:3"]);
+  });
+
   await test("L12. change member: staff on an open check; a cashier is refused after settlement; a manager with step-up moves the stamps (reversal and earn); removal", async () => {
     const f = await clubTenant("cambio");
     const ana = await enroll(f);
@@ -1486,6 +1512,34 @@ try {
       adjustMember(tx, f.s.manager, m103.id, { operationId: randomUUID(), rewards: 1, reason: "pos_lite_balance", note: "Tarjeta de enero confirmada" }),
     );
     assert.deepEqual(await toConfirm(), []);
+  });
+
+  await test("L29. an import on a restaurant that never saved club settings creates the settings row off with the defaults, so its lock exists and a concurrent first save waits on it (LOYALTY-CONCURRENCY-5)", async () => {
+    const f = await makeTenant("importar-3");
+    const none = await asAdmin(f.tenantId, (tx) => tx`select 1 from loyalty_settings where tenant_id=${f.tenantId}`);
+    assert.equal(none.length, 0);
+    const file = posLiteExport.parse({
+      ...JSON.parse(readFileSync("tests/fixtures/poslite-loyalty-export.json", "utf8")),
+      targetTenantId: f.tenantId,
+      sourceTenantId: "fixture-" + f.tenantId.slice(0, 8),
+    });
+    const rows = previewLoyaltyImport(file, { policy: "recent", now: Date.parse("2026-10-09T18:00:00Z"), stampsRequired: 10 }).accepted;
+    await run(f.s.owner, (tx) =>
+      commitLoyaltyImportPage(tx, f.s.owner, {
+        batchHash: createHash("sha256").update("L29" + f.tenantId).digest("hex"),
+        sourceTenantId: file.sourceTenantId,
+        targetTenantId: f.tenantId,
+        policy: "recent",
+        stampsRequired: 10,
+        page: 0,
+        pages: 1,
+        rows,
+      }),
+    );
+    const [row] = await asAdmin(f.tenantId, (tx) => tx`select enabled,reward_max_amount,stamps_required,version from loyalty_settings where tenant_id=${f.tenantId}`);
+    assert.deepEqual({ ...row }, { enabled: false, reward_max_amount: 15000, stamps_required: 10, version: 1 });
+    const view = (await run(f.s.owner, (tx) => getLoyaltySettings(tx, f.s.owner))) as LoyaltySettingsView;
+    assert.deepEqual([view.enabled, view.rewardMaxAmount, view.version, view.importAllowed], [false, 15000, 1, true]);
   });
 
   // ------------------------------------------------------------------ L18 / L19 join page and kiosk

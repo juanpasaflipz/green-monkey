@@ -85,12 +85,21 @@ export type ProgramRule = {
   maxStampsPerOrder: number | null;
 };
 
-/** §2.2.1: 0 for no base; else 1, plus 1 per full threshold paid; capped. */
+/** One ledger row's bound (038: stamps_delta BETWEEN -1000 AND 1000). */
+export const STAMPS_PER_ORDER_LIMIT = 1000;
+/**
+ * §2.2.1: 0 for no base; else 1, plus 1 per full threshold paid; capped by the program and never
+ * above one ledger row's bound (a $10 threshold with no cap on a $12,000 order would otherwise
+ * fail every reconcile, LOYALTY-MONEY-5, CONCURRENCY-4).
+ */
 export function stampsFor(base: number, r: ProgramRule): number {
   if (!(base > 0)) return 0;
   const n =
     r.stampThreshold === 0 ? 1 : 1 + Math.floor(base / r.stampThreshold);
-  return r.maxStampsPerOrder ? Math.min(n, r.maxStampsPerOrder) : n;
+  return Math.min(
+    r.maxStampsPerOrder ? Math.min(n, r.maxStampsPerOrder) : n,
+    STAMPS_PER_ORDER_LIMIT,
+  );
 }
 
 /** Tender methods whose money earns stamps (R15: every method but "platform"). */
@@ -267,7 +276,7 @@ export function planReconcile(i: ReconcileInput): PlannedLedgerRow[] {
     if (r.restored) continue;
     const m = state.get(r.memberId);
     if (!m || m.deleted) continue;
-    if (r.discountReversed || (r.activeAmount === 0 && r.orderClosed))
+    if (r.discountReversed || (r.activeAmount === 0 && r.orderClosed)) {
       rows.push({
         memberId: r.memberId,
         kind: "reward_restored",
@@ -275,6 +284,17 @@ export function planReconcile(i: ReconcileInput): PlannedLedgerRow[] {
         rewardsDelta: 1,
         discountId: r.discountId,
       });
+      // A restored reward on a card left negative by a reversal pays the card back first, as
+      // a reversal does (LOYALTY-MONEY-6): never a full reward the refund took away.
+      const s = state.get(r.memberId)!;
+      s.rewards += 1;
+      const more = normalizeRows(r.memberId, s.stamps, s.rewards, i.stampsRequired, true);
+      for (const x of more) {
+        s.stamps += x.stampsDelta;
+        s.rewards += x.rewardsDelta;
+      }
+      rows.push(...more);
+    }
   }
   return rows;
 }

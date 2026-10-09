@@ -1,10 +1,11 @@
 /**
  * pos-lite member import (038, specs/loyalty-w4.md §6; ARCHITECTURE row 53). Pages of at most 500
  * members, each one transaction: 1 (the import key, class 0: tenant + 'pos-lite-loyalty' + the
- * source tenant) → 2 (restaurants FOR SHARE) → 3 (loyalty_settings FOR SHARE: refused while the
- * club is on, loyalty_import_after_enable) → member inserts → ledger inserts (rows this
- * transaction inserted) → source_mappings inserts. The first page creates the import batch. A page
- * already applied (a mapping for every row) replays; a partial one is import_existing_mapping.
+ * source tenant) → 2 (restaurants FOR SHARE) → 3 (loyalty_settings, created off when absent, then
+ * FOR SHARE: refused while the club is on, loyalty_import_after_enable) → member inserts → ledger
+ * inserts (rows this transaction inserted) → source_mappings inserts. The first page creates the
+ * import batch. A page already applied (a mapping for every row) replays; a partial one is
+ * import_existing_mapping.
  * Imported members keep their program (consent channel pos_lite_import); pos-lite's pre-checked
  * SMS opt-ins are evidence only (legacy_sms_opt_in), never marketing consent (Q16).
  */
@@ -15,7 +16,11 @@ import { requireRecentAuth } from "../access.js";
 import { audit } from "../orders.js";
 import { requirePro } from "../entitlements.js";
 import { DomainError, type Session } from "../../shared/domain.js";
-import { nameKey, normalizeRows } from "../../shared/loyalty.js";
+import {
+  LOYALTY_DEFAULTS,
+  nameKey,
+  normalizeRows,
+} from "../../shared/loyalty.js";
 import {
   importPageInput,
   POS_LITE_SOURCE,
@@ -54,6 +59,11 @@ export async function commitLoyaltyImportPage(
     restaurant.cutoff !== s.restaurant.cutoff
   )
     throw new DomainError("settings_changed", 409);
+  // LO-3: a restaurant that never saved settings has no row to lock, and a first save (club on)
+  // could commit beside this page. The row is created off, with the defaults, so the lock exists
+  // and a concurrent first save waits on its key (LOYALTY-CONCURRENCY-5).
+  await tx`insert into loyalty_settings(tenant_id,reward_max_amount)
+    values(${s.tenantId},${LOYALTY_DEFAULTS.rewardMaxAmount}) on conflict (tenant_id) do nothing`;
   const [settings] =
     await tx`select enabled from loyalty_settings where tenant_id=${s.tenantId} for share`;
   if (settings?.enabled)
