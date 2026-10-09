@@ -444,6 +444,11 @@ export async function resolveOrCreateOrder(
     { ...p.order, channel: "offline" },
     { businessDate: ctx.businessDate },
   );
+  // PAYMENTS-CONCURRENCY-3: createOrder quotes again from a fresh snapshot; a platform price
+  // saved between the two quotes (payment_platform_prices, not held by verifyLines) sends the
+  // record to review instead of opening an order its evidence no longer pays.
+  if (order.total !== p.expectedTotal)
+    throw new DomainError("price_conflict", 409);
   return { orderId: order.id, reused: false };
 }
 
