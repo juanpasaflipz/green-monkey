@@ -90,8 +90,9 @@ function failure(r: HttpResponse): ProviderError {
  * installments with interest (MCI) and dynamic currency conversion (DCC) are off (either would make
  * amount_paid more than the bill, read as a tip), and retries on the reader are off (one request =
  * one card outcome). Interest-free installments (MSI) stay the account's choice (the restaurant
- * pays them; the amount is unchanged). Throws ProviderError: a retryable one (network, 5xx, 429)
- * or a 2xx without pinpad_request_id means the outcome is UNKNOWN for Clip.
+ * pays them; the amount is unchanged). Throws ProviderError: a retryable one (network, 5xx) or a
+ * 2xx without pinpad_request_id means the outcome is UNKNOWN for Clip; a 429 was refused before
+ * Clip processed it, so no request exists (the push declines it, LD-82).
  */
 export async function createPinPadPayment(
   c: ClipClient,

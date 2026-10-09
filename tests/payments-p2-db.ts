@@ -1987,6 +1987,62 @@ try {
     }
   });
 
+  await test("Clip 429 (LD-82): a create answered 429 made no payment request (unambiguous): the push declines it payments_provider_unavailable at once (the manual fallback); never re-sent, never unknown, nothing to withdraw; the order and the reader are free again", async () => {
+    const posts = () =>
+      fake.requests.filter(
+        (r) => r.method === "POST" && r.path === "/clip/payment",
+      ).length;
+    const withdrawals = () =>
+      fake.requests.filter(
+        (r) =>
+          r.method === "DELETE" &&
+          r.path.startsWith("/clip/payment/serial-number/"),
+      ).length;
+    const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const before = { posts: posts(), withdrawals: withdrawals() };
+    fake.next("clip", "rateLimit429");
+    const view = await start(cashier, o.id, terminals.clip, o.total);
+    assert.equal(
+      await drive(view.id, ["declined", "unknown", "pending"]),
+      "declined",
+    );
+    // More rounds change nothing: no retry of the push, no recovery job.
+    await drain(A);
+    const row = await attemptRow(view.id);
+    assert.deepEqual(
+      [row.state, row.error_code, row.provider_reference],
+      ["declined", "payments_provider_unavailable", null],
+    );
+    assert.equal(posts() - before.posts, 1, "one create, never re-sent");
+    assert.equal(withdrawals() - before.withdrawals, 0, "nothing to withdraw");
+    assert.equal(
+      [...fake.charges.values()].filter((c) => c.reference === view.id).length,
+      0,
+      "Clip made no payment request",
+    );
+    assert.deepEqual(
+      (await eventsOf(view.id)).map((e) => e.kind),
+      ["created", "sent", "declined"],
+    );
+    assert.deepEqual((await eventsOf(view.id)).at(-1)?.detail, {
+      code: "payments_provider_unavailable",
+      providerCode: null,
+      httpStatus: 429,
+    });
+    const [job] = await asOwner(
+      A,
+      (tx) =>
+        tx`select state,attempts from jobs where kind='payments_push' and dedupe_key=${view.id}`,
+    );
+    assert.deepEqual([job.state, job.attempts], ["done", 1]);
+    // The order and the reader are free: the next charge on them goes out at once.
+    const again = await pending(o, terminals.clip);
+    await write(cashier, (tx) =>
+      requestCancel(tx, cashier, again.id, { operationId: randomUUID() }),
+    );
+    assert.equal(await drive(again.id, ["cancelled"]), "cancelled");
+  });
+
   await test("dead push: when payments_push goes dead with the attempt still sending (its last claim fails, or its lease expires on that claim), the attempt becomes unknown (payments_push_failed) and nothing is sent again; Cobros en terminal lists it with Resolver, Excepciones after 10 minutes, and a manager resolves it", async () => {
     const pushJob = async (attemptId: string) =>
       (
@@ -2942,8 +2998,10 @@ try {
   await test("15. lock order: starts on two terminals, a settle (job and sync), a void, a discount, an offline sale, a public pay-first accept, a drawer close and the club's work on linked orders (a member linked, a reward redeemed, the after-payment reconcile; R16) run together with no deadlock and no retry (LO-R9)", async () => {
     // R16 (loyalty 038 is in): the club on, a member linked to the charge that settles in the
     // burst, another holding one reward. Fictional people and phones.
-    await asOwner(A, (tx) =>
-      tx`insert into restaurant_account_settings(tenant_id,privacy_notice_url)
+    await asOwner(
+      A,
+      (tx) =>
+        tx`insert into restaurant_account_settings(tenant_id,privacy_notice_url)
         values(${A},'https://example.com/aviso-de-privacidad')`,
     );
     const program = (await write(owner, (tx) =>
@@ -3499,7 +3557,7 @@ try {
     assert.equal(await drive(c.id, ["settled"]), "settled");
   });
 
-  await test("archive or deactivation vs start (P2-CONCURRENCY-7): an archive holding the terminal row first makes a start on it wait and then refuse (payments_terminal_inactive), a deactivation too; a start first makes the archive wait and then refuse (payments_terminal_busy); never a created attempt on an archived terminal, no retries", async () => {
+  await test("archive or deactivation vs start (P2-CONCURRENCY-7): an archive holding the terminal row first makes a start on it wait and then refuse (payments_terminal_inactive), a deactivation too; a start first makes the archive wait and then refuse (payments_terminal_busy), and a deactivation too (LD-82: «Activa» off is refused while a charge on the terminal is live, a rename is not); never a created attempt on an archived terminal, no retries", async () => {
     const mgr = fresh(A, ids.manager, "manager");
     const device = "NEWLAND_N950__FAKE0003";
     const terminal = await integrated(
@@ -3694,6 +3752,92 @@ try {
       archiveTerminal(tx, mgr, second, {
         operationId: randomUUID(),
         expectedVersion: lastFrom,
+      }),
+    );
+
+    // (d) LD-82: a deactivation is refused like an archive while a charge on the terminal is live.
+    const third = await integrated(
+      "MP Carrera 3",
+      "mercadopago_point",
+      device,
+      350,
+    );
+    const save = (active: boolean, name: string, expectedVersion: number) =>
+      write(mgr, (tx) =>
+        saveTerminal(tx, mgr, {
+          operationId: randomUUID(),
+          terminalId: third,
+          name,
+          kind: "mercadopago_point",
+          providerDeviceId: device,
+          feeBp: 350,
+          active,
+          expectedVersion,
+        }),
+      );
+    // (d1) A start holds the row (FOR SHARE, its created attempt not committed); «Activa» off
+    // arrives, waits for the start and then refuses.
+    const o4 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const starting4 = held(cashier, (tx) =>
+      startTerminalCharge(tx, cashier, {
+        operationId: randomUUID(),
+        orderId: o4.id,
+        terminalId: third,
+        amount: o4.total,
+        tip: 0,
+      }),
+    );
+    await starting4.done;
+    const thirdFrom = await version(third);
+    const d = await noRetries("start before a deactivation", async () => {
+      const deactivating = save(false, "MP Carrera 3", thirdFrom);
+      const waited = await waiter(deactivating);
+      starting4.release();
+      const [started, deactivated] = await Promise.allSettled([
+        starting4.result,
+        deactivating,
+      ]);
+      return { waited, started, deactivated };
+    });
+    assert.equal(d.started.status, "fulfilled");
+    assert.equal(
+      d.waited,
+      true,
+      "the deactivation waits for the start's row lock",
+    );
+    assert.equal(d.deactivated.status, "rejected");
+    assert.equal(
+      (d.deactivated as PromiseRejectedResult).reason?.code,
+      "payments_terminal_busy",
+    );
+    const live4 = (d.started as PromiseFulfilledResult<AttemptView>).value;
+    // (d2) Still live: «Activa» off is refused again; a rename that keeps it active is not.
+    await rejects(
+      save(false, "MP Carrera 3", thirdFrom),
+      "payments_terminal_busy",
+    );
+    await save(true, "MP Carrera Tres", thirdFrom);
+    const [row4] = await asOwner(
+      A,
+      (tx) => tx`select active,name from payment_terminals where id=${third}`,
+    );
+    assert.deepEqual([row4.active, row4.name], [true, "MP Carrera Tres"]);
+    // (d3) Once the charge is final the deactivation goes through.
+    await write(cashier, (tx) =>
+      requestCancel(tx, cashier, live4.id, { operationId: randomUUID() }),
+    );
+    assert.equal(await stateOf(live4.id), "cancelled");
+    await save(false, "MP Carrera Tres", await version(third));
+    const [off] = await asOwner(
+      A,
+      (tx) => tx`select active from payment_terminals where id=${third}`,
+    );
+    assert.equal(off.active, false);
+    const thirdLast = await version(third);
+    await write(mgr, (tx) =>
+      archiveTerminal(tx, mgr, third, {
+        operationId: randomUUID(),
+        expectedVersion: thirdLast,
       }),
     );
   });

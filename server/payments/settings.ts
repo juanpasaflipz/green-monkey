@@ -201,7 +201,7 @@ export async function saveTerminal(tx: Tx, s: Session, raw: unknown) {
         feeBp: p.feeBp,
       });
     } else {
-      const [row] = await tx`select kind,provider_device_id,archived_at,version
+      const [row] = await tx`select kind,provider_device_id,active,archived_at,version
         from payment_terminals where id=${terminalId} for update`;
       if (!row) throw new DomainError("payments_terminal_not_found", 404);
       if (row.archived_at)
@@ -213,6 +213,13 @@ export async function saveTerminal(tx: Tx, s: Session, raw: unknown) {
         throw new DomainError("invalid_input");
       if (p.expectedVersion !== undefined && row.version !== p.expectedVersion)
         throw new DomainError("payments_settings_changed", 409);
+      // «Activa» off is refused like an archive while the terminal may be showing a charge
+      // (LD-82): the start holds this row FOR SHARE, so a deactivation sees its attempt.
+      if (row.active && !p.active) {
+        const [live] = await tx`select id from payment_attempts
+          where terminal_id=${terminalId} and state in ('created','sending','pending','unknown') limit 1`;
+        if (live) throw new DomainError("payments_terminal_busy", 409);
+      }
       await tx`update payment_terminals set name=${name},fee_bp=${p.feeBp},active=${p.active},
           version=version+1,updated_at=now(),updated_by=${s.employeeId}
         where id=${terminalId}`;

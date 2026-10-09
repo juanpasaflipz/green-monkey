@@ -898,15 +898,23 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
     // 409 idempotency_key_already_used may all be about the order the first send created
     // (P2-MONEY-4, P2-PROVIDERS-2).
     const resend = a.provider === "mercadopago" && a.state === "sending";
+    // A Clip create answered 429 was refused before Clip processed it: no payment request exists
+    // (unambiguous, LD-82). A Clip create is sent once and never again (no idempotency key), so the
+    // charge declines payments_provider_unavailable, which offers the cashier the manual fallback,
+    // instead of «Sin confirmar» and a withdrawal of nothing.
+    const clipRefused = a.provider === "clip" && e.status === 429;
     const unknown =
-      e.retryable ||
-      e.code === "payments_clip_create_outcome_unknown" ||
-      (resend && !provesNoOrder(e));
+      !clipRefused &&
+      (e.retryable ||
+        e.code === "payments_clip_create_outcome_unknown" ||
+        (resend && !provesNoOrder(e)));
     const code = unknown
       ? a.provider === "clip"
         ? "payments_clip_create_outcome_unknown"
         : "payments_provider_unreachable"
-      : e.code;
+      : clipRefused
+        ? "payments_provider_unavailable"
+        : e.code;
     await ctx.tenant(async (tx) => {
       const now = await lockAttempt(tx, attemptId);
       if (now?.state !== "sending") return;

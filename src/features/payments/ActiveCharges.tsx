@@ -49,7 +49,10 @@ export function ActiveCharges({
       saveActiveCharges(session.tenantId, list);
       setRows(list);
     },
-    { intervalMs: 10_000, enabled: online && readsTerminalCharges(session.role) },
+    {
+      intervalMs: 10_000,
+      enabled: online && readsTerminalCharges(session.role),
+    },
     [session.id, session.role, online],
   );
   async function cancel(a: AttemptView) {
