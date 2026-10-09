@@ -366,8 +366,11 @@ async function applyRead(
       : read.outcome === "expired"
         ? "expired"
         : "cancelled";
+  // A card refused at the terminal is its own code (P2-UX-14): «pide otra tarjeta», never the
+  // API refusal's «el proveedor rechazó la solicitud». The provider's reason (MP status_detail,
+  // e.g. insufficient_amount) stays in provider_status and the event.
   await tx`update payment_attempts set state=${state},provider_status=${status},
-      error_code=${state === "declined" ? "payments_provider_rejected" : null},decided_at=now(),
+      error_code=${state === "declined" ? "payments_card_declined" : null},decided_at=now(),
       version=version+1
     where id=${attemptId}`;
   await workerEvent(tx, tenantId, attemptId, state, { status, source });
@@ -909,6 +912,20 @@ export async function pushDead(ctx: {
   const tenantId = ctx.job.tenantId;
   const moved = await ctx.tenant(async (tx) => {
     const a = await lockAttempt(tx, attemptId);
+    if (a?.state === "created") {
+      // Never sent (no worker runtime for three claims, or its first step kept failing): nothing
+      // reached the provider, so it is declined and the order and terminal are free again
+      // (P2-MONEY-7; before, it stayed created, live, and only its own device could cancel it).
+      await tx`update payment_attempts set state='sending',sent_at=now(),version=version+1
+        where id=${attemptId}`;
+      await tx`update payment_attempts set state='declined',error_code='payments_provider_unavailable',
+          decided_at=now(),version=version+1 where id=${attemptId}`;
+      await workerEvent(tx, tenantId, attemptId, "declined", {
+        code: "payments_provider_unavailable",
+        before: "created",
+      });
+      return false;
+    }
     if (a?.state !== "sending") return false;
     await tx`update payment_attempts set state='unknown',error_code='payments_push_failed',
         version=version+1 where id=${attemptId}`;

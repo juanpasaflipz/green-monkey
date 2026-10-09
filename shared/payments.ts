@@ -377,6 +377,12 @@ export type TerminalStatus = "online" | "offline" | "no_data";
 
 const terminalName = z.string().trim().min(1).max(40);
 const feeBp = z.number().int().min(0).max(PAYMENTS_LIMITS.feeBpMax).nullable();
+/**
+ * An integrated device id (MP terminal id, Clip serial): never "." or "..", which a URL path
+ * would collapse (Clip's DELETE /payment/serial-number/{serial}; P2-SECURITY-5).
+ */
+export const DEVICE_ID = /^(?!\.{1,2}$)[A-Za-z0-9_.:-]{1,100}$/;
+
 /** Manual terminals in P1; integrated kinds need an active provider account (P2). */
 export const saveTerminalInput = z
   .object({
@@ -385,10 +391,7 @@ export const saveTerminalInput = z
     expectedVersion: z.number().int().min(1).optional(),
     name: terminalName,
     kind: z.enum(TERMINAL_KINDS).default("manual"),
-    providerDeviceId: z
-      .string()
-      .regex(/^[A-Za-z0-9_.:-]{1,100}$/)
-      .optional(),
+    providerDeviceId: z.string().regex(DEVICE_ID).optional(),
     feeBp,
     active: z.boolean().default(true),
   })

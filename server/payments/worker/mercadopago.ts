@@ -31,7 +31,11 @@ import {
   transientError,
   type HttpResponse,
 } from "./http.js";
-import { minorToDecimal, type CardType } from "../../../shared/payments.js";
+import {
+  DEVICE_ID,
+  minorToDecimal,
+  type CardType,
+} from "../../../shared/payments.js";
 
 export type MpClient = {
   baseUrl: string;
@@ -456,7 +460,7 @@ export async function listTerminals(c: MpClient): Promise<MpTerminal[]> {
   return list.flatMap((t) => {
     const x = obj(t);
     const id = str(x.id);
-    if (!id || !/^[A-Za-z0-9_.:-]{1,100}$/.test(id)) return [];
+    if (!id || !DEVICE_ID.test(id)) return [];
     const mode = str(x.operating_mode);
     return [
       {

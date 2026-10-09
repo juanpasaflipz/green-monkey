@@ -25,7 +25,7 @@ import {
   type Credentials,
   type PaymentsRuntime,
 } from "./runtime.js";
-import type { Provider } from "../../../shared/payments.js";
+import { DEVICE_ID, type Provider } from "../../../shared/payments.js";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const providerOf = (v: unknown): Provider | null =>
@@ -313,8 +313,7 @@ export async function deviceModeHandler(ctx: JobContext): Promise<JobOutcome> {
   const rt = paymentsRuntime();
   const p = ctx.job.payload as { deviceId?: unknown; mode?: unknown };
   const deviceId =
-    typeof p?.deviceId === "string" &&
-    /^[A-Za-z0-9_.:-]{1,100}$/.test(p.deviceId)
+    typeof p?.deviceId === "string" && DEVICE_ID.test(p.deviceId)
       ? p.deviceId
       : null;
   const mode = p?.mode === "PDV" || p?.mode === "STANDALONE" ? p.mode : null;

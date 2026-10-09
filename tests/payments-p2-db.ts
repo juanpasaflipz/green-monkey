@@ -2349,9 +2349,13 @@ try {
     const d = await pending(o, terminals.mp);
     fake.decline(d.ref);
     assert.equal(await drive(d.id, ["declined"]), "declined");
-    assert.equal(
-      (await attemptRow(d.id)).error_code,
-      "payments_provider_rejected",
+    // A card refused at the terminal says so (P2-UX-14), with MP's reason kept.
+    assert.deepEqual(
+      [
+        (await attemptRow(d.id)).error_code,
+        (await attemptRow(d.id)).provider_status,
+      ],
+      ["payments_card_declined", "failed/rejected"],
     );
     const e = await pending(o, terminals.mp);
     fake.expire(e.ref);
@@ -2625,6 +2629,47 @@ try {
     );
     await drain(A);
     assert.equal((await modes()).NEWLAND_N950__FAKE0001, "PDV");
+    // A charge waiting on that device: its mode does not change under it (P2-PROVIDERS-10).
+    const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const live = await pending(o, terminals.mp);
+    await rejects(
+      write(manager, (tx) =>
+        requestDeviceMode(
+          tx,
+          fresh(A, ids.manager, "manager"),
+          "NEWLAND_N950__FAKE0001",
+          { operationId: randomUUID(), mode: "STANDALONE" },
+        ),
+      ),
+      "payments_terminal_busy",
+    );
+    await write(cashier, (tx) =>
+      requestCancel(tx, cashier, live.id, { operationId: randomUUID() }),
+    );
+    assert.equal(await drive(live.id, ["cancelled"]), "cancelled");
+    // A push that dies before anything was sent (no worker runtime for its three claims)
+    // declines the charge: the order and the terminal are free again (P2-MONEY-7).
+    const o2 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const deadBefore = dead.length;
+    setPaymentsRuntime(null);
+    let never: AttemptView;
+    try {
+      never = await start(cashier, o2.id, terminals.mp, o2.total);
+      for (let i = 0; i < 3; i++) await round(A);
+    } finally {
+      setPaymentsRuntime(runtime);
+    }
+    assert.deepEqual(
+      dead.splice(deadBefore).map((d) => d.kind),
+      ["payments_push"],
+      "removed here: the suite's final check expects none",
+    );
+    const row = await attemptRow(never.id);
+    assert.deepEqual(
+      [row.state, row.error_code],
+      ["declined", "payments_provider_unavailable"],
+    );
+    assert.equal(fake.chargeFor(never.id), null, "nothing reached MP");
   });
 
   await test("15. lock order: starts on two terminals, a settle (job and sync), a void, a discount, an offline sale, a public pay-first accept and a drawer close run together with no deadlock and no retry (LO-R9)", async () => {

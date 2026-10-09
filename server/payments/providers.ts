@@ -17,6 +17,7 @@ import {
 } from "../vault/seal-upload.js";
 import { DomainError, type Session } from "../../shared/domain.js";
 import {
+  DEVICE_ID,
   clipCredentialsInput,
   deviceModeInput,
   mpCredentialsInput,
@@ -191,8 +192,7 @@ export async function requestDeviceMode(
   raw: unknown,
 ): Promise<ProvidersView> {
   permit(s, managers);
-  if (!/^[A-Za-z0-9_.:-]{1,100}$/.test(deviceId))
-    throw new DomainError("invalid_input");
+  if (!DEVICE_ID.test(deviceId)) throw new DomainError("invalid_input");
   const p = deviceModeInput.parse(raw);
   requireRecentAuth(s);
   return once(
@@ -207,6 +207,11 @@ export async function requestDeviceMode(
         await tx`select state from payment_provider_accounts where provider='mercadopago'`;
       if (account?.state !== "active")
         throw new DomainError("payments_provider_not_configured", 409);
+      // A charge waiting on that device would be stranded by a mode change (P2-PROVIDERS-10).
+      const [busy] = await tx`select id from payment_attempts
+        where provider='mercadopago' and provider_device_id=${deviceId}
+          and state in ('created','sending','pending','unknown') limit 1`;
+      if (busy) throw new DomainError("payments_terminal_busy", 409);
       await enqueueJob(tx, s, {
         kind: "payments_device_mode",
         dedupeKey: `mode:${deviceId}:${p.operationId}`,

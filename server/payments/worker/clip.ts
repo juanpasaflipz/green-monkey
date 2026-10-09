@@ -31,7 +31,7 @@ import {
   transientError,
   type HttpResponse,
 } from "./http.js";
-import type { CardType } from "../../../shared/payments.js";
+import { DEVICE_ID, type CardType } from "../../../shared/payments.js";
 import type { Expected, ProviderRead } from "./mercadopago.js";
 
 export type ClipClient = {
@@ -225,7 +225,7 @@ export async function listPinPadDevices(
   return list.flatMap((d) => {
     const x = obj(d);
     const serial = str(x.serial_number);
-    if (!serial || !/^[A-Za-z0-9_.:-]{1,100}$/.test(serial)) return [];
+    if (!serial || !DEVICE_ID.test(serial)) return [];
     const status = (str(x.status) ?? "unknown").toLowerCase();
     return [
       {

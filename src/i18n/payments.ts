@@ -823,6 +823,10 @@ export default defineArea({
       "El importe cobrado no coincide con el que se envió a la terminal. Revisa el historial del proveedor.",
       "The amount charged does not match what was sent to the terminal. Check the provider's history.",
     ],
+    payments_card_declined: [
+      "Tarjeta rechazada: pide otra tarjeta u otra forma de pago.",
+      "Card declined: ask for another card or another payment method.",
+    ],
     payments_cancel_sent: [
       "La cancelación se envió a la terminal; esperando que la confirme.",
       "The cancel was sent to the terminal; waiting for it to confirm.",
