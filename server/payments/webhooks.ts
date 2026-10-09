@@ -71,18 +71,23 @@ function mpDataId(req: express.Request): {
   return { id: str(body?.data?.id), fromQuery: false };
 }
 
-type Match = { tenantId: string; attemptId: string };
+type Match = { tenantId: string; attemptIds: string[] };
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Resolves the hook to its account and the notified id to one live attempt of that account, in a
  * transaction that sets only app.payment_hook_hash (no tenant): the two 037 lookup policies show
- * exactly that account and its attempts. null when anything does not match.
+ * exactly that account and its attempts. When no attempt has that reference, the attempts left
+ * unknown without one (a lost create answer, a dead push) are the candidates the worker checks the
+ * notified id against (P2-MONEY-2, P2-PROVIDERS-9): for MP the one its data.external_reference
+ * names, for Clip (whose notification carries only the id) up to three. null when nothing matches.
  */
 async function match(
   sql: postgres.Sql,
   provider: Provider,
   token: string,
   reference: string,
+  externalReference: string | null,
 ): Promise<Match | null> {
   const hash = hookHash(token);
   return (await sql.begin(async (raw) => {
@@ -97,10 +102,25 @@ async function match(
       where tenant_id=${account.tenant_id} and provider=${provider}
         and lower(provider_reference)=lower(${reference})
         and state in ('sending','pending','unknown') limit 1`;
-    return attempt
+    if (attempt)
+      return {
+        tenantId: account.tenant_id as string,
+        attemptIds: [attempt.id as string],
+      };
+    if (provider === "mercadopago" && !externalReference) return null;
+    const orphans =
+      provider === "mercadopago"
+        ? await tx`select id from payment_attempts
+            where tenant_id=${account.tenant_id} and provider=${provider}
+              and id=${externalReference} and provider_reference is null and state='unknown'`
+        : await tx`select id from payment_attempts
+            where tenant_id=${account.tenant_id} and provider=${provider}
+              and provider_reference is null and state='unknown'
+            order by created_at desc limit 3`;
+    return orphans.length
       ? {
           tenantId: account.tenant_id as string,
-          attemptId: attempt.id as string,
+          attemptIds: orphans.map((o) => o.id as string),
         }
       : null;
   })) as Match | null;
@@ -140,9 +160,22 @@ export function webhookRoute(sql: postgres.Sql) {
         const dataId = mpDataId(req);
         if (!dataId.id || !ID.test(dataId.id)) return done("format");
         if (!dataId.fromQuery) log.info("mp_webhook_no_query_id", {});
-        const m = await match(sql, "mercadopago", token, dataId.id);
+        // MP's order notification may carry data.external_reference (the attempt id): only a
+        // candidate; the worker verifies the signature and reads the order before adopting it.
+        const external = str(
+          (req.body as { data?: { external_reference?: unknown } } | undefined)
+            ?.data?.external_reference,
+        );
+        const m = await match(
+          sql,
+          "mercadopago",
+          token,
+          dataId.id,
+          external && UUID.test(external) ? external : null,
+        );
         if (!m) return done("no_match");
         const requestId = req.get("x-request-id")?.slice(0, 100) ?? null;
+        const attemptId = m.attemptIds[0];
         await tenant(sql, m.tenantId, (tx) =>
           enqueueJob(
             tx,
@@ -150,12 +183,12 @@ export function webhookRoute(sql: postgres.Sql) {
             {
               kind: "payments_webhook",
               dedupeKey:
-                `hook:${m.attemptId}:${requestId ?? `${dataId.id}:${Date.now()}`}`.slice(
+                `hook:${attemptId}:${requestId ?? `${dataId.id}:${Date.now()}`}`.slice(
                   0,
                   200,
                 ),
               payload: {
-                attemptId: m.attemptId,
+                attemptId,
                 source: "mercadopago",
                 dataId: dataId.id,
                 requestId,
@@ -168,19 +201,20 @@ export function webhookRoute(sql: postgres.Sql) {
         const body = (req.body ?? {}) as { id?: unknown };
         const id = str(body.id);
         if (!id || !ID.test(id)) return done("format");
-        const m = await match(sql, "clip", token, id);
+        const m = await match(sql, "clip", token, id, null);
         if (!m) return done("no_match");
-        await tenant(sql, m.tenantId, (tx) =>
-          enqueueJob(
-            tx,
-            { tenantId: m.tenantId },
-            {
-              kind: "payments_webhook",
-              dedupeKey: `hook:${m.attemptId}:clip:${Date.now()}`,
-              payload: { attemptId: m.attemptId, source: "clip" },
-            },
-          ),
-        );
+        await tenant(sql, m.tenantId, async (tx) => {
+          for (const attemptId of m.attemptIds)
+            await enqueueJob(
+              tx,
+              { tenantId: m.tenantId },
+              {
+                kind: "payments_webhook",
+                dedupeKey: `hook:${attemptId}:clip:${Date.now()}`,
+                payload: { attemptId, source: "clip", dataId: id },
+              },
+            );
+        });
       }
       wakeWorker();
       return done("queued");

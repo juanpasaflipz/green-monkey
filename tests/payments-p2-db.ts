@@ -1720,14 +1720,29 @@ try {
       fake.requests.filter(
         (r) => r.method === "POST" && r.path === "/mp/v1/orders",
       ).length;
-    assert.equal(
+    const sameKey = () =>
       fake.requests.filter(
         (r) =>
           r.method === "POST" &&
           r.path === "/mp/v1/orders" &&
           r.idempotencyKey === view.id,
-      ).length,
-      3,
+      ).length;
+    assert.equal(sameKey(), 3);
+    // Not a dead end (P2-CONCURRENCY-5): the queued recovery re-POSTs the identical create under
+    // the same key (the fake checks the body) to learn the order id. Here MP answers with another
+    // attempt's order, so nothing is adopted and the attempt stays unknown for a manager.
+    await round(A);
+    assert.equal(sameKey(), 4, "one recovery re-POST, same key");
+    assert.deepEqual(
+      (await eventsOf(view.id)).slice(-2).map((e) => [e.kind, e.detail]),
+      [
+        ["resent", { source: "recover" }],
+        ["recover_mismatch", { source: "recover", mismatch: "identity" }],
+      ],
+    );
+    assert.deepEqual(
+      [await stateOf(view.id), (await attemptRow(view.id)).provider_reference],
+      ["unknown", null],
     );
     const createsBefore = creates();
     await write(manager, (tx) => requeueJob(tx, manager, job.id));
@@ -1823,6 +1838,167 @@ try {
       { outcome: "not_charged", note: NOTE, confirmed: true },
     );
     assert.equal(doneClip.attempt.state, "dismissed");
+  });
+
+  await test("MP recovery (P2-MONEY-2, P2-MONEY-4, P2-PROVIDERS-2, P2-CONCURRENCY-5, P2-PROVIDERS-7): a refused re-POST is unknown, never declined, and the identical re-POST adopts the order MP made; a cashier's cancel learns the order id first; a push that died before MP saw it creates the order on recovery; a notification naming the attempt adopts a lost order; already_queued_order_for_terminal on a first send is «queue busy»", async () => {
+    const createsFor = (attemptId: string) =>
+      fake.requests.filter(
+        (r) =>
+          r.method === "POST" &&
+          r.path === "/mp/v1/orders" &&
+          r.idempotencyKey === attemptId,
+      ).length;
+    const ordersFor = (attemptId: string) =>
+      [...fake.charges.values()].filter((c) => c.reference === attemptId);
+    // (a) MP made the order, the answer was lost, and the same-key re-POST is answered 409
+    // already_queued_order_for_terminal (its own order waiting on the device): unknown, not
+    // declined (which freed the order and the terminal while the device showed the charge).
+    const o1 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    fake.next("mercadopago", "timeout");
+    fake.nextReplay("queued2205");
+    const v1 = await start(cashier, o1.id, terminals.mp, o1.total);
+    assert.equal(
+      await drive(v1.id, ["unknown", "declined", "pending"]),
+      "unknown",
+    );
+    assert.equal(
+      (await attemptRow(v1.id)).error_code,
+      "payments_provider_unreachable",
+    );
+    // The automatic recovery re-POSTs the identical body: MP returns the original order.
+    assert.equal(await drive(v1.id, ["pending"]), "pending");
+    const row1 = await attemptRow(v1.id);
+    assert.equal(row1.provider_reference, ordersFor(v1.id)[0].id);
+    assert.equal(ordersFor(v1.id).length, 1, "one order at MP");
+    assert.equal(createsFor(v1.id), 3, "every send carried the attempt id");
+    fake.approve(row1.provider_reference, { ...TEST_CARD });
+    assert.equal(await drive(v1.id, ["settled"]), "settled");
+    assert.equal((await tenderOf(v1.id)).length, 1);
+
+    // (b) A re-POST answered 409 idempotency_key_already_used is unknown too. The cashier cancels:
+    // the cancel learns the order id (identical re-POST) and cancels it at MP.
+    const o2 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    fake.next("mercadopago", "timeout");
+    fake.nextReplay("idempotencyKeyUsed");
+    const v2 = await start(cashier, o2.id, terminals.mp, o2.total);
+    assert.equal(
+      await drive(v2.id, ["unknown", "declined", "pending"]),
+      "unknown",
+    );
+    await hold(A, ["payments_webhook"]);
+    await write(cashier, (tx) =>
+      requestCancel(tx, cashier, v2.id, { operationId: randomUUID() }),
+    );
+    assert.equal(await drive(v2.id, ["cancelled"]), "cancelled");
+    assert.equal(ordersFor(v2.id)[0].status, "canceled", "cancelled at MP");
+    assert.equal(
+      (await attemptRow(v2.id)).provider_reference,
+      ordersFor(v2.id)[0].id,
+    );
+
+    // (c) A first send answered already_queued_order_for_terminal (another order is waiting on
+    // the device): declined «queue busy», with the manual fallback.
+    const o3 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    fake.next("mercadopago", "queued2205");
+    const v3 = await start(cashier, o3.id, terminals.mp, o3.total);
+    assert.equal(
+      await drive(v3.id, ["declined", "unknown", "pending"]),
+      "declined",
+    );
+    assert.equal(
+      (await attemptRow(v3.id)).error_code,
+      "payments_terminal_queue_busy",
+    );
+
+    // (d) The push died (lease lost on its last claim) before MP saw the create: the recovery's
+    // re-POST creates the order now, within the charge's window, and adopts it.
+    const o4 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const v4 = randomUUID();
+    await asOwner(A, async (tx) => {
+      await tx`insert into payment_attempts(tenant_id,id,operation_id,settle_operation_id,target,origin,
+          order_id,terminal_id,provider,provider_device_id,terminal_label,amount,tip,currency,employee_id,
+          device_id,session_id,cash_session_id)
+        values(${A},${v4},${randomUUID()},${randomUUID()},'order','pos',${o4.id},${terminals.mp},
+          'mercadopago','NEWLAND_N950__FAKE0001','MP Caja',${o4.total},0,'MXN',${ids.cashier},
+          ${ids.device1},${randomUUID()},${ids.drawer1})`;
+      await enqueueJob(
+        tx,
+        { tenantId: A },
+        {
+          kind: "payments_push",
+          dedupeKey: v4,
+          payload: { attemptId: v4 },
+        },
+      );
+    });
+    await tenant(
+      worker,
+      A,
+      (
+        tx,
+      ) => tx`update payment_attempts set state='sending',sent_at=now(),version=version+1
+        where id=${v4}`,
+    );
+    await admin`update jobs set state='running', attempts=3, lease_until=now() - interval '1 second'
+      where tenant_id=${A} and kind='payments_push' and dedupe_key=${v4}`;
+    const expired: string[] = [];
+    const restarted = createJobRunner(worker, {
+      handlers: workerHandlers,
+      concurrency: 4,
+      sweepMs: 3_600_000,
+      onDead: (j, code) => expired.push(`${j.kind}:${code}`),
+    });
+    await restarted.drainTenant(A);
+    while (restarted.running() > 0) await sleep(10);
+    await restarted.stop(2000);
+    assert.deepEqual(expired, ["payments_push:lease_expired"]);
+    assert.equal(await stateOf(v4), "unknown");
+    assert.equal(ordersFor(v4).length, 0, "MP never saw the create");
+    assert.equal(await drive(v4, ["pending"]), "pending");
+    assert.equal(ordersFor(v4).length, 1);
+    assert.equal(createsFor(v4), 1);
+    fake.approve((await attemptRow(v4)).provider_reference, { ...TEST_CARD });
+    assert.equal(await drive(v4, ["settled"]), "settled");
+
+    // (e) The answer was lost and every re-POST failed (MP degraded): unknown. MP did make the
+    // order and the diner paid it. Its order.processed notification names the attempt
+    // (data.external_reference): the worker verifies the signature, reads the order, checks it
+    // names this attempt and device, adopts it and settles; nothing is sent again.
+    const o5 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    fake.next("mercadopago", "timeout");
+    fake.nextReplay("server5xx");
+    fake.nextReplay("server5xx");
+    const v5 = await start(cashier, o5.id, terminals.mp, o5.total);
+    assert.equal(
+      await drive(v5.id, ["unknown", "declined", "pending"]),
+      "unknown",
+    );
+    await hold(A, ["payments_webhook"]);
+    const order5 = ordersFor(v5.id)[0];
+    fake.approve(order5.id, { ...TEST_CARD });
+    const sends = createsFor(v5.id);
+    const requestId = `req-${randomUUID()}`;
+    const notice = mpNotification(
+      order5.id,
+      requestId,
+      fake.signMp(order5.id, requestId),
+    );
+    await notify(hooks.mercadopago, {
+      ...notice,
+      body: {
+        ...notice.body,
+        data: { id: order5.id, external_reference: v5.id },
+      },
+    });
+    await round(A, { due: false });
+    assert.equal(await drive(v5.id, ["settled"]), "settled");
+    assert.equal(createsFor(v5.id), sends, "adopted from the notification");
+    assert.ok(
+      (await eventsOf(v5.id)).some(
+        (e) =>
+          e.kind === "reference_recovered" && e.detail.source === "mercadopago",
+      ),
+    );
   });
 
   await test("13. cancel: approved during the cancel stays approved and settles (the worker re-reads first); Clip's 400 on a taken charge keeps it pending with «cancélalo en la terminal» until the reader cancels; approved or later is not cancellable", async () => {
@@ -2258,7 +2434,9 @@ try {
     const pollsQueued = async (attemptId: string) =>
       count(
         A,
-        (tx) => tx`select count(*)::int as n from jobs where kind='payments_poll'
+        (
+          tx,
+        ) => tx`select count(*)::int as n from jobs where kind='payments_poll'
           and state in ('queued','available','running') and payload->>'attemptId'=${attemptId}`,
       );
     const o1 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
@@ -2282,7 +2460,9 @@ try {
     assert.ok(
       alerts
         .slice(alertsBefore)
-        .some((x) => /payments_account_failed .*provider=mercadopago/.test(x.body)),
+        .some((x) =>
+          /payments_account_failed .*provider=mercadopago/.test(x.body),
+        ),
     );
     // Both charges stay pending with a live chain (before: the chain ended with the first link
     // whose account could not be opened, and nothing could ever move them again).
@@ -2301,7 +2481,9 @@ try {
     // At the deadline (expiry + 2 min) both become unknown: resolvable, alerted, never stuck.
     await asOwner(
       A,
-      (tx) => tx`update payment_attempts set sent_at = now() - interval '13 minutes'
+      (
+        tx,
+      ) => tx`update payment_attempts set sent_at = now() - interval '13 minutes'
         where id in (${a1.id}, ${a2.id})`,
     );
     await round(A);
@@ -2316,7 +2498,9 @@ try {
     assert.ok(
       alerts
         .slice(alertsBefore)
-        .some((x) => /payments_attempt_unknown .*reason=account_unusable/.test(x.body)),
+        .some((x) =>
+          /payments_attempt_unknown .*reason=account_unusable/.test(x.body),
+        ),
     );
     // The owner repairs the account while both charges are live (before: payments_attempts_live).
     const repaired = await write(owner, (tx) =>
@@ -2343,7 +2527,10 @@ try {
     const o3 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
     fake.next("mercadopago", "terminalNotOwned");
     const v3 = await start(cashier, o3.id, terminals.mp, o3.total);
-    assert.equal(await drive(v3.id, ["declined", "unknown", "pending"]), "declined");
+    assert.equal(
+      await drive(v3.id, ["declined", "unknown", "pending"]),
+      "declined",
+    );
     assert.equal(
       (await attemptRow(v3.id)).error_code,
       "payments_terminal_not_linked",

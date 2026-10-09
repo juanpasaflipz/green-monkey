@@ -14,6 +14,7 @@ import {
   mapPointOrder,
   mpManifest,
   parseMpSignature,
+  provesNoOrder,
   setTerminalMode,
   verifyMpSignature,
   type MpClient,
@@ -21,7 +22,10 @@ import {
 import { ProviderError } from "../server/payments/worker/http";
 
 const BASE = "https://api.mercadopago.com";
-const c: MpClient = { baseUrl: BASE, accessToken: "TEST-mp-access-token-not-real" };
+const c: MpClient = {
+  baseUrl: BASE,
+  accessToken: "TEST-mp-access-token-not-real",
+};
 const attemptId = "6f1c1a52-8d0e-4c1e-9b0a-3a3c1d2e4f50";
 const expected = {
   attemptId,
@@ -80,7 +84,15 @@ const order = (
 
 describe("createPointOrder: request shape", () => {
   it("POST /v1/orders with the attempt id as idempotency key and external_reference, a 2-decimal total, no_ticket, the expiration and no default_type", async () => {
-    const fetchMock = mockFetch([201, { id: "ORD1", status: "created" }]);
+    const fetchMock = mockFetch([
+      201,
+      {
+        id: "ORD1",
+        status: "created",
+        external_reference: attemptId,
+        config: { point: { terminal_id: expected.deviceId } },
+      },
+    ]);
     const out = await createPointOrder(c, {
       attemptId,
       total: 23600,
@@ -88,11 +100,19 @@ describe("createPointOrder: request shape", () => {
       expiration: "PT10M",
       description: "Orden 14",
     });
-    expect(out).toEqual({ id: "ORD1", status: "created" });
+    // The order names its attempt and device: a recovery adopts it only then (P2-MONEY-2).
+    expect(out).toEqual({
+      id: "ORD1",
+      status: "created",
+      externalReference: attemptId,
+      terminalId: expected.deviceId,
+    });
     const [url, init] = call(fetchMock);
     expect(url).toBe(`${BASE}/v1/orders`);
     expect(init.method).toBe("POST");
-    expect(headers(init).Authorization).toBe("Bearer TEST-mp-access-token-not-real");
+    expect(headers(init).Authorization).toBe(
+      "Bearer TEST-mp-access-token-not-real",
+    );
     expect(headers(init)["X-Idempotency-Key"]).toBe(attemptId);
     const body = JSON.parse(String(init.body));
     expect(body).toEqual({
@@ -171,12 +191,87 @@ describe("createPointOrder: request shape", () => {
     expect(
       ((await createPointOrder(c, args).catch((e) => e)) as ProviderError).code,
     ).toBe("payments_credentials_rejected");
+    // The Orders API's names (MP MX create-order reference): the queued order and the terminal of
+    // another account (the 403 keeps MP's code so the worker can tell it from a bad token).
+    mockFetch([
+      409,
+      {
+        errors: [
+          {
+            code: "already_queued_order_for_terminal",
+            message: "The terminal already has an order waiting.",
+          },
+        ],
+      },
+    ]);
+    expect(
+      ((await createPointOrder(c, args).catch((e) => e)) as ProviderError).code,
+    ).toBe("payments_terminal_queue_busy");
+    mockFetch([
+      403,
+      { errors: [{ code: "forbidden_checking_terminal_owner", message: "x" }] },
+    ]);
+    const owner = (await createPointOrder(c, args).catch(
+      (e) => e,
+    )) as ProviderError;
+    expect([owner.code, owner.status, owner.providerCode]).toEqual([
+      "payments_credentials_rejected",
+      403,
+      "forbidden_checking_terminal_owner",
+    ]);
     mockFetch([429, {}]);
     const limited = (await createPointOrder(c, args).catch(
       (e) => e,
     )) as ProviderError;
     expect(limited.code).toBe("payments_provider_rate_limited");
     expect(limited.retryAfterMs).toBe(3500);
+  });
+});
+
+describe("provesNoOrder: which create refusals prove MP made no order (P2-PROVIDERS-2)", () => {
+  it("only a 400 validation error (the identical body was invalid the first time too)", () => {
+    const e = (status: number, code: string, providerCode: string | null) =>
+      new ProviderError(code, status, providerCode);
+    expect(
+      provesNoOrder(e(400, "payments_provider_rejected", "property_value")),
+    ).toBe(true);
+    expect(
+      provesNoOrder(e(400, "payments_amount_below_min", "property_value")),
+    ).toBe(true);
+    expect(
+      provesNoOrder(
+        e(400, "payments_provider_rejected", "required_properties"),
+      ),
+    ).toBe(true);
+    expect(
+      provesNoOrder(
+        e(
+          409,
+          "payments_terminal_queue_busy",
+          "already_queued_order_for_terminal",
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      provesNoOrder(
+        e(409, "payments_provider_rejected", "idempotency_key_already_used"),
+      ),
+    ).toBe(false);
+    expect(provesNoOrder(e(401, "payments_credentials_rejected", null))).toBe(
+      false,
+    );
+    expect(
+      provesNoOrder(
+        e(
+          403,
+          "payments_credentials_rejected",
+          "forbidden_checking_terminal_owner",
+        ),
+      ),
+    ).toBe(false);
+    expect(provesNoOrder(e(400, "payments_provider_rejected", null))).toBe(
+      false,
+    );
   });
 });
 

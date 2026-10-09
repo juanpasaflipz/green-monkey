@@ -97,14 +97,50 @@ function providerCodeOf(r: HttpResponse): string | null {
   );
 }
 
+/**
+ * Order-create validation errors (MP MX reference, in-person-payments/point/orders, create-order,
+ * "400"): the request itself is invalid, so an identical re-POST could never have created an order
+ * either. Every other refusal of a re-POST leaves the outcome unknown (P2-PROVIDERS-2).
+ */
+export const MP_VALIDATION_CODES = new Set([
+  "empty_required_header",
+  "required_properties",
+  "unsupported_properties",
+  "minimum_properties",
+  "property_type",
+  "minimum_items",
+  "maximum_items",
+  "property_value",
+  "json_syntax_error",
+]);
+/** True when this create refusal proves no order exists (a 400 validation error). */
+export function provesNoOrder(e: ProviderError): boolean {
+  return (
+    e.status === 400 &&
+    (e.code === "payments_amount_below_min" ||
+      (e.providerCode !== null && MP_VALIDATION_CODES.has(e.providerCode)))
+  );
+}
+
 /** Maps a non-2xx answer of a charge-creating or reading call. */
 function failure(r: HttpResponse): ProviderError {
   const t = transientError(r);
   if (t) return t;
   if (r.status === 401 || r.status === 403)
-    return new ProviderError("payments_credentials_rejected", r.status);
+    return new ProviderError(
+      "payments_credentials_rejected",
+      r.status,
+      providerCodeOf(r),
+    );
   const text = errorText(r);
-  if (/\b2205\b/.test(text) || /queued intent/i.test(text))
+  // Orders API: 409 already_queued_order_for_terminal ("The terminal already has an order
+  // waiting", MP MX create-order reference); 2205 / "queued intent" is the legacy Payment Intent
+  // code, kept for safety (P2-PROVIDERS-7).
+  if (
+    providerCodeOf(r) === "already_queued_order_for_terminal" ||
+    /\b2205\b/.test(text) ||
+    /queued intent/i.test(text)
+  )
     return new ProviderError(
       "payments_terminal_queue_busy",
       r.status,
@@ -138,7 +174,12 @@ export async function createPointOrder(
     expiration: string;
     description: string;
   },
-): Promise<{ id: string; status: string | null }> {
+): Promise<{
+  id: string;
+  status: string | null;
+  externalReference: string | null;
+  terminalId: string | null;
+}> {
   const r = await providerRequest({
     method: "POST",
     url: `${c.baseUrl}/v1/orders`,
@@ -166,7 +207,12 @@ export async function createPointOrder(
       null,
       true,
     );
-  return { id, status: str(b.status) };
+  return {
+    id,
+    status: str(b.status),
+    externalReference: str(b.external_reference),
+    terminalId: str(obj(obj(b.config).point).terminal_id),
+  };
 }
 
 /** GET /v1/orders/{id}; null on 404. */

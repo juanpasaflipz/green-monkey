@@ -5,7 +5,9 @@
  * server/payments/config.ts) and script it:
  *
  *   fake.next("mercadopago" | "clip", behaviour)  the next create answers with `behaviour`:
- *     "ok" (default), "queued2205", "busy" (Clip: reader offline), "rateLimit429",
+ *     "ok" (default), "queued2205" (MP: 409 already_queued_order_for_terminal, the Orders API's
+ *     name for the old 2205 "queued intent"; the R10 name stays), "busy" (Clip: reader offline),
+ *     "rateLimit429",
  *     "server5xx", "timeout" (the connection drops with no answer: a lost create),
  *     "clipCreateTimeout" (alias of timeout for Clip), "belowMin", "reusedOrderId" (MP: 201 with
  *     the id of the fake's newest MP order, an answer the restaurant cannot record twice, so the
@@ -16,6 +18,9 @@
  *   fake.lateApproval(ref, ms, o?)                                 approve after ms
  *   fake.atTerminalUncancellable(ref)   MP status at_terminal with cancels refused; Clip DELETE 400
  *   fake.rateLimitReads(n)              the next n reads answer 429
+ *   fake.nextReplay(behaviour)          MP: the next re-POST of a known idempotency key answers
+ *                                       "server5xx", "timeout" (lost again), "queued2205" or
+ *                                       "idempotencyKeyUsed" (409) instead of the stored order
  *   fake.violations                     contract breaches seen (missing or reused idempotency keys
  *                                       with a different body, bad auth headers): must stay empty
  *
@@ -44,7 +49,8 @@ export type Behaviour =
   | "clipCreateTimeout"
   | "belowMin"
   | "reusedOrderId"
-  | "terminalNotOwned";
+  | "terminalNotOwned"
+  | "idempotencyKeyUsed";
 type Approval = {
   paid?: number;
   tip?: number;
@@ -126,6 +132,7 @@ export async function startPaymentsFake(
   };
   const charges = new Map<string, Charge>();
   const idempotency = new Map<string, { body: string; chargeId: string }>();
+  const replays: Behaviour[] = [];
   const violations: string[] = [];
   const requests: { method: string; path: string; idempotencyKey?: string }[] =
     [];
@@ -226,6 +233,16 @@ export async function startPaymentsFake(
     };
   }
 
+  /** MP MX Orders reference, create-order 409. */
+  const alreadyQueued = {
+    errors: [
+      {
+        code: "already_queued_order_for_terminal",
+        message:
+          "The terminal already has an order waiting. It is necessary to finalize or cancel it",
+      },
+    ],
+  };
   const send = (res: http.ServerResponse, status: number, body?: unknown) => {
     res.writeHead(status, { "Content-Type": "application/json" });
     res.end(body === undefined ? "" : JSON.stringify(body));
@@ -332,6 +349,22 @@ export async function startPaymentsFake(
             violations.push(
               `mp idempotency key ${key} reused with another body`,
             );
+          const replay = replays.shift();
+          if (replay === "server5xx") return send(res, 503, {});
+          if (replay === "timeout") {
+            req.socket.destroy();
+            return;
+          }
+          if (replay === "queued2205") return send(res, 409, alreadyQueued);
+          if (replay === "idempotencyKeyUsed")
+            return send(res, 409, {
+              errors: [
+                {
+                  code: "idempotency_key_already_used",
+                  message: "already been used with a different request",
+                },
+              ],
+            });
           return send(res, 201, mpOrder(charges.get(prior.chargeId)!));
         }
         const behaviour = queue.mercadopago.shift() ?? "ok";
@@ -342,15 +375,7 @@ export async function startPaymentsFake(
           req.socket.destroy();
           return;
         }
-        if (behaviour === "queued2205")
-          return send(res, 409, {
-            errors: [
-              {
-                code: "2205",
-                message: "There is already a queued intent for the device",
-              },
-            ],
-          });
+        if (behaviour === "queued2205") return send(res, 409, alreadyQueued);
         if (behaviour === "busy")
           return send(res, 400, {
             errors: [{ code: "terminal_busy", message: "terminal busy" }],
@@ -596,6 +621,9 @@ export async function startPaymentsFake(
     violations,
     next(provider: "mercadopago" | "clip", behaviour: Behaviour) {
       queue[provider].push(behaviour);
+    },
+    nextReplay(behaviour: Behaviour) {
+      replays.push(behaviour);
     },
     /** The charge pushed for an attempt (its external reference). */
     chargeFor(attemptId: string) {

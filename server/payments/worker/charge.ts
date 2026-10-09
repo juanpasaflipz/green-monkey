@@ -24,6 +24,7 @@ import {
   getPaymentDetail,
   getPointOrder,
   mapPointOrder,
+  provesNoOrder,
   verifyMpSignature,
   type MpClient,
   type ProviderRead,
@@ -164,7 +165,10 @@ async function credentialsRefused(
     else await listPinPadDevices(clipClient(rt, account, signal));
     return false;
   } catch (e) {
-    if (e instanceof ProviderError && e.code === "payments_credentials_rejected")
+    if (
+      e instanceof ProviderError &&
+      e.code === "payments_credentials_rejected"
+    )
       return true;
     return null;
   }
@@ -391,6 +395,233 @@ async function ensureChain(tx: Tx, tenantId: string, attemptId: string) {
     );
 }
 
+/** MP's create body for an attempt: identical on every send (the idempotency key's contract). */
+async function mpCreateInput(tx: Tx, a: WorkerAttempt) {
+  const [o] = a.order_id
+    ? await tx`select number from orders where id=${a.order_id}`
+    : [];
+  return {
+    attemptId: a.id,
+    total: a.amount + a.tip,
+    terminalId: a.provider_device_id,
+    expiration: PAYMENTS_LIMITS.mpExpiration[a.origin],
+    description: o ? `Orden ${o.number}` : a.terminal_label,
+  };
+}
+
+/**
+ * Queues the recovery of an attempt left unknown without a provider reference (a payments_webhook
+ * job, source "recover"): MP re-POSTs the identical create to learn the order id; Clip withdraws by
+ * serial. Never a second Clip create.
+ */
+async function queueRecovery(
+  tx: Tx,
+  tenantId: string,
+  attemptId: string,
+  why: string,
+  afterMs = 30_000,
+) {
+  await enqueueJob(
+    tx,
+    { tenantId },
+    {
+      kind: "payments_webhook",
+      dedupeKey: `recover:${attemptId}:${why}`,
+      payload: { attemptId, source: "recover" },
+      runAt: new Date(Date.now() + afterMs),
+    },
+  );
+}
+
+/**
+ * Adopts a provider id for an unknown attempt that has none, only after the provider's own record
+ * names this attempt (MP external_reference / Clip reference = the attempt id) and its device, and
+ * the id is no other attempt's: unknown → pending with the reference (a worker transition), and a
+ * chain reads it from there.
+ */
+async function adoptReference(
+  tx: Tx,
+  tenantId: string,
+  attemptId: string,
+  found: {
+    reference: string;
+    externalReference: string | null;
+    deviceId: string | null;
+  },
+  source: string,
+): Promise<boolean> {
+  const a = await lockAttempt(tx, attemptId);
+  if (!a || a.state !== "unknown" || a.provider_reference) return false;
+  const identity =
+    /^[A-Za-z0-9_-]{1,100}$/.test(found.reference) &&
+    found.externalReference === a.id &&
+    (found.deviceId === null || found.deviceId === a.provider_device_id);
+  const [taken] = identity
+    ? await tx`select id from payment_attempts where provider=${a.provider}
+        and lower(provider_reference)=lower(${found.reference}) limit 1`
+    : [];
+  if (!identity || taken) {
+    await workerEvent(tx, tenantId, attemptId, "recover_mismatch", {
+      source,
+      mismatch: identity ? "reference_taken" : "identity",
+    });
+    return false;
+  }
+  await tx`update payment_attempts set state='pending',provider_reference=${found.reference},
+      error_code=null,version=version+1 where id=${attemptId}`;
+  await workerEvent(tx, tenantId, attemptId, "reference_recovered", {
+    reference: found.reference,
+    source,
+    before: "unknown",
+  });
+  await ensureChain(tx, tenantId, attemptId);
+  return true;
+}
+
+/**
+ * An MP attempt left unknown with no reference (its create answer was lost, a re-POST was refused,
+ * or the push died): re-POST the identical body with X-Idempotency-Key = the attempt id. MP
+ * "devuelva el resultado original sin procesar la operación nuevamente" (MP MX, "Migrar payment
+ * intent a Orders"), so an order an earlier send created comes back and is adopted; one that never
+ * reached MP is created now, while the charge is still meant for the terminal. Only within the
+ * order lifetime counted from the last send: later, a new order would surprise the terminal, and a
+ * manager decides from the device's history. sent_at moves to this send (P2-MONEY-2).
+ */
+async function recoverMpReference(
+  ctx: JobContext,
+  rt: PaymentsRuntime,
+  l: Usable,
+  source: string,
+): Promise<boolean> {
+  const tenantId = ctx.job.tenantId;
+  const attemptId = l.attempt.id;
+  const input = await ctx.tenant(async (tx) => {
+    const a = await lockAttempt(tx, attemptId);
+    if (
+      !a ||
+      a.provider !== "mercadopago" ||
+      a.state !== "unknown" ||
+      a.provider_reference
+    )
+      return null;
+    const last = new Date(a.sent_at ?? a.created_at).getTime();
+    if (
+      Date.now() >
+      last + isoMinutes(PAYMENTS_LIMITS.mpExpiration[a.origin])
+    ) {
+      await workerEvent(tx, tenantId, attemptId, "recover_skipped", {
+        code: "payments_recover_window_closed",
+        source,
+      });
+      return null;
+    }
+    await tx`update payment_attempts set sent_at=now(),version=version+1 where id=${attemptId}`;
+    await workerEvent(tx, tenantId, attemptId, "resent", { source });
+    return mpCreateInput(tx, a);
+  });
+  if (!input) return false;
+  let created: Awaited<ReturnType<typeof createPointOrder>>;
+  try {
+    created = await createPointOrder(
+      mpClient(rt, l.account, ctx.signal),
+      input,
+    );
+  } catch (e) {
+    if (!(e instanceof ProviderError)) throw e;
+    await ctx.tenant((tx) =>
+      workerEvent(tx, tenantId, attemptId, "recover_failed", {
+        code: e.code,
+        providerCode: e.providerCode,
+        httpStatus: e.status,
+        source,
+      }),
+    );
+    return false;
+  }
+  return ctx.tenant((tx) =>
+    adoptReference(
+      tx,
+      tenantId,
+      attemptId,
+      {
+        reference: created.id,
+        externalReference: created.externalReference,
+        deviceId: created.terminalId,
+      },
+      source,
+    ),
+  );
+}
+
+/**
+ * A provider notification for an unknown attempt with no reference (matched by MP's
+ * data.external_reference, or a Clip id while this account has such attempts): read the notified
+ * id with the restaurant's credentials and adopt it if the provider's record names this attempt
+ * (P2-PROVIDERS-9).
+ */
+async function adoptNotified(
+  ctx: JobContext,
+  rt: PaymentsRuntime,
+  l: Usable,
+  dataId: string,
+  source: string,
+): Promise<boolean> {
+  const a = l.attempt;
+  let found: {
+    reference: string;
+    externalReference: string | null;
+    deviceId: string | null;
+  } | null = null;
+  try {
+    if (a.provider === "mercadopago") {
+      const order = await getPointOrder(
+        mpClient(rt, l.account, ctx.signal),
+        dataId,
+      );
+      if (order) {
+        const point = (
+          order.config as { point?: { terminal_id?: unknown } } | undefined
+        )?.point;
+        found = {
+          reference: typeof order.id === "string" ? order.id : dataId,
+          externalReference:
+            typeof order.external_reference === "string"
+              ? order.external_reference
+              : null,
+          deviceId:
+            typeof point?.terminal_id === "string" ? point.terminal_id : null,
+        };
+      }
+    } else {
+      const payment = await getPinPadPayment(
+        clipClient(rt, l.account, ctx.signal),
+        dataId,
+      );
+      if (payment)
+        found = {
+          reference:
+            typeof payment.pinpad_request_id === "string"
+              ? payment.pinpad_request_id
+              : dataId,
+          externalReference:
+            typeof payment.reference === "string" ? payment.reference : null,
+          deviceId:
+            typeof payment.serial_number_pos === "string"
+              ? payment.serial_number_pos
+              : null,
+        };
+    }
+  } catch (e) {
+    if (!(e instanceof ProviderError)) throw e;
+    return false;
+  }
+  if (!found) return false;
+  const f = found;
+  return ctx.tenant((tx) =>
+    adoptReference(tx, ctx.job.tenantId, a.id, f, source),
+  );
+}
+
 // ---------------------------------------------------------------------------------------------
 
 /** payments_push: created → sending → pending (or declined / unknown). */
@@ -460,11 +691,13 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
       await tx`update payment_attempts set state='sending',sent_at=now(),version=version+1
         where id=${attemptId}`;
       await workerEvent(tx, tenantId, attemptId, "sent");
+    } else {
+      // An MP re-POST (same key, identical body): sent_at is the latest send, so the deadline and
+      // «No se cobró»'s margin cover an order this send creates (P2-MONEY-2).
+      await tx`update payment_attempts set sent_at=now(),version=version+1 where id=${attemptId}`;
+      await workerEvent(tx, tenantId, attemptId, "resent", { source: "push" });
     }
-    const [o] = a.order_id
-      ? await tx`select number from orders where id=${a.order_id}`
-      : [];
-    const description = o ? `Orden ${o.number}` : a.terminal_label;
+    const description = (await mpCreateInput(tx, a)).description;
     return { a, account, description, clipUnknown: false };
   });
   if (unknownWithoutCall) raise(rt, unknownAlert(tenantId, "create"));
@@ -505,7 +738,10 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
       // A 401/403 on the create: the account fails only if its verification call is refused too;
       // otherwise MP refused this terminal (403 forbidden_checking_terminal_owner: a device linked
       // to another account), which declines this charge and leaves the account alone.
-      if (!(await failIfRefused(ctx, rt, a.provider, account)) && e.status === 403)
+      if (
+        !(await failIfRefused(ctx, rt, a.provider, account)) &&
+        e.status === 403
+      )
         e.code = "payments_terminal_not_linked";
     }
     if (e.retryable && a.provider === "mercadopago" && ctx.job.attempts < 3)
@@ -515,8 +751,16 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
         code: e.code,
         afterMs: e.retryAfterMs ?? 2000,
       };
+    // A re-POST (an earlier run of this push committed `sending` and may have reached MP) is never
+    // declined unless MP's answer proves no order exists (a 400 validation error the identical
+    // body would have had the first time): a 409 already_queued_order_for_terminal, a 401/403 or a
+    // 409 idempotency_key_already_used may all be about the order the first send created
+    // (P2-MONEY-4, P2-PROVIDERS-2).
+    const resend = a.provider === "mercadopago" && a.state === "sending";
     const unknown =
-      e.retryable || e.code === "payments_clip_create_outcome_unknown";
+      e.retryable ||
+      e.code === "payments_clip_create_outcome_unknown" ||
+      (resend && !provesNoOrder(e));
     const code = unknown
       ? a.provider === "clip"
         ? "payments_clip_create_outcome_unknown"
@@ -542,6 +786,11 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
     });
     if (unknown) {
       if (a.provider === "clip") await withdrawBySerial(ctx, rt, a, account);
+      // MP: one automatic recovery (the identical re-POST) half a minute later (P2-MONEY-2).
+      else
+        await ctx.tenant((tx) =>
+          queueRecovery(tx, tenantId, attemptId, "push"),
+        );
       raise(rt, unknownAlert(tenantId, "create"));
     }
     return { status: "done" };
@@ -570,9 +819,10 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
  * id, Clip's create may have reached the reader), so the attempt becomes `unknown`
  * (`payments_push_failed`) through the worker's own transition, alerted like any unknown outcome.
  * The POS then offers «Volver a consultar» and a manager's «Resolver cobro», and Excepciones lists
- * it after 10 minutes. Nothing is sent again: MP's idempotency key stays the attempt id and a
- * Clip create is never repeated. A `created` attempt never reached the provider (`sending` is
- * committed before the call) and stays cancellable from the POS.
+ * it after 10 minutes. A recovery job follows (queueRecovery): MP re-POSTs the identical create
+ * under the same idempotency key (the attempt id) to learn the order id; Clip only withdraws by
+ * serial, a Clip create is never repeated. A `created` attempt never reached the provider
+ * (`sending` is committed before the call) and stays cancellable from the POS.
  */
 export async function pushDead(ctx: {
   job: JobContext["job"];
@@ -590,6 +840,9 @@ export async function pushDead(ctx: {
       code: "payments_push_failed",
       before: "sending",
     });
+    // Not a dead end (P2-CONCURRENCY-5): MP re-POSTs the identical create to learn the order id;
+    // Clip withdraws whatever the reader has not taken (delete by serial). Never a Clip create.
+    await queueRecovery(tx, tenantId, attemptId, "dead", 5_000);
     return true;
   });
   const rt = paymentsRuntime();
@@ -655,7 +908,10 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
   if (!loaded || !a || a.state !== "pending" || !a.provider_reference)
     return { status: "done" };
   /** The chain's next link, or `unknown` once the deadline passed (the only pending → unknown). */
-  const next = async (afterMs: number, timeoutCode = "payments_attempt_timeout") =>
+  const next = async (
+    afterMs: number,
+    timeoutCode = "payments_attempt_timeout",
+  ) =>
     ctx.tenant(async (tx) => {
       const now = await readAttempt(tx, attemptId);
       if (now?.state !== "pending") return;
@@ -747,13 +1003,22 @@ export async function cancelHandler(ctx: JobContext): Promise<JobOutcome> {
       code: loaded.accountError ?? "payments_provider_not_configured",
       afterMs: 30_000,
     };
-  const a = loaded.attempt;
-  if (!a.provider_reference) {
-    if (a.provider === "clip")
-      await withdrawBySerial(ctx, rt, a, loaded.account);
-    return { status: "done" };
+  let l: Usable = loaded;
+  if (!l.attempt.provider_reference) {
+    if (l.attempt.provider === "clip") {
+      await withdrawBySerial(ctx, rt, l.attempt, l.account);
+      return { status: "done" };
+    }
+    // MP: learn the order id first (identical re-POST; or a concurrent recovery adopted it), then
+    // cancel it like any pending order.
+    await recoverMpReference(ctx, rt, l, "cancel");
+    const again = await load(ctx, rt, attemptId);
+    if (!usable(again) || !again.attempt.provider_reference)
+      return { status: "done" };
+    l = again;
   }
-  const read = await readProvider(rt, loaded, ctx.signal);
+  const a = l.attempt;
+  const read = await readProvider(rt, l, ctx.signal);
   if (read && read.outcome !== "pending") {
     await ctx.tenant((tx) =>
       applyRead(tx, rt, tenantId, attemptId, read, "cancel"),
@@ -762,14 +1027,14 @@ export async function cancelHandler(ctx: JobContext): Promise<JobOutcome> {
   }
   const result =
     a.provider === "mercadopago"
-      ? await cancelPointOrder(mpClient(rt, loaded.account, ctx.signal), {
-          orderId: a.provider_reference,
+      ? await cancelPointOrder(mpClient(rt, l.account, ctx.signal), {
+          orderId: a.provider_reference!,
           attemptId,
           atTerminal: read?.atTerminal ?? false,
         })
       : await cancelPinPadPayment(
-          clipClient(rt, loaded.account, ctx.signal),
-          a.provider_reference,
+          clipClient(rt, l.account, ctx.signal),
+          a.provider_reference!,
         );
   await ctx.tenant(async (tx) => {
     const now = await lockAttempt(tx, attemptId);
@@ -807,7 +1072,10 @@ export async function webhookHandler(ctx: JobContext): Promise<JobOutcome> {
   };
   const attemptId = id(p?.attemptId);
   const source =
-    p?.source === "mercadopago" || p?.source === "clip" || p?.source === "check"
+    p?.source === "mercadopago" ||
+    p?.source === "clip" ||
+    p?.source === "check" ||
+    p?.source === "recover"
       ? p.source
       : null;
   if (!attemptId || !source) return { status: "dead", code: "invalid_payload" };
@@ -857,11 +1125,36 @@ export async function webhookHandler(ctx: JobContext): Promise<JobOutcome> {
     await ctx.tenant((tx) =>
       workerEvent(tx, tenantId, attemptId, "webhook", { source }),
     );
-  if ((a.state !== "pending" && a.state !== "unknown") || !a.provider_reference)
+  let l: Usable = loaded;
+  if (a.state === "unknown" && !a.provider_reference) {
+    // No reference to read (P2-MONEY-2, P2-UX-4): recover one. A verified MP notification or a
+    // Clip hint names an id to check against this attempt; a re-check or the automatic recovery
+    // re-POSTs MP's identical create, or withdraws a Clip request by serial (never a Clip create).
+    const dataId =
+      typeof p.dataId === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(p.dataId)
+        ? p.dataId
+        : null;
+    let adopted = false;
+    if ((source === "mercadopago" || source === "clip") && dataId)
+      adopted = await adoptNotified(ctx, rt, l, dataId, source);
+    else if (source === "check" || source === "recover") {
+      if (a.provider === "mercadopago")
+        adopted = await recoverMpReference(ctx, rt, l, source);
+      else await withdrawBySerial(ctx, rt, a, l.account);
+    }
+    if (!adopted) return { status: "done" };
+    const again = await load(ctx, rt, attemptId);
+    if (!usable(again)) return { status: "done" };
+    l = again;
+  }
+  if (
+    (l.attempt.state !== "pending" && l.attempt.state !== "unknown") ||
+    !l.attempt.provider_reference
+  )
     return { status: "done" };
   let read: Read | null;
   try {
-    read = await readProvider(rt, loaded, ctx.signal);
+    read = await readProvider(rt, l, ctx.signal);
   } catch (e) {
     if (e instanceof ProviderError && e.retryable)
       return { status: "retry", code: e.code, afterMs: e.retryAfterMs ?? 3000 };
