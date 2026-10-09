@@ -1766,7 +1766,9 @@ try {
       const c = await pending(o, terminals.clip);
       await asOwner(
         A,
-        (tx) => tx`update payment_attempts set sent_at = now() - interval '11 minutes'
+        (
+          tx,
+        ) => tx`update payment_attempts set sent_at = now() - interval '11 minutes'
           where id=${c.id}`,
       );
       alerts.length = 0;
