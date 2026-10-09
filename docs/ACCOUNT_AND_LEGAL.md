@@ -397,6 +397,31 @@ Diners' ARCO requests go to the restaurant, the responsable; for a held order
 that never became a sale, support follows [public ordering](PUBLIC_ORDERING.md)
 §12.
 
+### The loyalty club (038)
+
+A restaurant's club ([Loyalty](LOYALTY.md)) cannot be switched on without this URL and the owner's
+attestation, recorded with who and when, that the notice covers the club: the data (name or nickname,
+phone, purchase history in the club), the purposes (primary: identify the member and keep stamps and
+rewards; secondary and optional: promotions by message), retention (24 months without activity) and the
+ARCO channel. Removing the URL later does not switch the club off, but enrollment is refused
+(`loyalty_privacy_notice_required`) until a URL is set again. Each member keeps the consent channel, the
+time and a snapshot of the URL in force; the marketing opt-in is separate and starts unchecked. Imported
+pos-lite members keep their program (`pos_lite_import`) but their pre-checked SMS opt-ins are evidence
+only, never marketing consent. ARCO is in the app (Clientes: "Imprimir datos del cliente", "Editar
+datos", the marketing toggle, "Eliminar datos del cliente") and in the owner export; the daily retention
+pass redacts members inactive for 24 months. Counsel reviews all consent and notice wording (LD-3).
+
+**Restaurant-notice checklist (critic R40).** Add to the items a restaurant's notice must cover: the club
+items above; and, with payments (037), the card brand, type and last four digits of terminal payments.
+
+**Platform notice and DPA inputs (critic R40, drafted by loyalty for counsel; not yet in `shared/legal`).**
+DPA §2 data categories gain: club members' name or nickname, phone and purchase history; card brand, type
+and last 4 digits; the kiosk device-binding cookie. The processor lists (privacy §5, DPA §6): Cloudflare's
+scope widens from encrypted backups to "and menu images" (kiosk). DPA §11: transmission to the
+restaurant's own payment providers (Mercado Pago, Clip) on its instruction, and custody of its sealed
+credentials. Timing (LD-72): production has no users yet, so the notice and DPA published at launch carry
+these; the 15-day notice applies only to changes after users exist.
+
 ## Plan lapse (GAP-1)
 
 - **Drawer continuation:** when Free rules would block selling but this device

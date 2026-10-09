@@ -243,6 +243,10 @@ stock, cash or void table, `fiscal_*`, `cfdi_*`, `business_day_settings`,
 owner export use them), or blocked receipt jobs (`tests/retention.test.ts`
 asserts the allow-list).
 
+Loyalty (038) adds no deletion and one redaction: club members with no
+activity for 24 months lose name, phone and the notice snapshot
+(`redacted.loyalty_members`); no `loyalty_*` row is ever deleted.
+
 It also **redacts** in place, never deletes: the diner's name and note of
 every public ordering hold older than 30 days, in any state, are blanked
 (migration 034 lets the transition trigger accept exactly that update;
@@ -731,6 +735,15 @@ the cancellation register ([OPERATIONS.md](OPERATIONS.md), "ARCO requests").
 Since 034 it is a plain tenant-scoped `UPDATE` that locks only that hold, so
 it can run at any hour; retention blanks every hold older than 30 days
 anyway ("Retention" above).
+
+## Loyalty club
+
+[Loyalty](LOYALTY.md) "Runbooks": the pos-lite import before the club is
+switched on (export SQL, "Verificado", the 10-member spot check, deleting the
+file), a dead `loyalty_reconcile` job (`jobs_dead_loyalty_reconcile`: requeue
+it from the jobs screen; the job is state-reconciling, so a requeue never
+double-posts) and the `loyalty_ledger_vs_members` alert in Finanzas › Club de
+lealtad (escalate with the member ids).
 
 ## Open follow-ups
 

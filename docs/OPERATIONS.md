@@ -194,6 +194,14 @@ Arts. 28–34) arrive at `LEGAL_PRIVACY_CONTACT_EMAIL`:
   are never edited or deleted). The CLI waits 5 years after the block; keep the
   acceptance evidence by id for the rest. For someone who never had an
   account, `redact-email` acts at once;
+- **loyalty club members** (038): the restaurant is the responsable and
+  answers in the app: access with "Imprimir datos del cliente" (Clientes) or
+  the owner export (the four `loyalty_*` tables), rectification with "Editar
+  datos", opposition with the marketing toggle, cancellation with "Eliminar
+  datos del cliente" (step-up; name, phone, notice snapshot and opt-in are
+  blanked at once and for good; ledger, links and sales stay). Record each
+  cancellation in the cancellation register with the member id only. Members
+  with no activity for 24 months are redacted by the daily retention pass;
 - **held QR/kiosk orders** (public ordering, 032-034): a diner who typed a
   name or a note on a QR or kiosk order can have the hold's copy blanked.
   The restaurant has no tool for it (the runtime role cannot change a hold's

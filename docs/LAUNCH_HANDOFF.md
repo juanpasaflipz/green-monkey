@@ -49,6 +49,7 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
 | 1.17 | Contacts, escalation and the go-live decision | — | Yours |
 | 1.18 | Custody of the `neondb_owner` password | Rotated 2026-10-07; held by the operator | Yours |
 | 1.19 | The older staging Neon branch | **Done: both restore branches deleted (2026-10-07, 2026-10-08)** | — |
+| 1.20 | Loyalty club inputs (038): the club reward and its cap (LD-72: one free product up to $150 by default), the privacy-notice update that covers the club (counsel), the pos-lite export run at cutover | — | Yours, before enabling the club |
 
 ### 1.1 Railway access and project tokens
 

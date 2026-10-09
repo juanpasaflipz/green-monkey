@@ -429,3 +429,30 @@ sola a venta sin conexión (sección 3). Si no se puede vender en la app, vende 
 y captura después. No borres datos del navegador, no desvincules la tablet y no
 reinstales la app sin hablar antes con soporte: las ventas sin sincronizar viven en esa
 tablet.
+
+## 9. Club de lealtad
+
+El club de Juanberto's pasa de POS Lite a Green Monkey el día de cambio
+([Loyalty](LOYALTY.md); los pasos de la migración en [Migration](MIGRATION.md)).
+
+- **Antes de activarlo.** El propietario publica el aviso de privacidad del
+  restaurante (Configuración › Privacidad y datos) y confirma que menciona el
+  club. Importa los socios de POS Lite (Configuración › Club de lealtad ›
+  Importar socios de POS Lite) y solo activa el club cuando la pantalla dice
+  «Verificado: los totales coinciden con POS Lite.».
+- **En caja.** Al agregar el primer producto se abre «Cliente del club».
+  Escribe el teléfono y toca Usar. Si no existe, lee al cliente el texto en
+  pantalla, muéstrale el aviso (QR) y marca «Le informé al cliente el aviso de
+  privacidad y aceptó unirse al club.». La casilla de promociones va sin marcar
+  salvo que el cliente lo pida. «Sin club» sigue la venta sin cliente.
+- **Premios.** «Canjear premio» junto a Descuento: elige el producto; el
+  premio cubre un producto hasta el tope que fijó el propietario. No pide PIN.
+- **Sin conexión.** El club no funciona sin conexión: la venta sigue igual y
+  el cliente se agrega después desde Detalle de orden (hasta 7 días después
+  del pago). El cliente también puede sumar sus sellos con el QR del ticket.
+- **Primeras semanas.** Deja junto a la caja el letrero «Nuestro club se mudó
+  de sistema; consulta el aviso de privacidad» con el QR del aviso. Si un socio
+  dice que tenía un premio pendiente en POS Lite, revisa «Premios por
+  confirmar» y, si procede, el gerente lo da con Ajustar › Saldo de POS Lite.
+- **Datos personales.** Si un cliente pide sus datos o que se borren,
+  Clientes › Imprimir datos del cliente o Eliminar datos del cliente (gerente).
