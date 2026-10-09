@@ -7,8 +7,11 @@
 //   npm run vault:rekey
 //
 // Needs WORKER_DATABASE_URL (the jobs login, a gm_jobs_worker member) and CREDENTIAL_ENCRYPTION_KEY
-// with the old kid still listed. Prints counts only, never a key. Upload boxes are wiped after use
-// and need no re-seal. Safe to run again: rows already under the active kid are skipped. Both
+// with the old kid still listed. Prints counts only, never a key. Credential upload boxes are never
+// re-sealed (037's guard forbids it): the worker wipes each one when its verification job ends or
+// goes dead, and payments_wipe sweeps any left behind; one still unwiped when the old kid is dropped
+// can no longer be opened, and the owner saves the credentials again. Safe to run again: rows
+// already under the active kid are skipped. Both
 // areas list their restaurants through a worker listing policy (030 cfdi_organizations_rekey_list,
 // 037 payment_provider_accounts_rekey_list), so every restaurant is reached.
 import {

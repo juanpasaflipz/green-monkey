@@ -70,20 +70,41 @@ async function currentUpload(tx: Tx, provider: Provider, uploadId: string) {
     : null;
 }
 
+/** Fails the account if it still waits for this upload; the upload is wiped either way. */
 async function fail(
-  ctx: JobContext,
+  ctx: Pick<JobContext, "tenant">,
   provider: Provider,
   uploadId: string,
   code: string,
 ) {
   await ctx.tenant(async (tx) => {
     const a = await currentUpload(tx, provider, uploadId);
-    if (!a) return;
-    await tx`update payment_provider_accounts set state='failed',error_code=${code},
-        version=version+1,updated_at=now()
-      where provider=${provider}`;
+    if (a)
+      await tx`update payment_provider_accounts set state='failed',error_code=${code},
+          version=version+1,updated_at=now()
+        where provider=${provider}`;
+    // A superseded upload holds the owner's plaintext too (P2-SECURITY-1).
     await wipeSecret(tx, uploadId);
   });
+}
+
+/**
+ * payments_credentials went dead (no worker runtime for three claims, a throw or a lost lease on
+ * the last one): its upload is wiped, and the account, if it still waits for that upload, fails
+ * (payments_provider_unreachable) instead of staying «Verificando» (P2-SECURITY-1).
+ */
+export async function credentialsDead(ctx: {
+  job: JobContext["job"];
+  tenant: JobContext["tenant"];
+}): Promise<void> {
+  const p = ctx.job.payload as { provider?: unknown; uploadSecretId?: unknown };
+  const provider = providerOf(p?.provider);
+  const uploadId =
+    typeof p?.uploadSecretId === "string" && uuid.test(p.uploadSecretId)
+      ? p.uploadSecretId
+      : null;
+  if (!provider || !uploadId) return;
+  await fail(ctx, provider, uploadId, "payments_provider_unreachable");
 }
 
 /** payments_credentials: verifying → active (or failed). The upload is wiped in every branch. */
@@ -106,7 +127,11 @@ export async function credentialsHandler(ctx: JobContext): Promise<JobOutcome> {
   const tenantId = ctx.job.tenantId;
   const opened = await ctx.tenant(async (tx) => {
     const a = await currentUpload(tx, provider, uploadId);
-    if (!a) return { superseded: true as const };
+    if (!a) {
+      // A newer save replaced it (or the account moved on): never leave its box sealed.
+      await wipeSecret(tx, uploadId);
+      return { superseded: true as const };
+    }
     const [box] = await tx`select payload_secret from payment_secrets
       where id=${uploadId} and purpose='credentials_upload' and wiped_at is null`;
     if (!box) return { credentials: null };
@@ -330,7 +355,11 @@ export async function deviceModeHandler(ctx: JobContext): Promise<JobOutcome> {
   return { status: "done" };
 }
 
-/** payments_wipe: a disabled account's secrets are wiped (rows kept as history). */
+/**
+ * payments_wipe: a disabled account's secrets are wiped (rows kept as history), and so is every
+ * upload box of this restaurant that no verifying account still waits for: one whose job was
+ * cancelled from Operations or never ran leaves no plaintext behind a disconnect (P2-SECURITY-1).
+ */
 export async function wipeHandler(ctx: JobContext): Promise<JobOutcome> {
   const provider = providerOf(
     (ctx.job.payload as { provider?: unknown })?.provider,
@@ -342,6 +371,10 @@ export async function wipeHandler(ctx: JobContext): Promise<JobOutcome> {
     if (!a || a.state !== "disabled") return;
     await wipeSecret(tx, a.credential_secret_id as string | null);
     await wipeSecret(tx, a.upload_secret_id as string | null);
+    await tx`update payment_secrets s set payload_secret=null,wiped_at=now()
+      where s.purpose='credentials_upload' and s.wiped_at is null
+        and not exists (select 1 from payment_provider_accounts x
+          where x.tenant_id=s.tenant_id and x.state='verifying' and x.upload_secret_id=s.id)`;
   });
   return { status: "done" };
 }

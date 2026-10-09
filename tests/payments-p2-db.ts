@@ -2745,6 +2745,82 @@ try {
     assert.deepEqual((await caps(A)).mercadopago, { enabled: true });
   });
 
+  await test("upload boxes (P2-SECURITY-1): a save replaced before its job ran is wiped when that job runs; a box whose job never ran is swept by the disconnect; a verification job that goes dead wipes its box and fails the account instead of leaving it «Verificando»", async () => {
+    const ownerFreshB = session(B, ids.ownerB, "owner", ids.deviceB, {});
+    const env = { appEnv: "test", appUrl: "https://pos.example.test" };
+    const body = { accessToken: FAKE.mpToken, webhookSecret: FAKE.mpSecret };
+    const save = () =>
+      write(ownerB, (tx) =>
+        saveCredentials(tx, ownerFreshB, "mercadopago", body, env),
+      );
+    const uploads = () =>
+      asOwner(
+        B,
+        (
+          tx,
+        ) => tx`select id, payload_secret is not null as sealed from payment_secrets
+          where tenant_id=${B} and purpose='credentials_upload' order by created_at`,
+      ) as Promise<{ id: string; sealed: boolean }[]>;
+    const before = (await uploads()).length;
+    // The owner saves, then saves again before the worker ran (Reemplazar while «Verificando»).
+    await save();
+    await save();
+    await drain(B);
+    assert.deepEqual((await caps(B)).mercadopago, { enabled: true });
+    assert.deepEqual(
+      (await uploads()).slice(before).map((u) => u.sealed),
+      [false, false],
+      "both boxes wiped (before: the superseded one stayed sealed)",
+    );
+    // A save whose job is cancelled from Operations never runs; another save activates.
+    await save();
+    await admin`update jobs set state='dead', error_code='cancelled'
+      where tenant_id=${B} and kind='payments_credentials' and state='available'`;
+    await save();
+    await drain(B);
+    assert.equal(
+      (await uploads()).filter((u) => u.sealed).length,
+      1,
+      "the cancelled job's box is still sealed",
+    );
+    // Disconnect: payments_wipe also sweeps it; nothing of B stays sealed.
+    await write(ownerB, (tx) =>
+      disableProvider(tx, ownerFreshB, "mercadopago"),
+    );
+    await drain(B);
+    const [{ n }] = await asOwner(
+      B,
+      (tx) => tx`select count(*)::int as n from payment_secrets
+        where tenant_id=${B} and payload_secret is not null and purpose in
+          ('credentials_upload','mp_credentials')`,
+    );
+    assert.equal(n, 0, "a disconnect leaves no sealed MP credential or upload");
+    // The worker serves no provider for three claims: the job goes dead, and its hook wipes the
+    // box and fails the account (before: «Verificando» forever, the box sealed).
+    setPaymentsRuntime(null);
+    const deadBefore = dead.length;
+    try {
+      await save();
+      for (let i = 0; i < 3; i++) await round(B);
+    } finally {
+      setPaymentsRuntime(runtime);
+    }
+    assert.deepEqual(
+      dead.splice(deadBefore).map((d) => d.kind),
+      ["payments_credentials"],
+      "removed here: the suite's final check expects none",
+    );
+    assert.deepEqual((await caps(B)).mercadopago, {
+      enabled: false,
+      reason: "payments_provider_unreachable",
+    });
+    assert.equal((await uploads()).filter((u) => u.sealed).length, 0);
+    // The owner saves again and it works.
+    await save();
+    await drain(B);
+    assert.deepEqual((await caps(B)).mercadopago, { enabled: true });
+  });
+
   await test("vault rekey (LD-76 deviation 1): with a new key first, a credential is re-sealed on use and vault:rekey lists both restaurants through 037's worker listing policy and re-seals the rest under the new kid (counts only, no value logged); the listing needs its flag and gives the web login nothing; charging works once the old key is dropped", async () => {
     const secrets = async (tenantId: string) =>
       Object.fromEntries(

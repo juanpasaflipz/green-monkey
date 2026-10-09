@@ -12,6 +12,7 @@ import {
   webhookHandler,
 } from "./charge.js";
 import {
+  credentialsDead,
   credentialsHandler,
   deviceModeHandler,
   devicesHandler,
@@ -41,10 +42,12 @@ registerWorkerJobHandler("payments_webhook", webhookHandler, {
   concurrency: 8,
   maxAttempts: 3,
 });
+// A credentials job that goes dead wipes its upload and fails a still-verifying account.
 registerWorkerJobHandler("payments_credentials", credentialsHandler, {
   leaseSeconds: 60,
   concurrency: 2,
   maxAttempts: 3,
+  onDead: credentialsDead,
 });
 registerWorkerJobHandler("payments_devices", devicesHandler, {
   leaseSeconds: 30,
