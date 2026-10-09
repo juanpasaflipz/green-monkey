@@ -18,6 +18,7 @@ import {
   type PosLiteExport,
 } from "../../../shared/loyalty-import";
 import { errorNotice, type Key } from "../../i18n";
+import { printDocument } from "../../print";
 import { Button, Field } from "../../components/ui";
 import { loyaltyApi } from "./loyaltyApi";
 import { fill, tr } from "./format";
@@ -27,6 +28,15 @@ const REASON: Record<string, Key> = {
   country: "loyaltyImportReasonCountry",
   name: "loyaltyImportReasonName",
   duplicate: "loyaltyImportReasonDuplicate",
+};
+/** importVerified's field names, in words (LOYALTY-UX-14). */
+const FIELD: Record<string, Key> = {
+  members: "loyaltyImportFieldMembers",
+  importStamps: "loyaltyImportFieldImportStamps",
+  importRewards: "loyaltyImportFieldImportRewards",
+  stamps: "loyaltyImportFieldStamps",
+  rewards: "loyaltyImportFieldRewards",
+  summary: "loyaltyImportFieldSummary",
 };
 const POLICY: Record<ImportPolicy, Key> = {
   recent: "loyaltyImportPolicyRecent",
@@ -56,6 +66,8 @@ export function LoyaltyImport({
   const [file, setFile] = useState<{ data: PosLiteExport; hash: string } | null>(null);
   const [policy, setPolicy] = useState<ImportPolicy>("recent");
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  /** A page failed: Importar becomes Reintentar (committed pages replay, LOYALTY-OPS-10). */
+  const [failed, setFailed] = useState(false);
   const [verdict, setVerdict] = useState<string[] | null>(null);
   const [error, setError] = useState("");
   const preview = file
@@ -64,6 +76,8 @@ export function LoyaltyImport({
   async function read(f: File) {
     setError("");
     setVerdict(null);
+    setProgress(null);
+    setFailed(false);
     try {
       const text = await f.text();
       const parsed = posLiteExport.safeParse(JSON.parse(text));
@@ -85,6 +99,7 @@ export function LoyaltyImport({
     setError("");
     const pages = importPages(preview.accepted);
     let batchId = "";
+    setFailed(false);
     try {
       for (const [i, rows] of pages.entries()) {
         setProgress({ done: i * 500, total: preview.accepted.length });
@@ -93,6 +108,7 @@ export function LoyaltyImport({
           sourceTenantId: file.data.sourceTenantId,
           targetTenantId: file.data.targetTenantId,
           policy,
+          stampsRequired,
           page: i,
           pages: pages.length,
           rows,
@@ -102,9 +118,42 @@ export function LoyaltyImport({
       setProgress({ done: preview.accepted.length, total: preview.accepted.length });
       setVerdict(importVerified(preview, await loyaltyApi.importStatus(batchId)));
     } catch (e) {
+      setProgress(null);
+      setFailed(true);
       setError(errorNotice(e, locale));
     }
   }
+  // Balances convert at the saved stamps per card: pos-lite's must be saved first (LOYALTY-OPS-3).
+  const saveFirst =
+    preview?.suggested.stampsRequired != null &&
+    preview.suggested.stampsRequired !== stampsRequired;
+  const printLists = () =>
+    preview &&
+    printDocument(
+      <div className="loyalty-sheet" lang={locale}>
+        <h1>{t("loyaltyImportPrintTitle")}</h1>
+        <h2>{fill(t("loyaltyImportRejected"), { n: preview.rejected.length })}</h2>
+        <ul>
+          {preview.rejected.map((r) => (
+            <li key={r.legacyId}>
+              {r.legacyId} · {r.name || "—"} · {r.maskedPhone} · {t(REASON[r.reason]!)}
+            </li>
+          ))}
+        </ul>
+        <h2>{fill(t("loyaltyImportToConfirm"), { n: preview.toConfirm.length })}</h2>
+        <ul>
+          {preview.toConfirm.map((r, i) => (
+            <li key={r.legacyId + i}>
+              {r.legacyId} · {r.name} · {r.maskedPhone} · {r.completedAt?.slice(0, 10) ?? ""}
+            </li>
+          ))}
+        </ul>
+      </div>,
+    );
+  const words = (v: string) => {
+    const [key, ...rest] = v.split(" ");
+    return [FIELD[key!] ? t(FIELD[key!]!) : key, ...rest].join(" ");
+  };
   return (
     <section className="loyalty-import" aria-labelledby="loyalty-import-title">
       <h3 id="loyalty-import-title">{t("loyaltyImportTitle")}</h3>
@@ -164,16 +213,27 @@ export function LoyaltyImport({
           {preview.stale > 0 && (
             <p className="muted">{fill(t("loyaltyImportStale"), { n: preview.stale })}</p>
           )}
+          {saveFirst && (
+            <p className="warning-panel" role="note">
+              {fill(t("loyaltyImportSaveFirst"), {
+                n: preview.suggested.stampsRequired!,
+                saved: stampsRequired,
+              })}
+            </p>
+          )}
           <div className="row wrap">
             <Button onClick={() => onApplySettings(preview.suggested)}>
               {t("loyaltyImportApply")}
             </Button>
+            {(preview.rejected.length > 0 || preview.toConfirm.length > 0) && (
+              <Button onClick={() => void printLists()}>{t("loyaltyImportPrint")}</Button>
+            )}
             <Button
               variant="primary"
-              disabled={!online || !preview.accepted.length || !!progress}
+              disabled={!online || !preview.accepted.length || !!progress || saveFirst}
               onClick={() => void commit()}
             >
-              {t("loyaltyImportCommit")}
+              {t(failed ? "loyaltyImportRetry" : "loyaltyImportCommit")}
             </Button>
           </div>
           {progress && progress.done < progress.total && (
@@ -188,7 +248,7 @@ export function LoyaltyImport({
               </p>
             ) : (
               <p role="alert" className="error">
-                {fill(t("loyaltyImportMismatch"), { detail: verdict.join(", ") })}
+                {fill(t("loyaltyImportMismatch"), { detail: verdict.map(words).join(", ") })}
               </p>
             ))}
         </>

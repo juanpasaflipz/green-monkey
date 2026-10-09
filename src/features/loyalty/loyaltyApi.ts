@@ -57,7 +57,11 @@ export const loyaltyApi = {
       { operationId: crypto.randomUUID(), ...body },
       { idempotent: true },
     ),
-  list: (body: { cursor?: string; q?: string; filter?: "rewards" | "imported" }) =>
+  list: (body: {
+    cursor?: string;
+    q?: string;
+    filter?: "rewards" | "imported" | "to_confirm";
+  }) =>
     api<MemberListResponse>("/loyalty/members/list", body),
   member: (id: string) => api<MemberDetail>(`/loyalty/members/${id}`),
   sheet: (id: string) => api<MemberDetail>(`/loyalty/members/${id}/sheet`),

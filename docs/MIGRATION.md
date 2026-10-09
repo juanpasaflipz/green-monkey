@@ -29,7 +29,7 @@ Never deduplicate tenants, people, menu items, or recipes by name alone. Restaur
 | `manual_sales_batches`, reports, financial actuals | `weekly_entries`, dishes sold, profitability/loss views | Historical facts/adjustments and rebuildable report projections |
 | Cash sessions, paid-outs, shifts/payroll | Cash cuts/differences and team records | Cash movements, close records, staff summaries; missing detail stays unknown |
 | CFDI records/tokens, billing, credentials | Billing config/invoices/subscriptions | Historical links and explicit provider ownership reconciliation |
-| Print jobs, receipts, loyalty records | POS events, print jobs | Historical audit only; do not replay jobs on import. Loyalty members, card progress and unredeemed rewards import through the pos-lite loyalty importer ([Loyalty](LOYALTY.md), "Import Juanberto's pos-lite members"): `scripts/loyalty/poslite-export.sql`, then Configuración › Club de lealtad › Importar socios de POS Lite, before the club is switched on |
+| Print jobs, receipts, loyalty records | POS events, print jobs | Historical audit only; do not replay jobs on import. Loyalty members, card progress and the completed cards the chosen rewards policy grants (default "recent"; the rest stay listed to confirm) import through the pos-lite loyalty importer ([Loyalty](LOYALTY.md), "Import Juanberto's pos-lite members"): `scripts/loyalty/poslite-export.sql`, then Configuración › Club de lealtad › Importar socios de POS Lite, before the club is switched on |
 
 Names for Luma base entities come from code references; the ZIP does not define the complete base schema or all views. Inspect schema metadata or documented export columns before finalizing adapters.
 

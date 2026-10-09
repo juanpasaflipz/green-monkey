@@ -727,6 +727,7 @@ export const LOYALTY_ERROR_CODES = [
   "loyalty_member_token_invalid",
   "loyalty_import_after_enable",
   "loyalty_import_rejected",
+  "loyalty_import_member_exists",
   "loyalty_import_scope",
   "loyalty_retry",
   "loyalty_settings_invalid",

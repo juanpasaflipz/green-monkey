@@ -172,20 +172,34 @@ DB check L9 (a platform tender earns nothing) runs once P1's `tenders.method` co
 
 ## Runbooks
 
-- **Import Juanberto's pos-lite members** (before enabling; PILOT_SOP §9 and MIGRATION's cutover):
-  run `scripts/loyalty/poslite-export.sql` with psql against pos-lite's database as its admin login
-  (read-only transaction; `-v tenant=<pos-lite tenant> -v target=<green-monkey restaurant>`), keep the
-  file in the private scratchpad (mode 600), upload it in Configuración › Club de lealtad › Importar
-  socios de POS Lite, choose the rewards policy (default "recent": completed in the last 90 days with
-  no visit since), Importar, and require "Verificado". Spot-check 10 members against pos-lite's
-  Loyalty y CRM screen, record it in the cutover log, delete the file. Then purge pos-lite's copy:
+- **Import Juanberto's pos-lite members** (before enabling; PILOT_SOP §9 and MIGRATION's cutover).
+  The order is: save the club's settings, import, verify, then attest and turn the club on.
+  Balances convert at the saved stamps per card, so "Aplicar a la configuración" then Guardar comes
+  first; while pos-lite's stamps per card differ from the saved ones, Importar is blocked and a page
+  is refused (`settings_changed`, LOYALTY-OPS-3). Run `scripts/loyalty/poslite-export.sql` with psql
+  against pos-lite's database as its admin login (read-only transaction;
+  `-v tenant=<pos-lite tenant> -v target=<green-monkey restaurant>`), keep the file in the private
+  scratchpad (mode 600), upload it in Configuración › Club de lealtad › Importar socios de POS Lite,
+  choose the rewards policy (default "recent": completed in the last 90 days with no visit since),
+  "Imprimir listas para la bitácora" (rejected rows and premios por confirmar, masked phones) into
+  the cutover log, Importar (a failed page shows Reintentar: committed pages replay), and require
+  "Verificado". Spot-check 10 members against pos-lite's Loyalty y CRM screen: compare the active
+  card's dots (n of required) with Tarjeta, not pos-lite's lifetime "Total stamps"; rewards differ by
+  the policy. Record it in the cutover log, delete the file. Cards the policy did not grant stay on
+  each member's "Saldo importado" row ("Premios de POS Lite por confirmar: <dates>", shown in the
+  detail and the ARCO sheet); Clientes › "Premio de POS Lite por confirmar" lists them until a
+  manager settles one with Ajustar › Saldo de POS Lite (LOYALTY-OPS-2). A phone already in the club
+  refuses its page (`loyalty_import_member_exists`): take it out of the export and move its pos-lite
+  balance with Ajustar › Saldo de POS Lite. Then purge pos-lite's copy:
   once Juanberto's stops using pos-lite, delete (or anonymise) that tenant's `loyalty_customers`
   rows in pos-lite and record it in the cutover log; until then, an ARCO cancellation of an
   imported member is also done in pos-lite (OPERATIONS "ARCO requests"). "Premios por confirmar" lists
   completed cards the policy did not grant; grant one with Ajustar › Saldo de POS Lite.
 - **Dead `loyalty_reconcile` job** (`jobs_dead_loyalty_reconcile`): the order's stamps did not post.
-  Requeue it from the jobs screen; it is state-reconciling, so a requeue or a manual
-  `POST /api/loyalty/orders/:id/reconcile` never double-posts.
+  No screen requeues jobs yet: requeue it with the operator API call (`POST /api/jobs/<id>/requeue`
+  from a manager's browser session with step-up; RUNBOOK "Jobs"), or reconcile the order with
+  `POST /api/loyalty/orders/:id/reconcile`. Both are state-reconciling and never double-post.
 - **Ledger/member mismatch** (Finanzas › Club de lealtad alert, `loyalty_ledger_vs_members`): a
   member's cached balances differ from their ledger. That should be impossible (only the trigger writes
-  balances); escalate to support with the member ids.
+  balances); the alert gives the count only: escalate to support with the restaurant and the day,
+  and support finds the members by comparing `loyalty_members` with the sums of `loyalty_ledger`.

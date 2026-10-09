@@ -9,6 +9,7 @@ import {
   importVerified,
   posLiteExport,
   previewLoyaltyImport,
+  toConfirmNote,
   type ImportRow,
 } from "../shared/loyalty-import";
 
@@ -62,6 +63,12 @@ describe("previewLoyaltyImport", () => {
     const rewards = Object.fromEntries(p.accepted.map((r) => [r.legacyId, r.rewards]));
     expect(rewards).toEqual({ "101": 0, "102": 1, "103": 0, "107": 0, "108": 0, "110": 0 });
     expect(p.toConfirm.map((c) => c.legacyId)).toEqual(["103"]);
+    // The member's row carries the dates to keep on its import ledger row (LOYALTY-OPS-2).
+    expect(p.accepted.find((r) => r.legacyId === "103")!.toConfirm).toEqual(["2026-01-10"]);
+    expect(p.accepted.find((r) => r.legacyId === "102")!.toConfirm).toBeUndefined();
+    expect(toConfirmNote(["2026-01-10", ""])).toBe("Premios de POS Lite por confirmar: 2026-01-10, sin fecha");
+    expect(toConfirmNote([])).toBe("");
+    expect(toConfirmNote(Array(20).fill("2026-01-10")).length).toBeLessThanOrEqual(200);
   });
 
   it("policy 'all' grants every completed card not marked redeemed; 'none' grants nothing and lists them", () => {
@@ -136,11 +143,16 @@ describe("pages", () => {
       sourceTenantId: "fixture",
       targetTenantId: "10000000-0000-4000-8000-000000000001",
       policy: "recent",
+      stampsRequired: 10,
       page: 0,
       pages: pages.length,
       rows: pages[0],
     };
     expect(importPageInput.safeParse(body).success).toBe(true);
+    // The stamps per card the preview used travels with every page (LOYALTY-OPS-3).
+    const { stampsRequired: _omitted, ...without } = body;
+    void _omitted;
+    expect(importPageInput.safeParse(without).success).toBe(false);
     expect(JSON.stringify(body).length).toBeLessThan(256 * 1024);
     expect(importPageInput.safeParse({ ...body, page: 3 }).success).toBe(false);
     expect(importPageInput.safeParse({ ...body, rows: [{ ...pages[0][0], phone: "5550000000" }] }).success).toBe(false);

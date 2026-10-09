@@ -741,9 +741,11 @@ anyway ("Retention" above).
 [Loyalty](LOYALTY.md) "Runbooks": the pos-lite import before the club is
 switched on (export SQL, "Verificado", the 10-member spot check, deleting the
 file), a dead `loyalty_reconcile` job (`jobs_dead_loyalty_reconcile`: requeue
-it from the jobs screen; the job is state-reconciling, so a requeue never
-double-posts) and the `loyalty_ledger_vs_members` alert in Finanzas › Club de
-lealtad (escalate with the member ids).
+it with the operator API call above, as no screen does yet, or call
+`POST /api/loyalty/orders/:id/reconcile`; both are state-reconciling, so they
+never double-post) and the `loyalty_ledger_vs_members` alert in Finanzas › Club
+de lealtad (the alert is a count: escalate with the restaurant and the day;
+support compares members with their ledger sums).
 
 ## Open follow-ups
 

@@ -47,7 +47,7 @@ export function Members({
 }) {
   const t = tr(locale);
   const [q, setQ] = useState("");
-  const [filter, setFilter] = useState<"" | "rewards" | "imported">("");
+  const [filter, setFilter] = useState<"" | "rewards" | "imported" | "to_confirm">("");
   const [rows, setRows] = useState<MemberListRow[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
@@ -101,6 +101,7 @@ export function Members({
             <option value="">{t("loyaltyFilterAll")}</option>
             <option value="rewards">{t("loyaltyFilterRewards")}</option>
             <option value="imported">{t("loyaltyFilterImported")}</option>
+            <option value="to_confirm">{t("loyaltyFilterToConfirm")}</option>
           </select>
         </Field>
         <Button type="submit" disabled={!online}>

@@ -39,6 +39,7 @@ import {
   type MemberOrderView,
   type MemberSummary,
 } from "../../shared/loyalty.js";
+import { TO_CONFIRM_NOTE } from "../../shared/loyalty-import.js";
 import { loadProgram, requireClub } from "./settings.js";
 import { postLedger, summaryOf } from "./ledger.js";
 import { z } from "zod";
@@ -461,7 +462,7 @@ const listQuery = z
   .object({
     cursor: z.string().max(200).optional(),
     q: z.string().max(60).optional(),
-    filter: z.enum(["rewards", "imported"]).optional(),
+    filter: z.enum(["rewards", "imported", "to_confirm"]).optional(),
   })
   .strict();
 const PAGE = 50;
@@ -501,6 +502,16 @@ export async function listMembers(
       ${!byPhone && key.length >= 1 ? tx`and name_key like ${"%" + likeEscape(key) + "%"}` : tx``}
       ${p.filter === "rewards" ? tx`and rewards > 0` : tx``}
       ${p.filter === "imported" ? tx`and legacy_source is not null` : tx``}
+      ${
+        // Imported with pos-lite cards to confirm, not yet settled with Ajustar › Saldo de POS
+        // Lite (LOYALTY-OPS-2): the dates are on the member's import row.
+        p.filter === "to_confirm"
+          ? tx`and exists (select 1 from loyalty_ledger l where l.tenant_id=loyalty_members.tenant_id
+                and l.member_id=loyalty_members.id and l.kind='import' and l.note like ${TO_CONFIRM_NOTE + "%"})
+              and not exists (select 1 from loyalty_ledger a where a.tenant_id=loyalty_members.tenant_id
+                and a.member_id=loyalty_members.id and a.kind='adjustment' and a.reason='pos_lite_balance')`
+          : tx``
+      }
       ${after ? tx`and (coalesce(last_activity_at, legacy_last_visit_at, joined_at), id) < (${after.a}::timestamptz, ${after.i}::uuid)` : tx``}
     order by coalesce(last_activity_at, legacy_last_visit_at, joined_at) desc, id desc
     limit ${PAGE + 1}`;

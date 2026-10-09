@@ -96,15 +96,36 @@ export const importRow = z
     spend: z.number().int().min(0).max(1e12),
     stamps: z.number().int().min(0).max(1000),
     rewards: z.number().int().min(0).max(100),
+    /**
+     * Completed pos-lite cards the policy did not grant ("Premios por confirmar"), as their
+     * completion dates (YYYY-MM-DD, "" when pos-lite has none). The server keeps them on the
+     * member's import row (no personal data) so they outlive the file (LOYALTY-OPS-2).
+     */
+    toConfirm: z
+      .array(z.string().regex(/^(\d{4}-\d{2}-\d{2})?$/))
+      .max(20)
+      .optional(),
   })
   .strict();
 export type ImportRow = z.infer<typeof importRow>;
+/** The import row's note for cards to confirm (Clientes filters on it). */
+export const TO_CONFIRM_NOTE = "Premios de POS Lite por confirmar: ";
+/** The note for the dates, within the ledger's 200 characters. */
+export const toConfirmNote = (dates: readonly string[]) =>
+  dates.length
+    ? (TO_CONFIRM_NOTE + dates.map((d) => d || "sin fecha").join(", ")).slice(0, 200)
+    : "";
 export const importPageInput = z
   .object({
     batchHash: z.string().regex(/^[0-9a-f]{64}$/),
     sourceTenantId: z.string().min(1).max(100),
     targetTenantId: z.string().uuid(),
     policy: z.enum(IMPORT_POLICIES),
+    /**
+     * The club's stamps per card the preview converted balances at: the server refuses a page
+     * when the saved setting differs (settings_changed, LOYALTY-OPS-3).
+     */
+    stampsRequired: z.number().int().min(2).max(50),
     page: z.number().int().min(0).max(999),
     pages: z.number().int().min(1).max(1000),
     rows: z.array(importRow).min(1).max(IMPORT_PAGE_SIZE),
@@ -215,9 +236,12 @@ export function previewLoyaltyImport(
         rewards = 1;
     }
     const granted = o.policy === "all" ? completed.filter((c) => !c.redeemed) : completed.slice(completed.length - rewards);
+    const mine: string[] = [];
     for (const c of completed)
-      if (!granted.includes(c) && !c.redeemed)
+      if (!granted.includes(c) && !c.redeemed) {
         toConfirm.push({ legacyId, name, maskedPhone: masked, completedAt: c.completed_at });
+        mine.push(c.completed_at ? new Date(c.completed_at).toISOString().slice(0, 10) : "");
+      }
     const lastVisitAt = m.last_visit ? new Date(m.last_visit).toISOString() : null;
     if (lastVisitAt ? Date.parse(lastVisitAt) < staleFrom.getTime() : Date.parse(m.created_at) < staleFrom.getTime())
       stale++;
@@ -232,6 +256,7 @@ export function previewLoyaltyImport(
       spend: toMinor(m.total_spent),
       stamps: Math.min(m.active_card?.stamps_earned ?? 0, 1000),
       rewards: Math.min(rewards, 100),
+      ...(mine.length ? { toConfirm: mine.slice(-20) } : {}),
     });
   }
   const fileStamps = file.members.reduce((a, m) => a + (m.active_card?.stamps_earned ?? 0), 0);

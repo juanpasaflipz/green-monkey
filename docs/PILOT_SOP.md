@@ -437,9 +437,11 @@ El club de Juanberto's pasa de POS Lite a Green Monkey el día de cambio
 
 - **Antes de activarlo.** El propietario publica el aviso de privacidad del
   restaurante (Configuración › Privacidad y datos) y confirma que menciona el
-  club. Importa los socios de POS Lite (Configuración › Club de lealtad ›
-  Importar socios de POS Lite) y solo activa el club cuando la pantalla dice
-  «Verificado: los totales coinciden con POS Lite.».
+  club. En Configuración › Club de lealtad, primero guarda la configuración
+  (con «Aplicar a la configuración» los sellos por tarjeta de POS Lite), luego
+  imprime las listas para la bitácora, importa los socios de POS Lite y solo
+  activa el club cuando la pantalla dice «Verificado: los totales coinciden con
+  POS Lite.».
 - **Después del cambio.** Cuando Juanberto's deja de usar POS Lite, borra (o
   anonimiza) los socios del restaurante en POS Lite (`loyalty_customers`) y
   anótalo en la bitácora del cambio. Mientras siga ahí, borrar a un socio
@@ -453,11 +455,15 @@ El club de Juanberto's pasa de POS Lite a Green Monkey el día de cambio
   premio cubre un producto hasta el tope que fijó el propietario. No pide PIN.
 - **Sin conexión.** El club no funciona sin conexión: la venta sigue igual y
   el cliente se agrega después desde Detalle de orden (hasta 7 días después
-  del pago). El cliente también puede sumar sus sellos con el QR del ticket.
+  del pago). Cuando vuelva la conexión, reimprime el ticket desde Detalle de
+  orden: trae el QR para que el cliente sume sus sellos.
 - **Primeras semanas.** Deja junto a la caja el letrero «Nuestro club se mudó
   de sistema; consulta el aviso de privacidad» con el QR del aviso. Si un socio
-  dice que tenía un premio pendiente en POS Lite, revisa «Premios por
-  confirmar» y, si procede, el gerente lo da con Ajustar › Saldo de POS Lite.
+  dice que tenía un premio pendiente en POS Lite, búscalo en Clientes con el
+  filtro «Premio de POS Lite por confirmar» (la fecha está en Movimientos ›
+  Saldo importado) y, si procede, el gerente lo da con Ajustar › Saldo de POS
+  Lite. Los rechazados del archivo están en las listas impresas para la
+  bitácora.
 - **Datos personales.** Si un cliente pide sus datos o que se borren,
   Clientes › Imprimir datos del cliente o Eliminar datos del cliente (gerente).
   Clientes sigue disponible aunque el club esté desactivado o el plan sea

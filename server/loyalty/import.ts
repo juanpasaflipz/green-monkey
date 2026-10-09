@@ -19,6 +19,7 @@ import { nameKey, normalizeRows } from "../../shared/loyalty.js";
 import {
   importPageInput,
   POS_LITE_SOURCE,
+  toConfirmNote,
   type ImportStatus,
 } from "../../shared/loyalty-import.js";
 import { loadProgram } from "./settings.js";
@@ -59,6 +60,9 @@ export async function commitLoyaltyImportPage(
     throw new DomainError("loyalty_import_after_enable", 409);
   await requirePro(tx);
   const program = await loadProgram(tx);
+  // Balances convert at the club's saved stamps per card: the preview must have used it.
+  if (p.stampsRequired !== program.stampsRequired)
+    throw new DomainError("settings_changed", 409);
   await tx`insert into import_batches(tenant_id,id,source,file_hash,report)
     values(${s.tenantId},${randomUUID()},${POS_LITE_SOURCE},${p.batchHash},
       ${tx.json({ sourceTenantId: p.sourceTenantId, policy: p.policy, pages: p.pages })})
@@ -73,9 +77,12 @@ export async function commitLoyaltyImportPage(
   if (mapped.length === p.rows.length)
     return { batchId: batch.id, page: p.page, imported: 0, replayed: true };
   if (mapped.length) throw new DomainError("import_existing_mapping", 409);
+  // A phone twice in a page (the preview prevents it) is a refusal, never a raw unique error.
+  if (new Set(p.rows.map((r) => r.phone)).size !== p.rows.length)
+    throw new DomainError("loyalty_import_rejected", 409);
   const taken =
     await tx`select 1 from loyalty_members where phone_e164 = any(${tx.array(p.rows.map((r) => r.phone))}::text[]) limit 1`;
-  if (taken.length) throw new DomainError("loyalty_import_rejected", 409);
+  if (taken.length) throw new DomainError("loyalty_import_member_exists", 409);
   for (const r of p.rows) {
     const memberId = randomUUID();
     await tx`insert into loyalty_members(tenant_id,id,phone_e164,name,name_key,joined_at,joined_via,
@@ -91,6 +98,7 @@ export async function commitLoyaltyImportPage(
       rewardsDelta: r.rewards,
       actorId: s.employeeId,
       reason: "pos_lite_balance",
+      note: toConfirmNote(r.toConfirm ?? []),
     });
     for (const n of normalizeRows(
       memberId,

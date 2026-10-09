@@ -116,6 +116,7 @@ export default defineArea({
     loyaltyFilterAll: "Todos",
     loyaltyFilterRewards: "Con premio disponible",
     loyaltyFilterImported: "Importados de POS Lite",
+    loyaltyFilterToConfirm: "Premio de POS Lite por confirmar",
     loyaltyMore: "Ver más",
     loyaltyEmpty: "Aún no hay socios.",
     loyaltyOpen: "Abrir",
@@ -226,6 +227,17 @@ export default defineArea({
       "{n} socios sin visitas en 24 meses se eliminarán en la siguiente limpieza.",
     loyaltyImportApply: "Aplicar a la configuración",
     loyaltyImportCommit: "Importar",
+    loyaltyImportRetry: "Reintentar",
+    loyaltyImportSaveFirst:
+      "POS Lite usa {n} sellos por tarjeta y el club {saved}. Guarda primero la configuración (Aplicar a la configuración y Guardar) y luego importa.",
+    loyaltyImportPrint: "Imprimir listas para la bitácora",
+    loyaltyImportPrintTitle: "Importación de POS Lite: filas rechazadas y premios por confirmar",
+    loyaltyImportFieldMembers: "socios",
+    loyaltyImportFieldImportStamps: "sellos importados",
+    loyaltyImportFieldImportRewards: "premios importados",
+    loyaltyImportFieldStamps: "sellos en tarjetas",
+    loyaltyImportFieldRewards: "premios disponibles",
+    loyaltyImportFieldSummary: "resumen del archivo",
     loyaltyImportProgress: "Importando {done} de {total}…",
     loyaltyImportVerified: "Verificado: los totales coinciden con POS Lite.",
     loyaltyImportMismatch:
@@ -350,6 +362,7 @@ export default defineArea({
     loyaltyFilterAll: "All",
     loyaltyFilterRewards: "With a reward",
     loyaltyFilterImported: "Imported from POS Lite",
+    loyaltyFilterToConfirm: "POS Lite reward to confirm",
     loyaltyMore: "Show more",
     loyaltyEmpty: "No members yet.",
     loyaltyOpen: "Open",
@@ -460,6 +473,17 @@ export default defineArea({
       "{n} members with no visit in 24 months will be deleted at the next cleanup.",
     loyaltyImportApply: "Apply to settings",
     loyaltyImportCommit: "Import",
+    loyaltyImportRetry: "Retry",
+    loyaltyImportSaveFirst:
+      "POS Lite uses {n} stamps per card and the club {saved}. Save the settings first (Apply to settings, then Save), then import.",
+    loyaltyImportPrint: "Print the lists for the cutover log",
+    loyaltyImportPrintTitle: "POS Lite import: rejected rows and rewards to confirm",
+    loyaltyImportFieldMembers: "members",
+    loyaltyImportFieldImportStamps: "imported stamps",
+    loyaltyImportFieldImportRewards: "imported rewards",
+    loyaltyImportFieldStamps: "stamps on cards",
+    loyaltyImportFieldRewards: "available rewards",
+    loyaltyImportFieldSummary: "file summary",
     loyaltyImportProgress: "Importing {done} of {total}…",
     loyaltyImportVerified: "Verified: totals match POS Lite.",
     loyaltyImportMismatch:
@@ -564,6 +588,10 @@ export default defineArea({
     loyalty_import_after_enable: [
       "La importación solo es posible antes de activar el club.",
       "Importing is only possible before the club is turned on.",
+    ],
+    loyalty_import_member_exists: [
+      "Algunos teléfonos del archivo ya son socios del club. Quítalos de la exportación y pasa su saldo de POS Lite con Ajustar › Saldo de POS Lite.",
+      "Some phones in the file are already club members. Remove them from the export and move their POS Lite balance with Adjust › POS Lite balance.",
     ],
     loyalty_import_rejected: [
       "Corrige las filas rechazadas antes de importar.",

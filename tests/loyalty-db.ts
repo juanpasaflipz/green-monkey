@@ -81,6 +81,7 @@ import {
   importVerified,
   posLiteExport,
   previewLoyaltyImport,
+  type ImportRow,
 } from "../shared/loyalty-import.js";
 import { isolatedTarget } from "./isolated-target.js";
 import { legalConfig } from "../server/legal.js";
@@ -1352,6 +1353,7 @@ try {
           sourceTenantId: file.sourceTenantId,
           targetTenantId: target,
           policy: "recent",
+          stampsRequired: 10,
           page,
           pages: pages.length,
           rows,
@@ -1385,6 +1387,55 @@ try {
     });
     await saveSettings(f);
     await rejects(commit(0), "loyalty_import_after_enable");
+  });
+
+  await test("L27. import (LOYALTY-OPS-2, OPS-3, OPS-9): a page converted at other stamps per card than the saved ones is settings_changed; cards to confirm stay on the member's import row and Clientes lists them until Ajustar › Saldo de POS Lite; a repeated phone in a page and a phone already in the club are refusals, never a raw unique error", async () => {
+    // A counter enrollment during a trial with the club on, then off again to import.
+    const f = await clubTenant("importar-2");
+    const file = posLiteExport.parse({
+      ...JSON.parse(readFileSync("tests/fixtures/poslite-loyalty-export.json", "utf8")),
+      targetTenantId: f.tenantId,
+      sourceTenantId: "fixture-" + f.tenantId.slice(0, 8),
+    });
+    const at = (stampsRequired: number) =>
+      previewLoyaltyImport(file, { policy: "recent", now: Date.parse("2026-10-09T18:00:00Z"), stampsRequired });
+    const batchHash = createHash("sha256").update(JSON.stringify(file) + "L27").digest("hex");
+    const page = (rows: ImportRow[], stampsRequired = 10) =>
+      run(f.s.owner, (tx) =>
+        commitLoyaltyImportPage(tx, f.s.owner, {
+          batchHash,
+          sourceTenantId: file.sourceTenantId,
+          targetTenantId: f.tenantId,
+          policy: "recent",
+          stampsRequired,
+          page: 0,
+          pages: 1,
+          rows,
+        }),
+      );
+    const rows = at(10).accepted;
+    const taken = await enroll(f, { phone: rows[1]!.phone.slice(3) });
+    await saveSettings(f, { enabled: false, privacyAttested: false });
+    // pos-lite's 12 stamps per card applied in the form but not saved: the club still has 10.
+    await rejects(page(at(12).accepted, 12), "settings_changed");
+    await rejects(page([...rows, { ...rows[0]!, legacyId: "999" }]), "loyalty_import_rejected");
+    await rejects(page(rows), "loyalty_import_member_exists");
+    await run(f.s.owner, (tx) =>
+      deleteMember(tx, f.s.owner, taken.id, { operationId: randomUUID(), expectedVersion: 1, confirm: "ELIMINAR" }),
+    );
+    assert.equal((await page(rows)).imported, rows.length);
+    const [m103] = await asAdmin(f.tenantId, (tx) => tx`select m.id,l.note from loyalty_members m
+      join loyalty_ledger l on l.tenant_id=m.tenant_id and l.member_id=m.id and l.kind='import' where m.tenant_id=${f.tenantId} and m.legacy_id='103'`);
+    assert.equal(m103.note, "Premios de POS Lite por confirmar: 2026-01-10");
+    const detail = await run(f.s.manager, (tx) => memberDetail(tx, f.s.manager, m103.id));
+    assert(detail.history.some((h) => h.kind === "import" && h.note === m103.note), "the detail and the ARCO sheet show it");
+    const toConfirm = async () =>
+      (await run(f.s.manager, (tx) => listMembers(tx, f.s.manager, { filter: "to_confirm" }))).rows.map((r) => r.id);
+    assert.deepEqual(await toConfirm(), [m103.id]);
+    await run(f.s.manager, (tx) =>
+      adjustMember(tx, f.s.manager, m103.id, { operationId: randomUUID(), rewards: 1, reason: "pos_lite_balance", note: "Tarjeta de enero confirmada" }),
+    );
+    assert.deepEqual(await toConfirm(), []);
   });
 
   // ------------------------------------------------------------------ L18 / L19 join page and kiosk
