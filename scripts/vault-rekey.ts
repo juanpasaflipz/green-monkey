@@ -4,12 +4,13 @@
 // `npm run cfdi:rekey` stays as an alias). Run in the WORKER environment, after prepending the new
 // kid and redeploying the worker:
 //
-//   npm run vault:rekey [-- --tenant <uuid> ...]
+//   npm run vault:rekey
 //
 // Needs WORKER_DATABASE_URL (the jobs login, a gm_jobs_worker member) and CREDENTIAL_ENCRYPTION_KEY
 // with the old kid still listed. Prints counts only, never a key. Upload boxes are wiped after use
-// and need no re-seal. Safe to run again: rows already under the active kid are skipped.
-// `--tenant` adds restaurants the payments discovery cannot see (server/vault/rekey.ts).
+// and need no re-seal. Safe to run again: rows already under the active kid are skipped. Both
+// areas list their restaurants through a worker listing policy (030 cfdi_organizations_rekey_list,
+// 037 payment_provider_accounts_rekey_list), so every restaurant is reached.
 import {
   checkWorkerRole,
   connectWorker,
@@ -27,17 +28,9 @@ if (!url || !raw) {
   );
   process.exit(2);
 }
-const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const args = process.argv.slice(2);
-const tenants: string[] = [];
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--tenant" && uuid.test(args[i + 1] ?? "")) {
-    tenants.push(args[i + 1].toLowerCase());
-    i++;
-  } else {
-    console.error("usage: vault:rekey [-- --tenant <uuid> ...]");
-    process.exit(2);
-  }
+if (process.argv.length > 2) {
+  console.error("usage: vault:rekey (no arguments)");
+  process.exit(2);
 }
 const ring = parseCredentialKeyring(raw);
 const sql = connectWorker(url);
@@ -47,10 +40,7 @@ async function run(): Promise<number> {
     const line = (l: Record<string, unknown>) =>
       console.error(JSON.stringify(l));
     const cfdi = await rekeyOrganizationSecrets(sql, ring, line);
-    const payments = await rekeyPaymentSecrets(sql, ring, {
-      tenants,
-      log: line,
-    });
+    const payments = await rekeyPaymentSecrets(sql, ring, line);
     console.log(
       JSON.stringify({
         message: "vault_rekey_done",

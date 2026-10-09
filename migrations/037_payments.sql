@@ -593,3 +593,13 @@ CREATE POLICY payment_hook_attempts ON payment_attempts FOR SELECT
 CREATE POLICY jobs_worker_discover_payments ON jobs FOR SELECT TO gm_jobs_worker
   USING (kind IN ('payments_push','payments_poll','payments_cancel','payments_webhook',
                   'payments_credentials','payments_devices','payments_device_mode','payments_wipe'));
+
+-- 16. `npm run vault:rekey` (worker env) lists the restaurants with sealed provider credentials
+--     across tenants, as 030's cfdi_organizations_rekey_list does for the CFDI keys (LD-76
+--     deviation 1). Only in a transaction that sets app.payments_rekey_list = 'on' (the script's
+--     listing statement), never in a tenant transaction, so the worker's account reads keep
+--     seeing one restaurant. The re-seal itself runs per tenant under tenant_scope; the runtime
+--     role gains nothing (the policy is the worker's, and it still has no SELECT on
+--     payment_secrets).
+CREATE POLICY payment_provider_accounts_rekey_list ON payment_provider_accounts FOR SELECT TO gm_jobs_worker
+  USING (current_setting('app.payments_rekey_list', true) = 'on');

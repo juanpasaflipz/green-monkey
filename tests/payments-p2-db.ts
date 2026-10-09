@@ -2070,58 +2070,102 @@ try {
         await cancelCreated((r.value as AttemptView).id);
   });
 
-  await test("vault rekey: with a new key first, a credential is re-sealed on use and vault:rekey re-seals the rest under the new kid (counts only, no value logged); charging works once the old key is dropped", async () => {
-    const secrets = async () =>
+  await test("vault rekey (LD-76 deviation 1): with a new key first, a credential is re-sealed on use and vault:rekey lists both restaurants through 037's worker listing policy and re-seals the rest under the new kid (counts only, no value logged); the listing needs its flag and gives the web login nothing; charging works once the old key is dropped", async () => {
+    const secrets = async (tenantId: string) =>
       Object.fromEntries(
         (
           await asOwner(
-            A,
+            tenantId,
             (tx) => tx`select purpose,kid,payload_secret from payment_secrets
-              where tenant_id=${A} and purpose in ('mp_credentials','clip_credentials') and wiped_at is null`,
+              where tenant_id=${tenantId} and purpose in ('mp_credentials','clip_credentials') and wiped_at is null`,
           )
         ).map((r: any) => [r.purpose, { kid: r.kid, box: r.payload_secret }]),
       );
-    const before = await secrets();
+    // Restaurant B connects Mercado Pago (its earlier tries failed) while t1 is the only key.
+    await write(ownerB, (tx) =>
+      saveCredentials(
+        tx,
+        session(B, ids.ownerB, "owner", ids.deviceB, {}),
+        "mercadopago",
+        { accessToken: FAKE.mpToken, webhookSecret: FAKE.mpSecret },
+        { appEnv: "test", appUrl: "https://pos.example.test" },
+      ),
+    );
+    await drain(B);
+    assert.deepEqual((await caps(B)).mercadopago, { enabled: true });
+    const beforeB = await secrets(B);
+    assert.equal(beforeB.mp_credentials.kid, "t1");
+    const before = await secrets(A);
     assert.deepEqual(
       [before.mp_credentials.kid, before.clip_credentials.kid],
       ["t1", "t1"],
+    );
+    // The listing policy: only the jobs login, only inside a transaction that sets the flag.
+    const listed = (flag: boolean, login: typeof sql) =>
+      login.begin(async (tx) => {
+        if (flag)
+          await tx`select set_config('app.payments_rekey_list', 'on', true)`;
+        return (
+          await tx`select distinct tenant_id from payment_provider_accounts
+            where tenant_id in (${A}, ${B}) order by tenant_id`
+        ).map((r: any) => r.tenant_id as string);
+      });
+    assert.deepEqual(await listed(true, worker), [A, B].sort());
+    assert.deepEqual(await listed(false, worker), [], "no flag, no listing");
+    assert.deepEqual(
+      await listed(true, sql),
+      [],
+      "the flag lists nothing for the web login",
+    );
+    // The web login still has no SELECT on payment_secrets, with or without the flag.
+    await rejects(sql`select count(*) from payment_secrets`, "42501");
+    await rejects(
+      sql.begin(async (tx) => {
+        await tx`select set_config('app.payments_rekey_list', 'on', true)`;
+        await tx`select set_config('app.tenant_id', ${A}, true)`;
+        return tx`select payload_secret from payment_secrets`;
+      }),
+      "42501",
     );
     runtime.ring = parseCredentialKeyring(`${keyTwo},${keyOne}`);
     await publish(["mercadopago", "clip"]);
     // A charge opens the MP box with the old kid and writes it back under the new one.
     const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
     const a = await pending(o, terminals.mp);
-    let now = await secrets();
+    let now = await secrets(A);
     assert.equal(now.mp_credentials.kid, "t2", "re-sealed on use");
     assert.notEqual(now.mp_credentials.box, before.mp_credentials.box);
     assert.equal(now.clip_credentials.kid, "t1", "not used yet");
     const lines: Record<string, unknown>[] = [];
-    const result = await rekeyPaymentSecrets(worker, runtime.ring, {
-      tenants: [A],
-      log: (l) => lines.push(l),
-    });
-    assert.ok(result.tenants >= 1);
-    assert.ok(result.resealed >= 1);
-    now = await secrets();
+    // No tenant list given: the script finds both restaurants on its own.
+    const result = await rekeyPaymentSecrets(worker, runtime.ring, (l) =>
+      lines.push(l),
+    );
+    assert.ok(result.tenants >= 2, "both restaurants listed");
+    assert.ok(result.resealed >= 2, "A's Clip and B's Mercado Pago");
+    assert.equal(result.failed, 0);
+    now = await secrets(A);
     assert.deepEqual(
       [now.mp_credentials.kid, now.clip_credentials.kid],
       ["t2", "t2"],
     );
+    const nowB = await secrets(B);
+    assert.equal(nowB.mp_credentials.kid, "t2", "the other restaurant too");
+    assert.notEqual(nowB.mp_credentials.box, beforeB.mp_credentials.box);
     for (const line of lines)
       assert.doesNotMatch(JSON.stringify(line), /not-real|NotReal/);
-    // Safe to run again: nothing left under the old kid for this restaurant.
-    const again = await rekeyPaymentSecrets(worker, runtime.ring, {
-      tenants: [A],
-    });
+    // Safe to run again: nothing left under the old kid in either restaurant.
+    const again = await rekeyPaymentSecrets(worker, runtime.ring);
     assert.equal(
-      (await secrets()).clip_credentials.box,
+      (await secrets(A)).clip_credentials.box,
       now.clip_credentials.box,
       "a second run re-seals nothing it already moved",
     );
     assert.equal(
-      again.resealed >= 0 && again.failed === 0 ? "ok" : "failed",
-      "ok",
+      (await secrets(B)).mp_credentials.box,
+      nowB.mp_credentials.box,
     );
+    assert.equal(again.failed, 0);
     // The old key dropped: the pending charge still settles, and a Clip charge works.
     runtime.ring = parseCredentialKeyring(keyTwo);
     await publish(["mercadopago", "clip"]);

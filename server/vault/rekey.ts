@@ -4,47 +4,33 @@
  * key rotation"). Worker side: run by scripts/vault-rekey.ts with the jobs login; the web never
  * imports it. Counts only, never a value; safe to run again.
  *
- * Tenant discovery. 037 gives the jobs login no cross-tenant listing on the payments tables (and
- * P2 adds no migration), so the restaurants to visit are the union of
- *   - every tenant with a payments job row the worker can see (jobs_worker_discover_payments:
- *     every connect writes payments_credentials, every charge payments_push/poll), and
- *   - the tenant ids the operator passes (`--tenant <uuid>`, e.g. from the support listing).
- * A credential the script does not reach is still re-sealed on its next use: the worker opens it
- * with any listed kid and writes it back under the active one (server/payments/worker/account.ts),
- * so the old kid is dropped only after the documented window (RUNBOOK) or after every connected
- * restaurant has charged once.
+ * Tenant discovery mirrors server/cfdi/rekey.ts: 037's payment_provider_accounts_rekey_list policy
+ * (LD-76 deviation 1) lets the jobs login list, in one transaction that sets
+ * app.payments_rekey_list = 'on', every restaurant whose account holds sealed credentials. Every
+ * unwiped mp_credentials / clip_credentials row is an account's credential_secret_id (a newer one
+ * wipes the previous; payments_wipe wipes a disabled account's), so the listing reaches every
+ * restaurant. Each restaurant is then re-sealed in its own tenant transaction.
  */
 import type postgres from "postgres";
-import { tenant } from "../db.js";
+import { tenant, type Tx } from "../db.js";
 import type { Keyring } from "../cfdi/config.js";
 import { paymentsVault, type PaymentSecretPurpose } from "./vault.js";
-
-export const PAYMENTS_WORKER_KINDS = [
-  "payments_push",
-  "payments_poll",
-  "payments_cancel",
-  "payments_webhook",
-  "payments_credentials",
-  "payments_devices",
-  "payments_device_mode",
-  "payments_wipe",
-] as const;
 
 export async function rekeyPaymentSecrets(
   sql: postgres.Sql,
   ring: Keyring,
-  o: {
-    tenants?: readonly string[];
-    log?: (line: Record<string, unknown>) => void;
-  } = {},
+  log: (line: Record<string, unknown>) => void = () => undefined,
 ): Promise<{ tenants: number; resealed: number; failed: number }> {
-  const log = o.log ?? (() => undefined);
-  const found = await sql<{ tenant_id: string }[]>`
-    select distinct tenant_id from jobs
-    where kind = any(${[...PAYMENTS_WORKER_KINDS]}::text[]) order by tenant_id`;
-  const ids = [
-    ...new Set([...found.map((r) => r.tenant_id), ...(o.tenants ?? [])]),
-  ].sort();
+  // The listing policy payment_provider_accounts_rekey_list applies only with this flag (037).
+  const ids = await sql.begin(async (raw) => {
+    const tx = raw as Tx;
+    await tx`select set_config('app.payments_rekey_list', 'on', true)`;
+    return (
+      await tx<{ tenant_id: string }[]>`
+        select distinct tenant_id from payment_provider_accounts
+        where credential_secret_id is not null order by tenant_id`
+    ).map((r) => r.tenant_id);
+  });
   let tenants = 0,
     resealed = 0,
     failed = 0;

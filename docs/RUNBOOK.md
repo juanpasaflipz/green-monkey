@@ -457,12 +457,11 @@ Other secrets:
 - `CREDENTIAL_ENCRYPTION_KEY` (worker only; CFDI and payments share it): prepend a
   new kid, redeploy the worker, run `npm run vault:rekey` in the worker environment
   (`cfdi:rekey` is an alias), then drop the old kid ([CFDI](CFDI.md) "Credential key
-  rotation"). For payments the script visits every restaurant with a payments job and
-  any `--tenant <uuid>` given; a credential it does not reach is re-sealed the next time
-  the worker opens it, so drop the old kid only after the script reports `failed: 0` and
-  every connected restaurant charged once, or after passing every connected restaurant
-  with `--tenant` ([PAYMENTS](PAYMENTS.md), LD-76 deviation 1). The output is counts
-  only. The Facturapi User key: create a new one in Facturapi, set
+  rotation"). For payments the script lists every restaurant with sealed provider
+  credentials through 037's worker listing policy (`payment_provider_accounts_rekey_list`,
+  as CFDI's `cfdi_organizations_rekey_list`; LD-76 deviation 1) and re-seals each one in
+  its own tenant transaction, so drop the old kid once it reports `failed: 0`
+  ([PAYMENTS](PAYMENTS.md)). The output is counts only. The Facturapi User key: create a new one in Facturapi, set
   `FACTURAPI_API_KEY` on `worker`, deploy, revoke the old one.
 - A restaurant's Mercado Pago or Clip credentials (and its notification URL) are the
   owner's: Configuración → **Reemplazar credenciales** seals the new ones and shows a new

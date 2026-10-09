@@ -125,7 +125,7 @@ Every outcome writes an attempt event and an audit row, and Excepciones lists it
 - The web login has no SELECT on `payment_secrets`; plaintext never reaches a table, a job payload, an event, an audit row or a log line (`tests/payments-p2-db.ts` checks all of them after every flow).
 - **Disconnect** (owner, step-up): refused while a charge is live; the account is disabled and `payments_wipe` wipes its secrets. Integrated terminals then work only as manual records.
 - **Devices** (managers): «Buscar terminales» / «Buscar lectores» refresh the device cache (at most one search a minute); a found device is added as a terminal; an MP device switches between «Integrado (PDV)» and «Independiente» (step-up; restart the terminal).
-- **Key rotation:** `npm run vault:rekey` re-seals CFDI and payment secrets under the newest `CREDENTIAL_ENCRYPTION_KEY` entry (RUNBOOK "Credential key rotation"); a credential the script does not reach is re-sealed the next time the worker opens it.
+- **Key rotation:** `npm run vault:rekey` re-seals CFDI and payment secrets under the newest `CREDENTIAL_ENCRYPTION_KEY` entry (RUNBOOK "Credential key rotation"). It lists every restaurant with sealed provider credentials through 037's `payment_provider_accounts_rekey_list` policy (worker only, and only in a transaction that sets `app.payments_rekey_list`, like CFDI's `cfdi_organizations_rekey_list`; LD-76 deviation 1), then re-seals each restaurant in its own tenant transaction. The worker also re-seals a credential under the active kid whenever it opens one.
 
 ### Notifications (pre-auth `POST /api/payments/webhooks/:provider/:hook`)
 
@@ -157,7 +157,6 @@ Every outcome writes an attempt event and an audit row, and Excepciones lists it
 
 ### Still open
 
-- Deviation 1 (LD-76): a worker listing policy for payment secrets in 037, so `vault:rekey` reaches every restaurant without `--tenant`, lands after the P1 fix round.
 - The real-device rehearsal on staging (RUNBOOK "Real-device rehearsal") verifies MP's reference and last-4 sources (deviation 8) before the pilot.
 
 ### Privacy inputs for the legal set (critic R40)
