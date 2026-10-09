@@ -526,7 +526,11 @@ test("integrated charging: the owner connects Mercado Pago and Clip (the URL sho
   await resolve
     .getByRole("radio", { name: "Sí se cobró: registrar en la orden" })
     .check();
-  await resolve.getByLabel("Referencia del proveedor").fill("AUT123456");
+  // A reference unique to this run: the browser suite may run twice on one database, and a
+  // reference already recorded on another charge is refused (payments_reference_taken).
+  await resolve
+    .getByLabel("Referencia del proveedor")
+    .fill(`AUT${Date.now().toString(36).toUpperCase()}`);
   await resolve
     .getByLabel("Motivo (mínimo 10 caracteres)")
     .fill("Aprobado en la pantalla del lector (prueba)");

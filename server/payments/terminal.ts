@@ -839,6 +839,14 @@ export async function resolveAttempt(
         throw new DomainError("payments_not_approved", 409);
       if (!a.provider_reference && !p.reference)
         throw new DomainError("payments_reference_required");
+      // A typed reference already on another charge is refused, never a 500 (unique index
+      // payment_attempts_reference).
+      if (!a.provider_reference && p.reference) {
+        const [taken] = await tx`select id from payment_attempts
+          where provider=${a.provider} and lower(provider_reference)=lower(${p.reference})
+            and id<>${a.id} limit 1`;
+        if (taken) throw new DomainError("payments_reference_taken", 409);
+      }
     }
     const result = await settleAttempt(
       tx,
@@ -852,7 +860,16 @@ export async function resolveAttempt(
             reference: a.provider_reference ? null : (p.reference ?? null),
           }
         : undefined,
-    );
+    ).catch((e: unknown) => {
+      // The same reference recorded concurrently on another charge.
+      if (
+        (e as { code?: string; constraint_name?: string }).code === "23505" &&
+        (e as { constraint_name?: string }).constraint_name ===
+          "payment_attempts_reference"
+      )
+        throw new DomainError("payments_reference_taken", 409);
+      throw e;
+    });
     if (result.state === "review")
       throw new DomainError("payments_settle_order_changed", 409);
     if (p.outcome === "record")

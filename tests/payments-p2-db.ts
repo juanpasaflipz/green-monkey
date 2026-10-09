@@ -1582,6 +1582,28 @@ try {
     assert.equal(recorded.order?.paid, o.total);
     // The reader completes the payment the manager recorded (the fake's reader is free again).
     fake.approve(fake.chargeFor(view.id)!.id, { ...TEST_CARD });
+    // A reference already recorded on another charge is a clear 409, never a 500 (unique index).
+    const o2 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    fake.next("clip", "timeoutTaken");
+    const v2 = await start(cashier, o2.id, terminals.clip, o2.total);
+    assert.equal(await drive(v2.id, ["unknown", "pending"]), "unknown");
+    await rejects(
+      resolve(mgr, v2.id, {
+        outcome: "record",
+        reference: "aut123456",
+        note: NOTE,
+        confirmed: true,
+      }),
+      "payments_reference_taken",
+    );
+    const own = await resolve(mgr, v2.id, {
+      outcome: "record",
+      reference: "AUT654321",
+      note: NOTE,
+      confirmed: true,
+    });
+    assert.equal(own.attempt.state, "settled");
+    fake.approve(fake.chargeFor(v2.id)!.id, { ...TEST_CARD });
   });
 
   await test("Clip's own deadline and «No se cobró» (P2-MONEY-3, P2-PROVIDERS-3): a request the reader never took is withdrawn at its deadline (cancelled, the order is free); one the reader holds becomes unknown, is still read, and «No se cobró» is refused until the reader settles it, which records it by itself; a lost create the reader never took is withdrawn by serial and cancelled", async () => {

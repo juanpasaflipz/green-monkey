@@ -797,6 +797,10 @@ export default defineArea({
       "La terminal no está conectada.",
       "The terminal is not connected.",
     ],
+    payments_reference_taken: [
+      "Esa referencia ya está registrada en otro cobro. Revisa el historial del proveedor.",
+      "That reference is already recorded on another charge. Check the provider's history.",
+    ],
     payments_cancel_sent: [
       "La cancelación se envió a la terminal; esperando que la confirme.",
       "The cancel was sent to the terminal; waiting for it to confirm.",
