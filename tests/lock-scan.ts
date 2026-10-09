@@ -92,6 +92,9 @@ export const TABLE_LEVEL: Record<string, number> = {
   // public ordering (032; ARCHITECTURE LO-3/LO-4, PUBLIC-CONCURRENCY-1)
   public_links: LEVEL.config,
   public_ordering_settings: LEVEL.config,
+  // loyalty (038; ARCHITECTURE LO-3, LO-R10): member rows FOR NO KEY UPDATE, the settings row
+  loyalty_members: LEVEL.config,
+  loyalty_settings: LEVEL.config,
   order_numbers: LEVEL.orderNumbers,
   public_hold_numbers: LEVEL.orderNumbers,
   orders: LEVEL.orders,

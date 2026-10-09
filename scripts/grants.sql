@@ -166,3 +166,22 @@ DO $$ BEGIN
     next_self_invoice_from) ON cfdi_settings TO gm_app;
  END IF;
 END $$;
+
+-- 038 loyalty. No DELETE on any loyalty table. The ledger is INSERT-only (and append-only by
+-- trigger); member balances are written only by loyalty_ledger_apply() (SECURITY DEFINER, 038), so
+-- the runtime role updates contact, consent-preference and redaction columns only. Nothing for the
+-- worker, support or backup roles (the backup reader's SELECT comes from the blanket grant). Guarded:
+-- this manifest also applies to schemas before 038 (tests/public-ordering-db.ts applies it at 033).
+-- Idempotent.
+DO $$ BEGIN
+ IF to_regclass('public.loyalty_members') IS NOT NULL THEN
+  GRANT SELECT, INSERT ON loyalty_settings, loyalty_members, loyalty_ledger, loyalty_order_links TO gm_app;
+  GRANT UPDATE (enabled, program_name, stamps_required, stamp_threshold, max_stamps_per_order,
+    reward_kind, reward_description, reward_amount, reward_max_amount, max_rewards_per_order,
+    prompt_at_checkout, receipt_join_qr, link_window_days, privacy_attested_at, privacy_attested_by,
+    version, updated_at, updated_by) ON loyalty_settings TO gm_app;
+  GRANT UPDATE (name, name_key, phone_e164, marketing_opt_in, marketing_changed_at, consent_notice_url,
+    redacted_at, redacted_by, redaction_reason, version, updated_at) ON loyalty_members TO gm_app;
+  GRANT UPDATE (member_id, changed_at, changed_by) ON loyalty_order_links TO gm_app;
+ END IF;
+END $$;

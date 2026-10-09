@@ -3,7 +3,9 @@
  * unseal(samePurpose): its MAC key is HKDF(info = "seal:" + purpose), distinct from
  * sign()'s "sign", so it is never a valid cookie and one purpose never opens another.
  * Registered purposes (platform spec C-6; a new purpose is a new string, never reused):
- * "cfdi-portal" (TTL CFDI_INVOICE_LINK_EXPIRY_HOURS × 3600) and "cfdi-portal-file" (900 s).
+ * "cfdi-portal" (TTL CFDI_INVOICE_LINK_EXPIRY_HOURS × 3600) and "cfdi-portal-file" (900 s);
+ * loyalty (038): "loyalty-join" {t, o} (the receipt's join QR, TTL link_window_days × 86400) and
+ * "loyalty-member" {t, m, s} (the kiosk's member token bound to a station, 900 s).
  * Web only: the worker never reaches this module (tests/import-graph.test.ts).
  *
  * SIGNED, NOT ENCRYPTED (PLATFORM-KEYS-2). "Seal" here means tamper-evident and
@@ -58,4 +60,27 @@ export function unseal<T = unknown>(purpose: string, token: string): T {
   )
     throw new DomainError("unauthorized", 401);
   return c.d as T;
+}
+
+/**
+ * unseal for tokens a person holds for days (loyalty's receipt join QR): a genuine token of this
+ * purpose past its expiry throws DomainError(expiredCode, 410) so the page can say it expired;
+ * anything else (forged, foreign purpose, malformed) is unseal's 401.
+ */
+export function unsealOrExpired<T = unknown>(
+  purpose: string,
+  token: string,
+  expiredCode: string,
+): T {
+  const c = PURPOSE.test(purpose)
+    ? (verifyToken("seal:" + purpose, token, { legacy: false }) as {
+        p?: unknown;
+        exp?: unknown;
+        d?: unknown;
+      } | null)
+    : null;
+  if (c && c.p === purpose && Number.isInteger(c.exp))
+    if ((c.exp as number) <= Math.floor(Date.now() / 1000))
+      throw new DomainError(expiredCode, 410);
+  return unseal<T>(purpose, token);
 }

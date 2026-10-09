@@ -39,13 +39,14 @@ describe("retention pass (OPS-R6)", () => {
       "oauth_login_attempts",
       "jobs",
       "public_order_holds",
+      "loyalty_members",
     ]);
     expect(alerts).toEqual([
       {
         key: "retention_failed",
         severity: "warning",
         title: "retention failed",
-        body: "retention_failed tables=oauth_login_attempts,jobs,public_order_holds",
+        body: "retention_failed tables=oauth_login_attempts,jobs,public_order_holds,loyalty_members",
       },
     ]);
   });
@@ -59,6 +60,7 @@ describe("retention pass (OPS-R6)", () => {
       "oauth_login_attempts",
       "jobs",
       "public_order_holds",
+      "loyalty_members",
     ]);
     expect(alerts).toEqual([]);
   });
@@ -70,7 +72,7 @@ describe("retention pass (OPS-R6)", () => {
     });
     expect(result).toEqual({
       deleted: { oauth_login_attempts: 0, jobs: 0 },
-      redacted: { public_order_holds: 0 },
+      redacted: { public_order_holds: 0, loyalty_members: 0 },
       backlog: [],
       skipped: [],
       failed: [],
@@ -87,6 +89,7 @@ describe("retention pass (OPS-R6)", () => {
       "oauth_login_attempts",
       "jobs",
       "public_order_holds",
+      "loyalty_members",
     ]);
     expect(result?.skipped).toEqual([]);
     expect(alerts.map((a) => a.key)).toEqual(["retention_failed"]);
@@ -122,6 +125,7 @@ describe("retention bounds and off-hours window (OPS-R10)", () => {
       "oauth_login_attempts",
       "jobs",
       "public_order_holds",
+      "loyalty_members",
     ]) {
       const alter = statements.findIndex(
         (s) => s.text === `alter table ${table} no force row level security`,
@@ -148,6 +152,16 @@ describe("retention bounds and off-hours window (OPS-R10)", () => {
         set: "name = '', note = ''",
         predicate:
           "(name <> '' OR note <> '') AND created_at < now() - interval '30 days'",
+      },
+      // Loyalty (038, specs/loyalty-w4.md §3.3): members inactive for 24 months are redacted in
+      // place (name, phone, notice snapshot); no loyalty row is ever deleted.
+      {
+        table: "loyalty_members",
+        set: `name = '', name_key = '', phone_e164 = NULL, consent_notice_url = NULL,
+        marketing_opt_in = false, redacted_at = now(), redaction_reason = 'retention',
+        version = version + 1, updated_at = now()`,
+        predicate: `redacted_at IS NULL
+    AND coalesce(last_activity_at, legacy_last_visit_at, joined_at) < now() - interval '24 months'`,
       },
     ]);
     const statements: string[] = [];
@@ -176,6 +190,15 @@ describe("retention bounds and off-hours window (OPS-R10)", () => {
       "alter table public_order_holds force row level security",
     ]);
     expect(statements.some((t) => /^delete from public_/.test(t))).toBe(false);
+    expect(statements.some((t) => /^delete from loyalty_/.test(t))).toBe(false);
+    const members = statements.filter((t) => t.includes("loyalty_members"));
+    expect(members[0]).toBe(
+      "alter table loyalty_members no force row level security",
+    );
+    expect(members[1]).toMatch(/^update loyalty_members set name = ''/);
+    expect(members[2]).toBe(
+      "alter table loyalty_members force row level security",
+    );
   });
 
   it("the window is 04:00-07:00 in Mexico City, before breakfast service (OPS-R15)", () => {
@@ -390,13 +413,14 @@ describe("retentionPasses (P-24)", () => {
       "oauth_login_attempts",
       "jobs",
       "public_order_holds",
+      "loyalty_members",
     ]);
     expect(alerts.map((a) => a.key)).toEqual(["retention_failed"]);
     expect(
       await retentionPasses(empty, noAlert, { now: () => inside }),
     ).toEqual({
       deleted: { oauth_login_attempts: 0, jobs: 0 },
-      redacted: { public_order_holds: 0 },
+      redacted: { public_order_holds: 0, loyalty_members: 0 },
       backlog: [],
       skipped: [],
       failed: [],
@@ -452,6 +476,7 @@ describe("retentionPasses stops without an extra empty pass (PLAT-R3)", () => {
     ["jobs", "deleted"],
     ["oauth_login_attempts", "deleted"],
     ["public_order_holds", "redacted"],
+    ["loyalty_members", "redacted"],
   ] as const)
     for (const n of [
       0,
@@ -528,6 +553,7 @@ describe("retentionPasses stops without an extra empty pass (PLAT-R3)", () => {
       "oauth_login_attempts",
       "jobs",
       "public_order_holds",
+      "loyalty_members",
     ]);
   });
 });
