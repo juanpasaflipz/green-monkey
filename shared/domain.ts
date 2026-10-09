@@ -345,6 +345,8 @@ export type Order = {
   closedAt?: string | null; // service
   closeReason?: "settled" | "released" | "voided" | "recovery" | null; // service
   channel?: string; // service
+  /** payments (037, LD-72): the platform price list the order was rung with; null = POS prices. */
+  pricePlatform?: "uber_eats" | "rappi" | "didi_food" | "other" | null;
   businessDate?: string; // service
   openedBy?: string; // service: name of the employee who opened the check
   id: string;

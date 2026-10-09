@@ -128,6 +128,7 @@ export function Selling({
   online,
   active,
   navigate,
+  onPaymentSettled: onPaymentSettledProp,
 }: {
   session: Session;
   catalog: Product[];
@@ -135,6 +136,12 @@ export function Selling({
   online: boolean;
   active: boolean;
   navigate: (s: string) => void;
+  /**
+   * payments (037, critic R18): the one exit for "a payment settled on the
+   * server", whatever the method (cash, manual terminal, platform; P2's
+   * integrated charges). Loyalty's post-payment link hangs only on this.
+   */
+  onPaymentSettled?: (order: Order) => void;
 }) {
   const t = (k: Key) => strings[locale][k];
   const exponent = currencyExponent(session.restaurant.currency);
@@ -1067,6 +1074,14 @@ export function Selling({
     setError("");
     setNotice("");
   }
+  /** payments (037, critic R18): every server-settled payment ends here once. */
+  function onPaymentSettled(order: Order) {
+    try {
+      onPaymentSettledProp?.(order);
+    } catch {
+      // A consumer's failure never hides the receipt of money already taken.
+    }
+  }
   /**
    * SVC-R2: the in-flight flag is set synchronously on the tap and cleared
    * only when the whole collect (send, payment, recovery) settles, so a second
@@ -1168,6 +1183,7 @@ export function Selling({
                 : null;
               await settleActiveAttempt(orderId ?? null, (result, owned) => {
                 setPayment(false);
+                onPaymentSettled(result);
                 if (owned) {
                   setCurrent(result);
                   setReceipt(result);
@@ -1199,6 +1215,7 @@ export function Selling({
     const settled = (result: Order, owned = true) => {
       setPendingPayment(false);
       setPayment(false);
+      onPaymentSettled(result);
       if (!owned || epoch !== contextEpoch.current) {
         setNotice(
           t("servicePaidAfterSwitch").replace("{n}", numberText(result)),
