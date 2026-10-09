@@ -7,7 +7,8 @@
 // secret and re-reads the provider before acting; a Clip notification is only a hint to re-read.
 // The answer is always 200 with an empty body: it never reveals whether a hook or an id exists,
 // and MP retries anything else (it needs an answer within 22 s).
-import type express from "express";
+import express from "express";
+import { ipKeyGenerator } from "express-rate-limit";
 import type postgres from "postgres";
 import { tenant, type Tx } from "../db.js";
 import { enqueueJob } from "../jobs.js";
@@ -33,12 +34,40 @@ function limiter(perMinute: number, maxKeys = 10_000) {
     return c.n <= perMinute;
   };
 }
-/** IPv6 clients are grouped per /56 (LD-46), IPv4 per address. */
-function ipKey(ip: string): string {
-  if (!ip.includes(":")) return ip;
-  const parts = ip.split(":");
-  return parts.slice(0, 4).join(":").replace(/..$/, "00");
+/**
+ * IPv6 clients are grouped per /56 (LD-46), IPv4 per address: express-rate-limit's
+ * ipKeyGenerator, as every other public limiter (server/public-limits.ts). The hand-rolled split
+ * it replaces did not compute a /56 on compressed IPv6 text (P2-SECURITY-3).
+ */
+export const webhookIpKey = (ip: string) => ipKeyGenerator(ip, 56);
+
+/** An answer that reveals nothing (spec §9.2): 200, empty, never cached. */
+function silent(res: express.Response) {
+  res.status(200).set("Cache-Control", "no-store").end();
 }
+
+/**
+ * The webhook path's own body parser, mounted before the app's 256 KB one (P2-SECURITY-6): the
+ * 16 KB limit of spec §9.2 is enforced while reading, and a too-large or malformed body still gets
+ * the empty 200 (never the global error handler's 413 or 400).
+ */
+export const webhookBody: express.RequestHandler[] = [
+  express.json({ limit: PAYMENTS_LIMITS.webhookBodyBytes }),
+];
+export const webhookBodyErrors: express.ErrorRequestHandler = (
+  error,
+  _req,
+  res,
+  next,
+) => {
+  const type = (error as { type?: string })?.type;
+  if (type !== "entity.too.large" && type !== "entity.parse.failed")
+    return next(error);
+  log.info("payments_webhook_dropped", {
+    reason: type === "entity.too.large" ? "body_size" : "format",
+  });
+  silent(res);
+};
 
 const ID = /^[A-Za-z0-9_-]{1,100}$/;
 const str = (v: unknown) => (typeof v === "string" ? v : null);
@@ -72,6 +101,37 @@ function mpDataId(req: express.Request): {
 }
 
 type Match = { tenantId: string; attemptIds: string[] };
+
+/**
+ * Queues one provider hint for an attempt unless one is already waiting to run (P2-SECURITY-4):
+ * a burst of notifications for one charge (a leaked notification URL replayed 600 times a minute)
+ * costs one queued job, one provider read and one event at a time, not one each. The waiting job
+ * re-reads the provider anyway, so nothing a later notification says is lost.
+ */
+async function queueHint(
+  tx: Tx,
+  tenantId: string,
+  attemptId: string,
+  dedupeKey: string,
+  payload: Record<string, unknown>,
+): Promise<boolean> {
+  // Only another notification's job: a recovery or a «Volver a consultar» is a different action.
+  const [waiting] = await tx`select 1 from jobs
+    where kind='payments_webhook' and state in ('queued','available')
+      and payload->>'attemptId'=${attemptId}
+      and payload->>'source'=${payload.source as string} limit 1`;
+  if (waiting) return false;
+  await enqueueJob(
+    tx,
+    { tenantId },
+    {
+      kind: "payments_webhook",
+      dedupeKey: dedupeKey.slice(0, 200),
+      payload: { attemptId, ...payload },
+    },
+  );
+  return true;
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
@@ -132,7 +192,7 @@ export function webhookRoute(sql: postgres.Sql) {
   return async (req: express.Request, res: express.Response) => {
     const done = (reason: string) => {
       if (reason !== "queued") log.info("payments_webhook_dropped", { reason });
-      res.status(200).set("Cache-Control", "no-store").end();
+      silent(res);
     };
     try {
       const provider = req.params.provider;
@@ -142,7 +202,7 @@ export function webhookRoute(sql: postgres.Sql) {
         !HOOK_TOKEN.test(token)
       )
         return done("format");
-      if (!perIp(ipKey(clientIp(req)))) return done("rate_ip");
+      if (!perIp(webhookIpKey(clientIp(req)))) return done("rate_ip");
       if (!perHook(token)) return done("rate_hook");
       const length = Number(req.get("content-length") ?? 0);
       if (
@@ -176,45 +236,43 @@ export function webhookRoute(sql: postgres.Sql) {
         if (!m) return done("no_match");
         const requestId = req.get("x-request-id")?.slice(0, 100) ?? null;
         const attemptId = m.attemptIds[0];
-        await tenant(sql, m.tenantId, (tx) =>
-          enqueueJob(
+        const queued = await tenant(sql, m.tenantId, (tx) =>
+          queueHint(
             tx,
-            { tenantId: m.tenantId },
+            m.tenantId,
+            attemptId,
+            `hook:${attemptId}:${requestId ?? `${dataId.id}:${Date.now()}`}`,
             {
-              kind: "payments_webhook",
-              dedupeKey:
-                `hook:${attemptId}:${requestId ?? `${dataId.id}:${Date.now()}`}`.slice(
-                  0,
-                  200,
-                ),
-              payload: {
-                attemptId,
-                source: "mercadopago",
-                dataId: dataId.id,
-                requestId,
-                ...signatureParts(req.get("x-signature")),
-              },
+              source: "mercadopago",
+              dataId: dataId.id,
+              requestId,
+              ...signatureParts(req.get("x-signature")),
             },
           ),
         );
+        if (!queued) return done("coalesced");
       } else {
         const body = (req.body ?? {}) as { id?: unknown };
         const id = str(body.id);
         if (!id || !ID.test(id)) return done("format");
         const m = await match(sql, "clip", token, id, null);
         if (!m) return done("no_match");
-        await tenant(sql, m.tenantId, async (tx) => {
+        const queued = await tenant(sql, m.tenantId, async (tx) => {
+          let n = 0;
           for (const attemptId of m.attemptIds)
-            await enqueueJob(
-              tx,
-              { tenantId: m.tenantId },
-              {
-                kind: "payments_webhook",
-                dedupeKey: `hook:${attemptId}:clip:${Date.now()}`,
-                payload: { attemptId, source: "clip", dataId: id },
-              },
-            );
+            if (
+              await queueHint(
+                tx,
+                m.tenantId,
+                attemptId,
+                `hook:${attemptId}:clip:${Date.now()}`,
+                { source: "clip", dataId: id },
+              )
+            )
+              n++;
+          return n;
         });
+        if (!queued) return done("coalesced");
       }
       wakeWorker();
       return done("queued");

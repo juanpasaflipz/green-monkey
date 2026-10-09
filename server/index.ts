@@ -122,6 +122,8 @@ app.use(
   }),
 );
 app.use("/api/billing/webhook", billing.webhook);
+// payments (037): the provider webhooks' own 16 KB parser, before the app's (P2-SECURITY-6).
+paymentsRoutes.registerWebhookBody(app);
 app.use(express.json({ limit: "256kb" }));
 app.use(cookieParser());
 app.use(

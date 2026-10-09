@@ -34,12 +34,20 @@ import {
   requestDevices,
   saveCredentials,
 } from "../payments/providers.js";
-import { webhookRoute } from "../payments/webhooks.js";
+import {
+  webhookBody,
+  webhookBodyErrors,
+  webhookRoute,
+} from "../payments/webhooks.js";
 import { wakeWorker } from "../payments/wake.js";
 
 /** Provider webhooks, before authentication (spec §9.2). */
 export function registerPreAuth({ app, sql }: PreAuthContext) {
   app.post("/api/payments/webhooks/:provider/:hook", webhookRoute(sql));
+}
+/** Before the app's JSON parser (server/index.ts): the webhook path's 16 KB body (P2-SECURITY-6). */
+export function registerWebhookBody(app: express.Express) {
+  app.use("/api/payments/webhooks", ...webhookBody, webhookBodyErrors);
 }
 
 /**

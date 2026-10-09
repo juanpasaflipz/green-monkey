@@ -65,7 +65,12 @@ import {
   startTerminalCharge,
   syncAttemptCore,
 } from "../server/payments/terminal.js";
-import { webhookRoute } from "../server/payments/webhooks.js";
+import {
+  webhookBody,
+  webhookBodyErrors,
+  webhookIpKey,
+  webhookRoute,
+} from "../server/payments/webhooks.js";
 import { exceptionRows } from "../server/reports/exceptions.js";
 import { snapshotTenant } from "../server/reports/snapshot.js";
 import { businessDate, type Order, type Session } from "../shared/domain.js";
@@ -376,7 +381,9 @@ const count = async (tenantId: string, query: (tx: any) => Promise<any[]>) =>
 
 // ---- The pre-auth webhook route, mounted as server/index.ts does (before authentication).
 const hookApp = express();
-hookApp.use(express.json({ limit: "64kb" }));
+// As server/index.ts: the webhook path's own 16 KB parser before the app's 256 KB one.
+hookApp.use("/api/payments/webhooks", ...webhookBody, webhookBodyErrors);
+hookApp.use(express.json({ limit: "256kb" }));
 hookApp.post("/api/payments/webhooks/:provider/:hook", webhookRoute(sql));
 const hookServer: http.Server = hookApp.listen(0, "127.0.0.1");
 await new Promise((r) => hookServer.once("listening", r));
@@ -1143,11 +1150,14 @@ try {
     fake.approve(ref, { ...TEST_CARD });
     const reads = mpOrderReads(ref);
     const forgedId = randomUUID();
+    // Each notification runs before the next (a waiting one coalesces later hints).
     await notify(
       hooks.mercadopago,
       mpNotification(ref, forgedId, forged(ref, forgedId)),
     );
+    await round(A, { due: false });
     await notify(hooks.mercadopago, mpNotification(ref, randomUUID()));
+    await round(A, { due: false });
     // A valid signature over another request id does not verify this one either.
     const signedOther = fake.signMp(ref, randomUUID());
     await notify(
@@ -2476,12 +2486,58 @@ try {
       "no_match",
       "body_size",
     ]);
+    // A malformed JSON body is screened by the webhook's own parser: 200, empty (P2-SECURITY-6;
+    // before, the app's parser answered 400 through the global error handler).
+    const malformed = await fetch(
+      hookOrigin +
+        new URL(hooks.mercadopago).pathname +
+        `?data.id=${live.ref}&type=order`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: '{"type":"order","data":',
+      },
+    );
+    assert.deepEqual([malformed.status, await malformed.text()], [200, ""]);
+    // A body over 16 KB never reaches the app's 256 KB parser (also 200, empty).
+    const huge = await fetch(hookOrigin + new URL(hooks.mercadopago).pathname, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ padding: "x".repeat(100_000) }),
+    });
+    assert.deepEqual([huge.status, await huge.text()], [200, ""]);
+    assert.equal(await jobs(), before, "no screened notification wrote a job");
+    assert.deepEqual(dropped().slice(seen + 7), ["format", "body_size"]);
     // The same notification, well formed, queues exactly one re-read.
     await notify(
       hooks.mercadopago,
       mpNotification(live.ref, rid, fake.signMp(live.ref, rid)),
     );
     assert.equal(await jobs(), before + 1);
+    // A burst for the same charge while that re-read waits is coalesced into it (P2-SECURITY-4):
+    // no second job, no second event.
+    for (let i = 0; i < 5; i++) {
+      const burst = randomUUID();
+      await notify(
+        hooks.mercadopago,
+        mpNotification(live.ref, burst, fake.signMp(live.ref, burst)),
+      );
+    }
+    assert.equal(await jobs(), before + 1, "one waiting re-read per charge");
+    assert.deepEqual(dropped().slice(-5), Array(5).fill("coalesced"));
+    // Notifications are limited per client network: IPv6 per /56, also for compressed text
+    // (P2-SECURITY-3: the hand-rolled key split one /64 into 257 keys).
+    assert.equal(webhookIpKey("2001:db8::1"), webhookIpKey("2001:db8::2"));
+    assert.equal(webhookIpKey("2001:db8::1"), webhookIpKey("2001:db8::ab12"));
+    assert.equal(
+      webhookIpKey("2001:db8:1:a::1"),
+      webhookIpKey("2001:db8:1:ab::1"),
+    );
+    assert.notEqual(
+      webhookIpKey("2001:db8:1:100::1"),
+      webhookIpKey("2001:db8:1:a::1"),
+    );
+    assert.equal(webhookIpKey("203.0.113.7"), "203.0.113.7");
     await write(cashier, (tx) =>
       requestCancel(tx, cashier, live.id, { operationId: randomUUID() }),
     );
