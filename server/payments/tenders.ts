@@ -64,6 +64,8 @@ export async function tenderPlatform(
 }
 
 export type TenderSpec = {
+  /** A caller that already names the tender (financial recovery); default a fresh id. */
+  tenderId?: string;
   orderId: string;
   /** cash_sessions.id the tender belongs to (tenders.session_id). */
   drawerId: string;
@@ -125,7 +127,7 @@ export async function insertTender(
     fee = estimateFee(spec.amount, platform.row.commission_bp);
     feeSource = fee === null ? null : "estimated";
   }
-  const tenderId = randomUUID();
+  const tenderId = spec.tenderId ?? randomUUID();
   const integrated = spec.integrated ?? null;
   await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,
       external_reference,group_id,source,source_id,created_at,
@@ -140,4 +142,39 @@ export async function insertTender(
       ${integrated?.cardType ?? null},${integrated?.cardBrand ?? null},${integrated?.cardLast4 ?? null},
       ${platform?.row.platform ?? null},${platform?.label ?? null},${fee},${feeSource})`;
   return tenderId;
+}
+
+/**
+ * The terminal and platform of money already collected (offline evidence, payment-attempt
+ * resolution): an archived terminal is accepted (the evidence predates the archive); an unknown
+ * one is dropped so the money still counts (OFF-8), and the caller notes
+ * payments_terminal_unknown; a platform is recorded whether or not it is enabled now.
+ */
+export async function evidenceExtras(
+  tx: Tx,
+  payment: {
+    method: string;
+    terminalId?: string;
+    platform?: PlatformCode;
+    platformLabel?: string;
+  },
+): Promise<{
+  terminal: TenderTerminal | null;
+  platform: TenderSpec["platform"];
+  droppedTerminalId: string | null;
+}> {
+  let terminal: TenderTerminal | null = null;
+  let droppedTerminalId: string | null = null;
+  if (payment.method === "external" && payment.terminalId) {
+    terminal = await tenderTerminal(tx, payment.terminalId);
+    if (!terminal) droppedTerminalId = payment.terminalId;
+  }
+  const platform =
+    payment.method === "platform" && payment.platform
+      ? {
+          row: await tenderPlatform(tx, payment.platform),
+          label: payment.platformLabel ?? null,
+        }
+      : null;
+  return { terminal, platform, droppedTerminalId };
 }

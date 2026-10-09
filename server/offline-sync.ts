@@ -17,6 +17,7 @@ import {
   evaluateRecordedAt,
   evidenceKey,
   formatVersionOf,
+  offlinePaymentIssue,
   offlineRecord,
   offlineSale,
   recordAmounts,
@@ -45,6 +46,7 @@ import { assertCheckWritable, refreshCheckState } from "./checks.js";
 import { fiscalContext, issueDueTicket } from "./fiscal.js";
 import { allocatePayment } from "../shared/settlement.js";
 import { placeRoundsInOfflineReview } from "./offline-kitchen.js";
+import { evidenceExtras, insertTender } from "./payments/tenders.js";
 
 /** Legacy v1/v2 cash-sale input (unchanged). */
 export const offlineInput = offlineSale;
@@ -157,13 +159,8 @@ export async function evaluateEvidence(
     [cash] = await tx`select * from cash_sessions where id=${drawerId}`;
     if (!cash || cash.device_id !== session.device_id)
       return { authentic: false, reason: "drawer", session };
-    if (
-      payment.method === "cash"
-        ? payment.received < payment.amount + payment.tip
-        : payment.received !== payment.amount + payment.tip ||
-          !payment.externalConfirmed ||
-          !payment.reference.trim()
-    )
+    // payments (037): judged per method, platform included; nothing defaults to cash.
+    if (offlinePaymentIssue(payment))
       return { authentic: false, reason: "amounts", session };
   }
   const [clock] = await tx`select clock_timestamp() as now`;
@@ -449,6 +446,8 @@ export async function newTender(
     ),
   );
   let receipt: Order;
+  // payments (037): a terminal deleted since is dropped, never the money (OFF-8).
+  const extras = await evidenceExtras(tx, payment);
   try {
     receipt = await recordPayment(
       tx,
@@ -462,9 +461,15 @@ export async function newTender(
         received: payment.received,
         externalConfirmed: payment.externalConfirmed,
         reference: payment.reference,
+        ...(extras.terminal ? { terminalId: extras.terminal.id } : {}),
+        ...(payment.platform ? { platform: payment.platform } : {}),
+        ...(payment.platformLabel
+          ? { platformLabel: payment.platformLabel }
+          : {}),
       },
       null,
       drawerId,
+      { evidence: true, droppedTerminalId: extras.droppedTerminalId },
     );
   } catch (e) {
     // Never charge past the balance (I2): the record goes to manager review.
@@ -481,6 +486,39 @@ export async function newTender(
   if (!tender) throw Error("offline tender not recorded");
   await refreshCheckState(tx, s, orderId);
   return tender.id;
+}
+
+/**
+ * A manager-reconciled offline tender (source offline_recovery) through the one tender writer,
+ * with the record's terminal or platform (payments 037; archived terminal accepted, unknown
+ * dropped). Returns the tender id.
+ */
+async function insertRecoveredTender(
+  tx: Tx,
+  s: Session,
+  t: {
+    tenderId?: string;
+    orderId: string;
+    drawerId: string;
+    payment: OfflinePayment;
+    operationId: string;
+  },
+): Promise<string> {
+  const extras = await evidenceExtras(tx, t.payment);
+  return insertTender(tx, s, {
+    tenderId: t.tenderId,
+    orderId: t.orderId,
+    drawerId: t.drawerId,
+    method: t.payment.method,
+    amount: t.payment.amount,
+    tip: t.payment.tip,
+    received: t.payment.received,
+    reference: t.payment.reference || null,
+    source: { kind: "offline_recovery", id: t.operationId },
+    clock: true,
+    terminal: extras.terminal,
+    platform: extras.platform,
+  });
 }
 
 /** Appends the immutable ledger row for an applied record. */
@@ -1085,7 +1123,13 @@ export async function financialRecovery(
   // order, so a concurrent drawer close waits for this tender.
   const [cash] =
     await tx`select * from cash_sessions where id=${drawerOf(p)} for update`;
-  await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,source,source_id,created_at) values(${s.tenantId},${tenderId},${orderId},${cash.id},${payment.method},${payment.amount},${payment.tip},${payment.received},${payment.reference || null},'offline_recovery',${p.operationId},clock_timestamp())`;
+  await insertRecoveredTender(tx, s, {
+    tenderId,
+    orderId,
+    drawerId: cash.id,
+    payment,
+    operationId: p.operationId,
+  });
   await tx`insert into offline_recoveries(
       tenant_id,id,operation_id,order_operation_id,original_session_id,
       original_employee_id,original_device_id,original_drawer_id,actor_id,
@@ -1161,9 +1205,12 @@ export async function reconcileIntoOrder(
   const allocations = order.itemSplitAvailable
     ? allocatePayment(order.paymentUnits!, payment.amount)
     : [];
-  const tenderId = randomUUID();
-  await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,source,source_id,created_at)
-    values(${s.tenantId},${tenderId},${orderId},${drawerId},${payment.method},${payment.amount},${payment.tip},${payment.received},${payment.reference || null},'offline_recovery',${p.operationId},clock_timestamp())`;
+  const tenderId = await insertRecoveredTender(tx, s, {
+    orderId,
+    drawerId,
+    payment,
+    operationId: p.operationId,
+  });
   for (const allocation of allocations)
     await tx`insert into tender_allocations(tenant_id,order_id,tender_id,line_id,unit_index,amount)
       values(${s.tenantId},${orderId},${tenderId},${allocation.lineId},${allocation.unit},${allocation.amount})`;

@@ -496,6 +496,8 @@ export type RecordPaymentOptions = {
    * balance, enabled platform, price list); an archived terminal is accepted.
    */
   evidence?: boolean;
+  /** Offline evidence named a terminal that no longer exists: noted on the audit row. */
+  droppedTerminalId?: string | null;
 };
 export async function recordPayment(
   tx: Tx,
@@ -597,6 +599,12 @@ export async function recordPayment(
       tip: p.tip,
       ...(terminal ? { terminalId: terminal.id } : {}),
       ...(platform ? { platform: platform.row.platform } : {}),
+      ...(opts.droppedTerminalId
+        ? {
+            droppedTerminalId: opts.droppedTerminalId,
+            note: "payments_terminal_unknown",
+          }
+        : {}),
     });
     // Settle the check before the receipt is read; a settling payment issues
     // the fiscal ticket there (folio counter, LO-12, last). Payments never bump

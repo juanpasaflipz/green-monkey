@@ -21,7 +21,11 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Tx } from "./db.js";
 import { DomainError, id, type Order, type Session } from "../shared/domain.js";
-import { paymentAttemptV1 } from "../shared/offline-recovery.js";
+import {
+  offlinePaymentIssue,
+  paymentAttemptV1,
+} from "../shared/offline-recovery.js";
+import { evidenceExtras, insertTender } from "./payments/tenders.js";
 import { allocatePayment } from "../shared/settlement.js";
 import { hash, managers, permit } from "./auth.js";
 import { audit, getOrder, once, paymentInput } from "./orders.js";
@@ -100,11 +104,11 @@ export async function resolvePaymentAttempt(
         );
         return { state: "discarded" as const };
       }
-      // Evidence the payment command itself would have required.
+      // Evidence the payment command itself would have required (payments 037: per method,
+      // platform included; nothing defaults to cash).
       if (
-        payload.method === "cash"
-          ? payload.received < payload.amount + payload.tip
-          : !payload.externalConfirmed || !payload.reference.trim()
+        offlinePaymentIssue(payload) ||
+        (payload.method === "platform" && payload.items)
       )
         throw new DomainError("invalid_input", 400);
       // Global lock order (§4.4.1): the order, then the drawer.
@@ -124,9 +128,20 @@ export async function resolvePaymentAttempt(
       const allocations = order.itemSplitAvailable
         ? allocatePayment(order.paymentUnits!, payload.amount, payload.items)
         : [];
-      const tenderId = randomUUID();
-      await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,source,source_id,created_at)
-        values(${s.tenantId},${tenderId},${order.id},${cash.id},${payload.method},${payload.amount},${payload.tip},${payload.received},${payload.reference || null},'offline_recovery',${payload.operationId},clock_timestamp())`;
+      const extras = await evidenceExtras(tx, payload);
+      const tenderId = await insertTender(tx, s, {
+        orderId: order.id,
+        drawerId: cash.id,
+        method: payload.method,
+        amount: payload.amount,
+        tip: payload.tip,
+        received: payload.received,
+        reference: payload.reference || null,
+        source: { kind: "offline_recovery", id: payload.operationId },
+        clock: true,
+        terminal: extras.terminal,
+        platform: extras.platform,
+      });
       for (const allocation of allocations)
         await tx`insert into tender_allocations(tenant_id,order_id,tender_id,line_id,unit_index,amount)
           values(${s.tenantId},${order.id},${tenderId},${allocation.lineId},${allocation.unit},${allocation.amount})`;
@@ -137,6 +152,14 @@ export async function resolvePaymentAttempt(
         amount: payload.amount,
         tip: payload.tip,
         method: payload.method,
+        ...(extras.terminal ? { terminalId: extras.terminal.id } : {}),
+        ...(extras.platform ? { platform: extras.platform.row.platform } : {}),
+        ...(extras.droppedTerminalId
+          ? {
+              droppedTerminalId: extras.droppedTerminalId,
+              note: "payments_terminal_unknown",
+            }
+          : {}),
         originalEmployeeId: attempt.employeeId,
         originalDeviceId: attempt.deviceId,
         originalDrawerId: cash.id,

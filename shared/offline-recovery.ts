@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { id, lineInput, money, orderInput } from "./domain.js";
+import { TENDER_METHODS, tenderExtras } from "./payments.js";
 
 export const offlineSaleV1 = z
   .object({
@@ -62,10 +63,13 @@ export const paymentAttemptV1 = z
         amount: money.refine((n) => n > 0),
         tip: money,
         received: money,
-        method: z.enum(["cash", "external"]),
+        // payments (037): platform tenders and named terminals. The extras are optional with
+        // no default, so a pre-037 attempt parses (and fingerprints) exactly as before.
+        method: z.enum(TENDER_METHODS),
         externalConfirmed: z.boolean(),
         reference: z.string().max(120),
         items: z.array(z.string()).max(9900).optional(),
+        ...tenderExtras,
       })
       .strict(),
   })
@@ -156,22 +160,57 @@ export const leaseRef = z
 
 export const offlinePayment = z
   .object({
-    method: z.enum(["cash", "external"]),
+    method: z.enum(TENDER_METHODS),
     amount: money.refine((n) => n > 0),
     tip: money,
     received: money,
     reference: z.string().trim().max(120),
     externalConfirmed: z.boolean(),
+    // payments (037): optional, no defaults (hash stability of existing records).
+    ...tenderExtras,
   })
   .strict()
   .superRefine((p, ctx) => {
-    if (p.method === "external" && (!p.externalConfirmed || !p.reference))
-      ctx.addIssue({ code: "custom", message: "external_confirmation" });
-    if (p.method === "external" && p.received !== p.amount + p.tip)
-      ctx.addIssue({ code: "custom", message: "external_received" });
-    if (p.method === "cash" && p.received < p.amount + p.tip)
-      ctx.addIssue({ code: "custom", message: "insufficient_cash" });
+    const issue = offlinePaymentIssue(p);
+    if (issue) ctx.addIssue({ code: "custom", message: issue });
   });
+/**
+ * Why a payment's evidence is inconsistent, or null (the device and the server judge alike):
+ * cash covers amount + tip; a terminal is confirmed with a reference and received = amount + tip;
+ * a platform tender (payments 037) is confirmed, names its platform (Otra with a label), has no
+ * tip and received = amount. A terminal belongs to external tenders, a platform to platform ones.
+ */
+export function offlinePaymentIssue(p: {
+  method: string;
+  amount: number;
+  tip: number;
+  received: number;
+  reference: string;
+  externalConfirmed: boolean;
+  terminalId?: string;
+  platform?: string;
+  platformLabel?: string;
+}): string | null {
+  if (p.terminalId && p.method !== "external") return "invalid_input";
+  if ((p.platform || p.platformLabel) && p.method !== "platform")
+    return "invalid_input";
+  switch (p.method) {
+    case "cash":
+      return p.received < p.amount + p.tip ? "insufficient_cash" : null;
+    case "external":
+      if (!p.externalConfirmed || !p.reference.trim())
+        return "external_confirmation";
+      return p.received !== p.amount + p.tip ? "external_received" : null;
+    case "platform":
+      if (!p.platform || (p.platform === "other") !== Boolean(p.platformLabel))
+        return "payments_platform_required";
+      if (!p.externalConfirmed) return "payments_platform_confirm_required";
+      if (p.tip !== 0) return "payments_platform_no_tip";
+      return p.received !== p.amount ? "invalid_input" : null;
+    default:
+      return "invalid_input";
+  }
+}
 export type OfflinePayment = z.infer<typeof offlinePayment>;
 
 export const v3Base = {

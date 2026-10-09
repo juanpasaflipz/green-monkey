@@ -179,17 +179,31 @@ export const pauseInput = z
  * passes a server-fresh operationId (lock order LO-R5) and recordPayment
  * re-parses the result. The accept's own operationId makes the payment
  * idempotent.
+ *
+ * payments (037, critic R13): a union on `method`. P1 ships cash and the
+ * manual terminal record (with an optional named terminal); the kiosk (039)
+ * adds `{method: "attempt", attemptId}`. A platform tender is never accepted
+ * for a hold. Both variants keep the pre-037 fields and defaults, so an older
+ * body parses to the same object (the accept's once() fingerprint).
  */
-export const holdPaymentInput = z
-  .object({
-    amount: money.refine((n) => n > 0),
-    tip: money.default(0),
-    received: money,
-    method: z.enum(["cash", "external"]),
-    externalConfirmed: z.boolean().default(false),
-    reference: z.string().max(120).default(""),
-  })
-  .strict();
+const holdPayment = <M extends z.ZodTypeAny>(method: M) => ({
+  // Field order is the pre-037 schema's: it is the parsed object's key order.
+  amount: money.refine((n) => n > 0),
+  tip: money.default(0),
+  received: money,
+  method,
+  externalConfirmed: z.boolean().default(false),
+  reference: z.string().max(120).default(""),
+});
+export const holdPaymentInput = z.discriminatedUnion("method", [
+  z.object(holdPayment(z.literal("cash"))).strict(),
+  z
+    .object({
+      ...holdPayment(z.literal("external")),
+      terminalId: id.optional(),
+    })
+    .strict(),
+]);
 export const acceptInput = z
   .object({
     operationId: id,
