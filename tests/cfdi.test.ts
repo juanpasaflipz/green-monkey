@@ -154,12 +154,15 @@ describe("catalog (local copy of spec §4.2)", () => {
       ),
     ).toBe("01");
     expect(paymentFormFor([], "04")).toBe("01");
-    expect(needsCardForm([{ method: "cash", amount: 10 }])).toBe(false);
+    expect(needsCardForm([{ method: "cash", amount: 10 }], "31")).toBe(false);
     expect(
-      needsCardForm([
-        { method: "cash", amount: 10 },
-        { method: "external", amount: 11 },
-      ]),
+      needsCardForm(
+        [
+          { method: "cash", amount: 10 },
+          { method: "external", amount: 11 },
+        ],
+        "31",
+      ),
     ).toBe(true);
   });
 });

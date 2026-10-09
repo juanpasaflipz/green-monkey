@@ -10,7 +10,11 @@ import { translateError } from "../../i18n";
 import { db, type Pending } from "../../offline";
 import { dependencyOf, settleAlreadySynced } from "../../offline-queue";
 import { reconciledResult } from "../../offline-records";
-import { currentBusinessDate, orderNumberText } from "../../labels";
+import {
+  currentBusinessDate,
+  offlineMethodKey,
+  orderNumberText,
+} from "../../labels";
 import { carriesMoney, translator } from "./format";
 import { dateTime } from "../../datetime";
 
@@ -23,7 +27,7 @@ export type OfflineReviewDetail = {
   kind: OfflineRecordKind;
   collected: number;
   tip: number;
-  method: "cash" | "external" | null;
+  method: "cash" | "external" | "platform" | null;
   reference: string | null;
   recordedAt: string;
   recordedAtDevice: string | null;
@@ -224,9 +228,7 @@ export function OfflineReviewPanel({
             <dd>
               {format(detail.collected)} + {format(detail.tip)}{" "}
               {es ? "propina" : "tip"}
-              {detail.method
-                ? ` · ${t(external ? "offlineMethodExternal" : "offlineMethodCash")}`
-                : ""}
+              {detail.method ? ` · ${t(offlineMethodKey(detail.method))}` : ""}
               {detail.reference ? ` · ${detail.reference}` : ""}
             </dd>
           </>

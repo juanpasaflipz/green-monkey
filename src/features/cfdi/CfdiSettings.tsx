@@ -31,6 +31,8 @@ import {
 import type { Locale, Session } from "../../../shared/domain";
 import {
   CARD_PAYMENT_FORMS,
+  PLATFORM_PAYMENT_FORMS,
+  type PlatformForm,
   CFDI_USES,
   PERIODICITIES,
   RESICO_REGIME,
@@ -473,6 +475,13 @@ const USE_KEYS: Record<CfdiUse, Key> = {
   S01: "cfdiUseS01",
 };
 
+/** payments (037): the option label of each platform FormaPago. */
+const PLATFORM_FORM_KEYS = {
+  "31": "cfdiForm31",
+  "03": "cfdiForm03",
+  "04": "cfdiForm04",
+  "28": "cfdiForm28",
+} as const;
 type Form = Omit<CfdiSettingsInput, "operationId" | "expectedVersion">;
 
 function formOf(s: NonNullable<CfdiSettingsView["settings"]>): Form {
@@ -486,6 +495,8 @@ function formOf(s: NonNullable<CfdiSettingsView["settings"]>): Form {
     conceptMode: s.conceptMode,
     conceptDescription: s.conceptDescription,
     cardPaymentForm: s.cardPaymentForm,
+    // payments (037): FormaPago of platform-paid orders (default 31, the accountant confirms).
+    platformPaymentForm: s.platformPaymentForm ?? "31",
     defaultUse: s.defaultUse,
     selfInvoiceEnabled: s.selfInvoiceEnabled,
     // A self-invoicing change that waits is what the owner chose (as the periodicity's).
@@ -1026,6 +1037,23 @@ export function CfdiSettings({
               ))}
               <p className="muted tiny">{t.cfdiCardFormHint}</p>
             </fieldset>
+            <Field label={t.cfdiPlatformForm}>
+              <select
+                value={form.platformPaymentForm ?? "31"}
+                onChange={(e) =>
+                  set({
+                    platformPaymentForm: e.target.value as PlatformForm,
+                  })
+                }
+              >
+                {PLATFORM_PAYMENT_FORMS.map((f) => (
+                  <option key={f} value={f}>
+                    {t[PLATFORM_FORM_KEYS[f]]}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <p className="muted tiny">{t.cfdiPlatformFormHint}</p>
             <Field label={t.cfdiDefaultUse}>
               <select
                 value={form.defaultUse}

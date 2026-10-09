@@ -16,7 +16,7 @@
  */
 import { Temporal } from "@js-temporal/polyfill";
 import { z } from "zod";
-import { boundaries, id } from "./domain.js";
+import { boundaries, DomainError, id } from "./domain.js";
 import { groupSelfInvoiceCode, normalizeSelfInvoiceCode } from "./fiscal.js";
 import {
   GENERIC_RFCS,
@@ -47,32 +47,81 @@ export type CfdiUse = (typeof CFDI_USES)[number];
 
 export const PAYMENT_FORMS = {
   "01": "Efectivo",
+  "03": "Transferencia electrónica de fondos",
   "04": "Tarjeta de crédito",
   "28": "Tarjeta de débito",
+  "31": "Intermediario pagos",
 } as const;
 export const CARD_PAYMENT_FORMS = ["04", "28"] as const;
 export type CardForm = (typeof CARD_PAYMENT_FORMS)[number];
+/**
+ * payments (037): the FormaPago of platform tenders ("Pagado por plataforma"), a restaurant
+ * setting (cfdi_settings.platform_payment_form). 31 "Intermediario pagos" is the default the
+ * accountant confirms; 03 (the payout arrives by transfer) and the card forms are alternatives.
+ * 99 is never offered: green-monkey always stamps PUE.
+ */
+export const PLATFORM_PAYMENT_FORMS = ["31", "03", "04", "28"] as const;
+export type PlatformForm = (typeof PLATFORM_PAYMENT_FORMS)[number];
+export const DEFAULT_PLATFORM_FORM: PlatformForm = "31";
+export type PaymentFormCode = "01" | CardForm | PlatformForm;
+/**
+ * The forms a substitute credit note may carry (CFDI-SAT-2; PAYMENTS-FISCAL-1): cash, the card
+ * forms and the platform forms, so a platform refund's note (31 or 03) can be corrected to either.
+ * cfdi_documents.payment_form_override has the same list (037).
+ */
+export const SUBSTITUTE_PAYMENT_FORMS = ["01", "03", "04", "28", "31"] as const;
+export type SubstituteForm = (typeof SUBSTITUTE_PAYMENT_FORMS)[number];
+/** The forms that depend on settings: the card answer and the platform setting. */
+export type PaymentForms = { card: CardForm; platform?: PlatformForm };
+/** A tender as the CFDI sees it (fiscal ticket payload); the extras are optional (old tickets). */
+export type FormPayment = {
+  method: string;
+  amount: number;
+  /** Integrated card tenders know credit/debit/prepaid from the provider (Q4). */
+  cardType?: string | null;
+};
+
+/** One tender's FormaPago. Unknown methods are refused, never read as cash (spec §11.2). */
+function tenderForm(p: FormPayment, forms: PaymentForms): PaymentFormCode {
+  switch (p.method) {
+    case "cash":
+      return "01";
+    case "external":
+      return p.cardType === "credit"
+        ? "04"
+        : p.cardType === "debit" || p.cardType === "prepaid"
+          ? "28"
+          : forms.card;
+    case "platform":
+      return forms.platform ?? DEFAULT_PLATFORM_FORM;
+    default:
+      throw new DomainError("cfdi_payment_method_unknown", 409);
+  }
+}
 
 /**
  * SAT FormaPago: the form with which the largest amount was paid (Anexo 20 guide; SAT global
  * guide for the ticket of greatest amount). Cash tenders (and offline recovery cash) are "01"; an
- * external terminal is the card form given (credit 04 / debit 28). Ties take the form of the
- * earliest tender (array order = created_at). Tips are not part of `amount`. No payment at all
- * reads as cash.
+ * external terminal is credit 04 / debit or prepaid 28 when the provider told us, else the card
+ * form given; a platform tender is the restaurant's platform form (default 31, payments 037).
+ * Ties take the form of the earliest tender (array order = created_at). Tips are not part of
+ * `amount`. No payment at all reads as cash. `forms` may be the card form alone (older callers):
+ * platform tenders then take the default platform form.
  */
 export function paymentFormFor(
-  payments: readonly { method: string; amount: number }[],
-  card: CardForm,
-): "01" | CardForm {
-  const sums = new Map<"01" | CardForm, number>();
+  payments: readonly FormPayment[],
+  forms: CardForm | PaymentForms,
+): PaymentFormCode {
+  const f: PaymentForms = typeof forms === "string" ? { card: forms } : forms;
+  const sums = new Map<PaymentFormCode, number>();
   for (const p of payments) {
-    const form = p.method === "external" ? card : "01";
+    const form = tenderForm(p, f);
     sums.set(
       form,
       (sums.get(form) ?? 0) + (Number.isFinite(p.amount) ? p.amount : 0),
     );
   }
-  let best: "01" | CardForm = "01";
+  let best: PaymentFormCode = "01";
   let bestAmount = -Infinity;
   // Map iteration is insertion order: the first tender's form wins a tie.
   for (const [form, amount] of sums)
@@ -83,11 +132,20 @@ export function paymentFormFor(
   return best;
 }
 
-/** True when the forma de pago depends on a card answer (credit or debit). */
+/**
+ * True when the forma de pago depends on a card answer (credit or debit): an external tender
+ * without a known card type decides the form. `platform` is the restaurant's platform form
+ * (cfdi_settings.platform_payment_form), required so no caller silently assumes 31: with 04 or
+ * 28 the platform money joins a card sum and may change the answer (PAYMENTS-FISCAL-3).
+ */
 export function needsCardForm(
-  payments: readonly { method: string; amount: number }[],
+  payments: readonly FormPayment[],
+  platform: PlatformForm,
 ): boolean {
-  return paymentFormFor(payments, "04") !== "01";
+  return (
+    paymentFormFor(payments, { card: "04", platform }) !==
+    paymentFormFor(payments, { card: "28", platform })
+  );
 }
 
 /**
@@ -729,6 +787,9 @@ export const cfdiSettingsInput = z
     conceptMode: z.enum(["grouped", "itemized"]),
     conceptDescription: z.string().trim().min(1).max(200),
     cardPaymentForm: z.enum(CARD_PAYMENT_FORMS),
+    // payments (037): optional with no default, so an older client's save hashes as before and
+    // keeps the stored value.
+    platformPaymentForm: z.enum(PLATFORM_PAYMENT_FORMS).optional(),
     defaultUse: z.enum(CFDI_USES),
     selfInvoiceEnabled: z.boolean(),
     selfInvoicePolicy: z.enum(["month", "days"]),
@@ -799,7 +860,7 @@ export const substituteInput = z
 export const egresoSubstituteInput = z
   .object({
     operationId: id,
-    paymentForm: z.enum(["01", ...CARD_PAYMENT_FORMS]),
+    paymentForm: z.enum(SUBSTITUTE_PAYMENT_FORMS),
     reason: z.string().trim().min(1).max(300),
   })
   .strict();
@@ -988,6 +1049,8 @@ export type CfdiSettingsView = CfdiStatusView & {
     conceptMode: "grouped" | "itemized";
     conceptDescription: string;
     cardPaymentForm: CardForm;
+    /** payments (037): FormaPago of platform tenders. */
+    platformPaymentForm: PlatformForm;
     defaultUse: CfdiUse;
     selfInvoiceEnabled: boolean;
     selfInvoicePolicy: "month" | "days";

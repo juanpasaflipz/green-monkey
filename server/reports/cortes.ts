@@ -193,6 +193,8 @@ export async function drawerCorte(
     printedByName: s.name,
     controls: corteFigures,
     folios,
+    // PAYMENTS-SECURITY-3: fees and commissions for owners and managers only.
+    fees: full && managers.includes(s.role),
   });
 }
 

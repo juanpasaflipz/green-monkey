@@ -13,7 +13,7 @@
 | Parked carts/templates, call names, fulfillment | POS Lite selling; Luma notes/table orders | Durable cart and service model | 2, required |
 | Kitchen/bar, status, seen acknowledgement | Both KDS; POS Lite KDS devices | One queue per station, reliable acknowledgements | 2–3, required |
 | Thermal receipts, kitchen printing, reprints | Both print bridges/jobs | One device-authorized durable print pipeline | 2–3, required; hardware validation gate |
-| Cash, separate external bank terminal recording | Both payment methods; POS Lite external terminals | One payment workspace; explicit manual recording | 2, required |
+| Cash, separate external bank terminal recording | Both payment methods; POS Lite external terminals | One payment workspace; explicit manual recording; named terminals with fee rates and the «Pagado por plataforma» tender with platform prices (payments 037 P1) | 2, required |
 | Integrated payments and terminal binding | POS Lite Stripe/MP/Getnet; Clip partial | Retain adapters, prove each enabled provider | 3, required for configured providers |
 | Split by items/amount; grouped settlement | Both splits; POS Lite payment groups | Canonical allocations; keep kitchen orders distinct | 3, required |
 | Full/partial refunds, cancellations, history | Both | Reversal records and scoped manager approval | 2–3, required |

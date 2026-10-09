@@ -364,7 +364,7 @@ async function makeTicket(
   t: Fixture,
   o: {
     groups?: { category: TaxCategory; gross: number }[];
-    payments?: { method: "cash" | "external"; amount: number }[];
+    payments?: { method: "cash" | "external" | "platform"; amount: number }[];
     businessDate?: string;
   } = {},
 ): Promise<Ticket> {
@@ -395,9 +395,10 @@ async function makeTicket(
     for (const p of payments) {
       const tenderId = randomUUID();
       tenderIds.push(tenderId);
-      await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,received,external_reference)
+      // payments (037): a platform tender names its platform (tenders_platform_shape).
+      await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,received,external_reference,platform)
         values(${t.tenantId},${tenderId},${orderId},${p.method === "cash" ? t.drawerId : null},${p.method},${p.amount},${p.amount},
-          ${p.method === "external" ? "CFDI-TERM-" + number : null})`;
+          ${p.method === "external" ? "CFDI-TERM-" + number : null},${p.method === "platform" ? "didi_food" : null})`;
     }
     await tx`insert into fiscal_tickets(tenant_id,id,order_id,series,number,self_invoice_code,business_date,
         issued_by,source,currency,gross_before_discount,discount,gross,base,tax,tax_basis,issuer,lines,payments)
@@ -434,7 +435,7 @@ async function refund(
   t: Fixture,
   tk: Ticket,
   amounts: Partial<Record<TaxCategory, number>>,
-  method: "cash" | "external" = "cash",
+  method: "cash" | "external" | "platform" = "cash",
 ): Promise<string> {
   const refundId = randomUUID();
   const total = Object.values(amounts).reduce((s, n) => s + (n ?? 0), 0);
@@ -4110,6 +4111,73 @@ try {
       [e2.id],
     );
     assert.equal((await viewOf(W, d.id)).canCancel, false, "still credited");
+  });
+
+  await test("PAYMENTS-FISCAL-1. a platform refund's credit note stamped 31 is corrected to 03: the substitute carries 03, relates 04 to the old note, and the old one is canceled", async () => {
+    const W = await makeTenant("payments-fiscal-1");
+    await activate(W);
+    const tk = await makeTicket(W, {
+      payments: [{ method: "platform", amount: 11600 }],
+    });
+    const d = await invoice(W, tk);
+    await settle(W.tenantId);
+    assert.equal((await docRow(d.id)).payment_form, "31");
+    const refundId = await refund(W, tk, { iva16: 2320 }, "platform");
+    await settle(W.tenantId);
+    const [e] =
+      await admin`select id, status, uuid, payment_form from cfdi_documents where refund_id = ${refundId} and kind = 'egreso'`;
+    assert.deepEqual(
+      { status: e.status, form: e.payment_form },
+      { status: "valid", form: "31" },
+    );
+    // The dialog's list and the API accept every platform form; 99 never.
+    await assert.rejects(correctCreditNote(W, e.id, "99"), /paymentForm/);
+    const e2 = await correctCreditNote(W, e.id, "03");
+    await settle(W.tenantId);
+    const row = await docRow(e2.id);
+    assert.deepEqual(
+      {
+        status: row.status,
+        refund: row.refund_id,
+        form: row.payment_form,
+        override: row.payment_form_override,
+      },
+      { status: "valid", refund: refundId, form: "03", override: "03" },
+    );
+    assert.deepEqual(row.request.related_documents, [
+      { relationship: "01", documents: [(await docRow(d.id)).uuid] },
+      { relationship: "04", documents: [e.uuid] },
+    ]);
+    assert.equal((await docRow(e.id)).status, "canceled");
+    // PAYMENTS-FISCAL-4 / FISCAL-2: the setting round-trips and reaches the worker's freeze; a
+    // later platform refund of the 31 invoice keeps 31, the new 03 invoice's refund takes 03.
+    await saveSettings(W, { platformPaymentForm: "03" });
+    const view = await web(W, (tx) => service.getSettings(tx, W.manager));
+    assert.equal(view.settings?.platformPaymentForm, "03");
+    const [audit] = await admin`select detail from audit
+      where tenant_id = ${W.tenantId} and operation = 'cfdi.settings.saved' order by id desc limit 1`;
+    assert.deepEqual(
+      [
+        audit?.detail?.before?.platformPaymentForm,
+        audit?.detail?.after?.platformPaymentForm,
+      ],
+      ["31", "03"],
+    );
+    const tk2 = await makeTicket(W, {
+      payments: [{ method: "platform", amount: 11600 }],
+    });
+    const d2 = await invoice(W, tk2);
+    await settle(W.tenantId);
+    assert.equal((await docRow(d2.id)).payment_form, "03");
+    const late = await refund(W, tk, { iva16: 1160 }, "platform");
+    const late2 = await refund(W, tk2, { iva16: 1160 }, "platform");
+    await settle(W.tenantId);
+    const forms = await admin`select refund_id, payment_form from cfdi_documents
+      where refund_id in (${late}, ${late2}) and kind = 'egreso' and status = 'valid'`;
+    assert.deepEqual(
+      Object.fromEntries(forms.map((r) => [r.refund_id, r.payment_form])),
+      { [late]: "31", [late2]: "03" },
+    );
   });
 
   await test("MONEY-1c / SAT-2. when the provider refuses the old note's motive-01 cancellation, both notes are valid: the attention count shows it and the old note offers the cancellation again", async () => {

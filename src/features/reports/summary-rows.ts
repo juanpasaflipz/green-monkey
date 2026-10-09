@@ -72,6 +72,17 @@ export function summarySections(
             neg(summary.refunds.external),
             { indent: true },
           ),
+          // payments (037): platform refunds, only when there are any.
+          ...(summary.refunds.platform
+            ? [
+                line(
+                  "refunds.platform",
+                  tenderMethodLabel("platform", undefined, locale),
+                  neg(summary.refunds.platform),
+                  { indent: true },
+                ),
+              ]
+            : []),
         ]
       : []),
     line("voids", t.reportsVoids, s.voids.amount, {

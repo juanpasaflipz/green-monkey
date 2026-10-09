@@ -80,6 +80,7 @@ import * as cfdiRoutes from "./routes/cfdi.js";
 import { cfdiCapability } from "./cfdi/hooks.js";
 import * as accountRoutes from "./routes/account.js";
 import * as publicOrderingRoutes from "./routes/public-ordering.js";
+import * as paymentsRoutes from "./routes/payments.js";
 import * as loyaltyRoutes from "./routes/loyalty.js";
 import { loyaltyCapability } from "./loyalty/settings.js";
 import {
@@ -157,7 +158,9 @@ discountsRoutes.registerPreAuth({ app, sql });
 reportsRoutes.registerPreAuth({ app, sql });
 cfdiRoutes.registerPreAuth({ app, sql });
 accountRoutes.registerPreAuth({ app, sql });
-// loyalty (038, R31): the diner's /club page, after account's pre-auth routes.
+// payments (037): provider webhooks (P2) are pre-auth, before authentication (critic R31).
+paymentsRoutes.registerPreAuth({ app, sql });
+// loyalty (038, R31): the diner's /club page, after account's pre-auth routes and payments'.
 loyaltyRoutes.registerPreAuth({ app, sql });
 app.use("/api", authentication(sql));
 // account (031): every /api/account-data/* path is owner-only with a recent step-up (C30).
@@ -489,7 +492,8 @@ reportsRoutes.register({ app, sql, route });
 cfdiRoutes.register({ app, sql, route });
 accountRoutes.register({ app, sql, route });
 publicOrderingRoutes.register({ app, sql, route });
-// loyalty (038, R31): after public ordering (payments P1's routes go before it when it merges).
+// Wave 4 authenticated routes, in order: payments, loyalty, kiosk (critic R31).
+paymentsRoutes.register({ app, sql, route });
 loyaltyRoutes.register({ app, sql, route });
 app.use("/api", (_req, res) => res.status(404).json({ error: "not_found" }));
 if (process.env.NODE_ENV === "production") {

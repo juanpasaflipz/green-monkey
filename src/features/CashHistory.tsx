@@ -3,7 +3,7 @@ import type { Locale } from "../../shared/domain";
 import { currencyExponent } from "../../shared/domain";
 import { api } from "../api";
 import { strings, errorNotice } from "../i18n";
-import { tenderMethodLabel } from "../labels";
+import { tenderLabel, tenderMethodLabel } from "../labels";
 import { Badge, Button } from "../components/ui";
 import { fill } from "./discounts/format";
 import "./cash/cash.css";
@@ -169,8 +169,7 @@ export function CashHistory({
             <ul>
               {detail.tenders.map((x: any) => (
                 <li key={x.id}>
-                  {tenderMethodLabel(x.method, x.source, locale)} ·{" "}
-                  {format(x.amount + x.tip, row)} ·{" "}
+                  {tenderLabel(x, locale)} · {format(x.amount + x.tip, row)} ·{" "}
                   {dateTime(x.created_at, timezone, locale)}
                 </li>
               ))}

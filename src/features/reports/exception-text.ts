@@ -2,6 +2,7 @@ import type { Label, Locale } from "../../../shared/domain";
 import type { AuditRow, ExceptionRow } from "../../../shared/reports";
 import { strings, type Key } from "../../i18n";
 import { reasonLabel } from "../discounts/format";
+import { platformLabel } from "../../../shared/payments";
 import { differenceLabel, fill, pct } from "./format";
 
 /**
@@ -96,6 +97,8 @@ export function exceptionDetail(
           cash: m(num(d.cash)),
           external: m(num(d.external)),
         }),
+        // payments (037): the platform part of a refund, when there is one.
+        num(d.platform) ? `${t.payRefundPlatform} ${m(num(d.platform))}` : "",
         d.mode === "items"
           ? t.reportsRefundModeItems
           : d.mode === "amount"
@@ -107,7 +110,10 @@ export function exceptionDetail(
         .join(" · ");
     case "terminal_difference":
       // REPORTS-UI-4: the signed amount alone reads like a loss; the word says which.
-      return differenceLabel(row.amount, locale);
+      // payments (037): a batch total typed per terminal names its terminal.
+      return d.terminalId !== undefined
+        ? `${typeof d.terminal === "string" && d.terminal ? d.terminal : t.payOtherTerminal} · ${differenceLabel(row.amount, locale)}`
+        : differenceLabel(row.amount, locale);
     case "drawer_difference":
       return [
         differenceLabel(row.amount, locale),
@@ -137,6 +143,34 @@ export function exceptionDetail(
       return d.path === "offline.payment_reconciled"
         ? t.reportsOfflinePaymentReconciled
         : t.reportsOfflineSaleRecovered;
+    case "platform_tender": {
+      // LD-75: which platform (an «Otra» shows its typed name), why it is listed, the order's
+      // price list and the platform's order number.
+      const why =
+        row.reasonCode === "payments_platform_rule_skipped"
+          ? t.payExPlatformRuleSkipped
+          : row.reasonCode === "payments_platform_other"
+            ? t.payExPlatformOther
+            : t.payExPlatformNoPriceList;
+      const list =
+        typeof d.priceList === "string"
+          ? fill(t.payExPlatformPriceList, {
+              list: platformLabel(d.priceList, null, locale),
+            })
+          : t.payExPlatformCounterPrices;
+      return [
+        platformLabel(
+          typeof d.platform === "string" ? d.platform : null,
+          typeof d.label === "string" ? d.label : null,
+          locale,
+        ),
+        why,
+        list,
+        typeof d.reference === "string" && d.reference ? "#" + d.reference : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    }
     default:
       return "";
   }

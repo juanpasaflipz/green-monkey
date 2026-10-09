@@ -33,6 +33,7 @@ import {
 } from "./cash/drawer-cache";
 import type { DrawerView } from "./cash/DrawerCloseDialog";
 import { DrawerReviewDialog } from "./cash/DrawerReviewDialog";
+import { PaymentSettings } from "./payments/PaymentSettings";
 import { MoneyControlsSettings } from "./cash/MoneyControlsSettings";
 import type { CashHistoryRow } from "./CashHistory";
 import { TodayDashboard } from "./reports/TodayDashboard";
@@ -208,6 +209,14 @@ export function Operations({
           {manager && <CfdiSettings session={session} locale={locale} />}
           {manager && (
             <MoneyControlsSettings session={session} locale={locale} />
+          )}
+          {/* payments (037, critic R26): after money controls, before privacy. */}
+          {manager && (
+            <PaymentSettings
+              session={session}
+              locale={locale}
+              online={online}
+            />
           )}
           {["owner", "manager"].includes(session.role) && (
             <AccountPrivacy session={session} locale={locale} />

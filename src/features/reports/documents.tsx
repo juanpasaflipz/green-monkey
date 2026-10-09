@@ -6,6 +6,7 @@ import type {
 } from "../../../shared/reports";
 import { strings } from "../../i18n";
 import { tenderMethodLabel } from "../../labels";
+import { platformLabel } from "../../../shared/payments";
 import {
   DocFooter,
   DocHeader,
@@ -195,7 +196,56 @@ export function DrawerCorteDocument({
             value={m(doc.terminal.difference)}
           />
         )}
+        {/* payments (037): by terminal once a named terminal took money in this drawer. */}
+        {(doc.terminals ?? []).some((x) => x.terminalId) &&
+          (doc.terminals ?? []).map((x) => (
+            <div key={x.terminalId ?? "other"}>
+              <DocRow
+                label={`${x.label ?? t.payOtherTerminal} (${x.count})`}
+                value={m(x.net)}
+              />
+              {x.reported !== null && (
+                <DocRow label={`· ${t.cashBatchTotal}`} value={m(x.reported)} />
+              )}
+              {x.difference !== null && x.difference !== 0 && (
+                <DocRow
+                  label={`· ${t.cashBatchDifference}`}
+                  value={m(x.difference)}
+                />
+              )}
+              {x.kioskCount > 0 && (
+                <DocRow
+                  label={`· ${fill(t.cashKioskSales, { count: x.kioskCount, amount: m(x.kioskAmount) })}`}
+                  value=""
+                />
+              )}
+              {x.fees !== undefined && x.fees > 0 && (
+                <DocRow label={`· ${t.cashTerminalFees}`} value={m(x.fees)} />
+              )}
+            </div>
+          ))}
       </DocSection>
+      {(doc.platforms ?? []).length > 0 && (
+        <>
+          <DocRule />
+          <DocSection title={t.cashPlatforms}>
+            {(doc.platforms ?? []).map((x) => (
+              <div key={`${x.platform}:${x.label ?? ""}`}>
+                <DocRow
+                  label={`${platformLabel(x.platform, x.label, locale)} (${x.count})`}
+                  value={m(x.net)}
+                />
+                {x.commission !== undefined && x.commission > 0 && (
+                  <DocRow
+                    label={`· ${t.payReportsCommission}`}
+                    value={m(x.commission)}
+                  />
+                )}
+              </div>
+            ))}
+          </DocSection>
+        </>
+      )}
       <DocRule />
       <DocSection title={t.reportsDocPayments}>
         <DocRow

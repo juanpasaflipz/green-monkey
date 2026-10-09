@@ -100,6 +100,7 @@ const EXCEPTION_KEYS: Record<ExceptionKind, Key> = {
   open_price: "reportsExKindOpenPrice",
   offline_archive: "reportsExKindOfflineArchive",
   offline_reconcile: "reportsExKindOfflineReconcile",
+  platform_tender: "payExKindPlatformTender",
 };
 export function exceptionKindLabel(kind: ExceptionKind, locale: Locale) {
   return strings[locale][EXCEPTION_KEYS[kind]];

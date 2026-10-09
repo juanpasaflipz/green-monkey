@@ -1,14 +1,25 @@
 # Guía de operación del piloto
 
 Para el propietario y los gerentes de turno de un restaurante piloto, y para quien
-instala el equipo. Borrador del 5 de octubre de 2026, escrito sobre `integration/v1`
-(la versión que hoy reúne acceso, servicio, menú y venta sin conexión).
+instala el equipo. Revisión del 9 de octubre de 2026 para el piloto de Juanberto's, que
+pasa de pos-lite (su sistema anterior) a Green Monkey. Escrita sobre `integration/v1`, la
+versión que está en producción (migraciones 001 a 036).
 
-**Estado.** Nada de esta guía se ha probado todavía con impresoras térmicas reales,
-tablets reales ni una caída real de internet; esas pruebas son condición para el
-piloto ([recuperación sin conexión, "Verification"](OFFLINE_RECOVERY.md#verification)).
-Esta versión todavía no está en producción: el lanzamiento lo hace el dueño del
-negocio con [la entrega de lanzamiento](LAUNCH_HANDOFF.md).
+**Estado.** Green Monkey está en producción desde el 9 de octubre de 2026 en
+`https://app.greenmonkey.online`; esa es la dirección que se abre en cada equipo. Ningún
+restaurante está dado de alta todavía: el alta del propietario se abre cuando se publiquen
+los datos legales ([entrega de lanzamiento](LAUNCH_HANDOFF.md)). Nada de esta guía se ha
+probado todavía con la impresora real, tablets reales ni una caída real de internet; esas
+pruebas son condición para el piloto
+([recuperación sin conexión, "Verification"](OFFLINE_RECOVERY.md#verification)). La lista
+del cambio desde pos-lite está en
+[la entrega de lanzamiento](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos).
+
+**Lo que llega antes del piloto (ola 4).** Está en construcción y **no está en
+producción**: cobro con terminales Clip y Mercado Pago Point integradas, terminales con
+nombre, cobro pagado por plataforma (Uber Eats, Rappi, DiDi) con precios por plataforma,
+lealtad y kiosco. Esta guía no da ningún paso que dependa de ella; se actualizará cuando
+llegue a producción.
 
 **Convención.** El texto entre comillas angulares (« ») es exactamente lo que dice la
 pantalla de Green Monkey; dentro de él, N, HH:mm y … marcan un número, una hora o un
@@ -21,8 +32,9 @@ soporte; esta guía no repite su contenido.
 
 - **Solo a través del diálogo de impresión del navegador.** No hay conexión directa
   con la impresora (USB, red o Bluetooth) ni comandos propios de impresora térmica.
-  Green Monkey no corta el papel ni abre el cajón de dinero: eso lo hace, o no, el
-  controlador de la impresora en el sistema operativo (sección 1.2).
+  Green Monkey no corta el papel ni abre el cajón de dinero: eso lo hace, o no, la cola de
+  impresión del sistema operativo. En Juanberto's, la cola `ghia-web` corta al final de
+  cada página y no abre el cajón (sección 1.2).
 - **El navegador nunca confirma que salió papel.** La misma app lo avisa: «La
   impresión del navegador no confirma que salió papel.» Revisa el papel; si no salió,
   vuelve a imprimir.
@@ -50,51 +62,140 @@ soporte; esta guía no repite su contenido.
   solo documento dentro de `#print-root`, oculta el resto de la página y llama a
   `window.print()`. Las reglas de impresión de `src/styles.css` fijan solo el ancho del
   contenido (72 mm en papel de 80 mm, 48 mm en papel de 58 mm) y `@page { margin: 0 }`
-  sin tamaño de página: **el largo lo define el rollo configurado en el controlador**.
-  Cuando un envío lleva comandas de dos estaciones, cada una es una sección con salto
-  de página. Más detalle: [Service, "Printing (browser/OS)"](SERVICE.md#printing-browseros).
+  sin tamaño de página: **el largo lo define el tamaño de papel elegido en el diálogo o
+  en la cola de impresión** (sección 1.2, paso 6). Cuando un envío lleva comandas de dos
+  estaciones, cada una es una sección con salto de página; con `ghia-web`, cada sección
+  sale con su propio corte. Más detalle:
+  [Service, "Printing (browser/OS)"](SERVICE.md#printing-browseros).
 
-### 1.2 Configurar la impresora térmica (58 u 80 mm) en el sistema operativo
+### 1.2 Configurar la impresora del piloto: GHIA GTP801 (USB, Mac de la caja)
 
-Lista para quien instala, en cada equipo que imprime. Los nombres exactos de las
-opciones cambian según el fabricante y el sistema; consulta el manual del controlador.
+Lista para quien instala, en la Mac de la caja de Juanberto's, donde está conectada por USB
+la impresora térmica GHIA GTP801 de 80 mm. Es la única impresora del piloto.
 
-1. **Controlador.** Instala el controlador del fabricante para el sistema del equipo
-   (Windows o macOS) e imprime su página de prueba desde la configuración de
-   impresoras del sistema.
-2. **Tamaño de papel.** El ancho del rollo (80 mm o 58 mm). Si el controlador ofrece un
-   tamaño de rollo continuo o de recibo, úsalo: Green Monkey no fija el largo.
-3. **Márgenes: ninguno**, en el controlador y en el diálogo de impresión del navegador.
-4. **Escala: 100 %.** No uses la opción de ajustar a la página: encoge el texto.
-5. **Encabezados y pies de página del navegador:** desactívalos si en el ticket salen la
-   fecha o la dirección de la página.
+**No uses el controlador del fabricante.** El controlador Gainscha para macOS no sirve con
+esta impresora: manda raster de Star, que la GTP801 no entiende, y lo impreso sale como
+basura o no sale. pos-lite (el sistema anterior de Juanberto's) lo resolvió en esta tienda
+con su propio filtro de CUPS y la cola `ghia-web`, instalados por su script
+`print-bridge/install-ghia-web.sh`. Chrome ya imprime en la GTP801 a través de esa cola.
+Green Monkey usa la misma cola (LD-71). Lo que hace `ghia-web`, según ese script:
 
-   **Pasos 3 a 5 sin verificar.** Son una guía general del navegador y no se han
-   probado en un equipo real. Los nombres y opciones del diálogo cambian según el
-   navegador; confírmalos en la prueba del paso 10. Lo único fijo es lo que pide Green
-   Monkey: `@page { margin: 0 }` y ningún tamaño de página (sección 1.1).
-6. **Ancho en Green Monkey:** «Ancho de papel» igual al rollo instalado.
-7. **Corte automático:** es una función del controlador o de la impresora (por ejemplo,
-   cortar al final de cada documento o de cada página). Green Monkey no envía la orden
-   de corte. Prueba con un envío que tenga cocina y barra para ver si cada estación sale
-   cortada por separado.
-8. **Apertura del cajón de dinero:** el cajón se conecta a la impresora y, si el
-   controlador tiene esa opción, lo abre al imprimir. Green Monkey no abre el cajón.
-   Antes del piloto, decide con el propietario y prueba:
-   - si el controlador lo abre en cada documento, también se abrirá al imprimir
-     comandas y cuentas en esa impresora;
-   - si el cajero no imprime el recibo, el cajón no se abre: define quién guarda la
-     llave del cajón o si el recibo de efectivo se imprime siempre;
-   - algunos controladores permiten una segunda impresora en el sistema (otra cola
-     para el mismo equipo) con otra configuración; verifica en el manual si el tuyo lo
-     permite antes de contar con ello.
-9. **Impresora predeterminada:** en la caja, deja la térmica como impresora
-   predeterminada del sistema. Por defecto Chrome propone la última impresora usada;
-   la política administrada `PrintPreviewUseSystemDefaultPrinter` (documentación de
-   políticas de Chrome Enterprise) hace que proponga la del sistema.
-10. **Prueba completa** en cada dispositivo: un recibo, una cuenta, una comanda con
-    cocina y barra, una reimpresión y una comanda sin conexión, con el ancho que usará
-    el restaurante.
+- convierte cada página que manda Chrome en una imagen ESC/POS de 80 mm (576 puntos a
+  203 ppp) con el filtro `/Library/Printers/POSLite/rastertoescpos`, que usa el Python del
+  sistema;
+- recorta el papel en blanco al final de cada página, así que un tamaño de página largo no
+  gasta papel;
+- al final de **cada página** avanza el papel y hace un corte parcial;
+- no manda la orden de abrir el cajón de dinero;
+- ofrece estos tamaños de papel: `72mm x 100mm`, `72mm x 150mm`, `72mm x 200mm (recibo)`
+  (el predeterminado de la cola), `72mm x 300mm` y `72mm x 400mm (recibo largo)`.
+
+**Qué equipo imprime.** Solo la Mac de la caja. Un iPad, sea la pantalla de cocina u otro,
+no puede imprimir en esta impresora: el iPad solo imprime con AirPrint, y la GTP801 está
+conectada por USB a la Mac y no es una impresora AirPrint. La comanda se imprime en el
+dispositivo que envía la orden (sección 1.1), así que las órdenes enviadas desde la Mac
+salen en papel y las de otro dispositivo llegan solo a la pantalla de cocina. En un iPad no
+actives «Imprimir comanda al enviar a cocina» ni «Imprimir tickets nuevos automáticamente en
+esta pantalla»: abrirían un diálogo sin impresora.
+
+1. **No desinstales las piezas de impresión de pos-lite en la Mac**, ni el día del cambio ni
+   después: la cola `ghia-web` y su filtro en `/Library/Printers/POSLite/`, la cola
+   `termica` y el puente de impresión de pos-lite. pos-lite sigue funcionando, solo para
+   consultas, después del cambio
+   ([entrega de lanzamiento, lista de cambio](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos)).
+2. **Revisa la cola `ghia-web`.** En Terminal, `lpstat -p ghia-web` debe mostrar la
+   impresora habilitada. Si no existe (por ejemplo, después de reinstalar macOS), con la
+   impresora conectada y encendida corre `sudo bash install-ghia-web.sh` desde la carpeta
+   `print-bridge` de pos-lite. El script busca la impresora USB, crea o reemplaza la cola
+   `ghia-web` e imprime una prueba (`PRUEBA GHIA-WEB`). Si la prueba no sale en unos
+   10 segundos, revisa `sudo tail -20 /var/log/cups/error_log`.
+3. **Desde Chrome, imprime solo en `ghia-web`.** `termica` es la cola sin filtro que usa el
+   puente de pos-lite: lo que Chrome le mande sale como basura. Una cola del controlador
+   Gainscha, o una cola genérica para esta misma impresora, también imprime basura. Si la
+   impresora empieza a sacar basura, haz lo que hizo pos-lite: cancela los trabajos
+   atascados con `cancel -a` y borra las colas que sobren. Nunca borres `ghia-web` ni
+   `termica`.
+4. **`ghia-web` como impresora predeterminada del sistema.**
+   - En Ajustes del Sistema, en Impresoras y escáneres, elige `ghia-web` como impresora
+     predeterminada. No elijas la opción de usar la última impresora.
+   - Con CUPS, `sudo lpadmin -d ghia-web` fija la predeterminada del sistema, y
+     `lpoptions -d ghia-web` la del usuario de la Mac, que manda sobre la del sistema.
+   - En Terminal, `lpstat -d` debe nombrar `ghia-web`.
+   - Por defecto, Chrome propone la última impresora usada. La política administrada
+     `PrintPreviewUseSystemDefaultPrinter` (documentación de políticas de Chrome Enterprise)
+     hace que proponga la del sistema. En los dos casos, revisa el destino en cada diálogo.
+5. **Ancho en Green Monkey:** en la Mac, «Ancho de papel» en «80 mm» («Vender» → «Impresión»
+   y la pantalla del recibo). Decide con el propietario si la Mac imprime la comanda de cada
+   envío («Imprimir comanda al enviar a cocina», apagado de fábrica).
+6. **El diálogo de impresión de Chrome.** Cada recibo, cuenta y comanda abre el diálogo de
+   impresión del navegador. En el piloto no se imprime sin diálogo (LD-71; sección 1.3).
+   En el diálogo:
+   - destino: `ghia-web`;
+   - tamaño del papel: `72mm x 400mm (recibo largo)`. El filtro recorta el papel en blanco,
+     así que no se gasta papel de más y los tickets largos salen en una sola pieza (paso 7).
+     Revisa en cada prueba que el diálogo conserve este tamaño. Si vuelve a
+     `72mm x 200mm (recibo)`, elígelo de nuevo. Opcional:
+     `sudo lpadmin -p ghia-web -o PageSize=X72MMY400MM` cambia el tamaño predeterminado de
+     la cola; comprueba en la prueba del paso 10 si Chrome lo propone;
+   - márgenes: ninguno;
+   - escala: 100 %. No uses la opción de ajustar a la página: encoge el texto;
+   - encabezados y pies de página: desactivados, para que no salgan la fecha ni la
+     dirección de la página.
+
+   **Nombres del diálogo sin verificar.** Los nombres de estas opciones en el diálogo de
+   Chrome no se han comprobado en la Mac de la tienda; confírmalos en la prueba del
+   paso 10. Lo único fijo es lo que pide Green Monkey: `@page { margin: 0 }`, ningún tamaño
+   de página y un contenido de 72 mm de ancho con papel de 80 mm (sección 1.1).
+7. **Cortes: qué revisar.** `ghia-web` corta después de cada página que manda Chrome.
+   - **Comanda con cocina y barra:** Green Monkey pone un salto de página entre las
+     secciones, así que cada estación sale cortada por separado. Lo mismo pasa con
+     «Imprimir recibos (N)» de «Cobrar juntas»: un corte por recibo.
+   - **Documento más largo que la página: sale cortado a la mitad.** Lo que no cabe en el
+     tamaño de papel elegido sigue en otra página, y la cola corta entre las dos. Con el
+     predeterminado de la cola, `72mm x 200mm (recibo)`, pueden salir en dos piezas un
+     recibo largo, la cuenta de una mesa grande o un corte.
+   - **Cómo revisarlo:** en la prueba del paso 10, imprime el documento más largo que pueda
+     darse en el restaurante: la cuenta de una mesa grande, con muchas líneas, opciones y
+     notas, su recibo y un corte Z. Cada uno debe salir en una sola pieza. Si alguno sale
+     cortado, revisa que el tamaño del papel sea `72mm x 400mm (recibo largo)` y vuelve a
+     imprimir. Si aun así un documento mide más de 400 mm, sale en dos piezas: el personal
+     las entrega juntas (las dos partes de la comanda a cocina, las dos del recibo al
+     cliente).
+   - Revisa también que no sobre papel en blanco al final, que el texto no se corte en el
+     borde derecho y que se lea nítido.
+8. **Cajón de dinero.** `ghia-web` no abre el cajón: si está conectado a la impresora, no
+   se abre al imprimir. Antes del piloto, decide con el propietario quién guarda la llave
+   del cajón y cómo se abre para dar cambio.
+9. **Sonido en la pantalla de cocina.** El sonido de «Cocina» viene apagado de fábrica en
+   cada dispositivo. En el dispositivo de cocina, toca «Activar sonido»: el botón cambia a
+   «Sonido activado». Envía una orden de prueba y comprueba que se oye. El dispositivo
+   recuerda que el sonido está activado, pero después de cada recarga el navegador lo
+   bloquea hasta que alguien toca la pantalla. Entonces la pantalla avisa «Toca «Activar
+   sonido» para escuchar los tickets nuevos.», y hay que tocar «Activar sonido» otra vez.
+   Como el iPad de cocina no imprime, el sonido es su único aviso de los tickets nuevos.
+10. **Prueba completa.** Hazla en la Mac de la caja con `ghia-web` y «Ancho de papel» en
+    «80 mm». Es condición para empezar el piloto
+    ([entrega de lanzamiento, lista de cambio](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos)).
+    Con cada documento, revisa que salió papel (el navegador nunca lo confirma).
+
+    | Documento | Cómo producirlo | Qué revisar en el papel |
+    | --- | --- | --- |
+    | Recibo | Cobra una venta → «Imprimir recibo» | Productos, pagos y cambio; una sola pieza con su corte |
+    | Cuenta | Detalle de la orden → «Imprimir cuenta» | «Cuenta · no es comprobante de pago» |
+    | Comanda con cocina y barra | Envía una orden con un producto de cocina y uno de barra desde la Mac, con «Imprimir comanda al enviar a cocina» (actívalo para la prueba si el propietario lo deja apagado) | Dos secciones, cada una cortada por separado |
+    | Reimpresión | Detalle de la orden → «Reimprimir recibo» | «REIMPRESIÓN» |
+    | Comanda sin conexión | «Sincronización» → «Trabajar sin conexión»; guarda una venta cobrada → «Imprimir comanda»; después, «Volver a conectarme» | «COMANDA · SIN CONEXIÓN» y el número provisional; al volver la conexión, el indicador ya no muestra «N por sincronizar» |
+    | Documento largo | La cuenta de una mesa grande, su recibo y un corte Z (paso 7) | Cada uno en una sola pieza |
+
+    Las ventas de prueba son ventas reales en producción: reciben folio de ticket fiscal,
+    cuentan en la caja y aparecen en los reportes. Hazlas antes de la fecha del cambio, en
+    efectivo y por importes pequeños, y anota sus folios para el contador. Si algo falla, el
+    piloto no empieza hasta corregirlo.
+
+**Otra impresora.** Esta sección es solo para la GTP801 de Juanberto's. Con otra impresora
+térmica se revisa lo mismo con el controlador que esa impresora entienda: ancho del papel,
+sin márgenes, escala al 100 %, cortes y la prueba del paso 10. Nada de eso se ha probado
+con otra impresora.
 
 ### 1.3 Imprimir sin diálogo (modo kiosco) según el navegador
 
@@ -113,20 +214,25 @@ de octubre de 2026).
 **Hoy no existe una forma confirmada de imprimir sin diálogo.** Con los pasos siguientes,
 el diálogo del navegador aparece en cada recibo, cuenta y comanda.
 
-**Pasos de impresión del piloto, en cada equipo que imprime:**
+**Pasos de impresión del piloto, en cada equipo que imprime** (en Juanberto's, solo la Mac
+de la caja; sección 1.2):
 
-1. Configura la impresora térmica en el sistema operativo (sección 1.2, pasos 1 a 9) y
-   déjala como impresora predeterminada del sistema.
+1. Configura la impresora térmica en el sistema operativo (en Juanberto's, la cola
+   `ghia-web`: sección 1.2, pasos 1 a 6) y déjala como impresora predeterminada del
+   sistema (sección 1.2, paso 4).
 2. En Chrome administrado, activa la política `PrintPreviewUseSystemDefaultPrinter`
-   para que el diálogo proponga esa impresora (sección 1.2, paso 9).
-3. Cada impresión abre el diálogo del navegador: revisa que el destino sea la térmica y
-   confirma con «Imprimir». Cuenta con este paso en cada recibo, cuenta y comanda.
+   para que el diálogo proponga esa impresora (sección 1.2, paso 4).
+3. Cada impresión abre el diálogo del navegador: revisa que el destino sea la térmica
+   (`ghia-web`) y confirma con «Imprimir». Cuenta con este paso en cada recibo, cuenta y
+   comanda.
 4. Haz la prueba completa de la sección 1.2, paso 10, y revisa que salió papel (el
    navegador nunca lo confirma).
-5. Si el propietario quiere probar la opción de inicio `--kiosk-printing` en Windows,
-   hazlo solo como prueba en ese equipo, con los pasos 1 a 4 ya hechos, y anota el
-   resultado: no está confirmada en documentación oficial (tabla siguiente) ni probada por
-   nosotros, así que el piloto no depende de ella.
+5. En el piloto de Juanberto's no se prueba ni se usa la impresión sin diálogo (LD-71): la
+   Mac de la caja abre el diálogo en cada documento. En otro piloto con Windows, si el
+   propietario quiere probar la opción de inicio `--kiosk-printing`, hazlo solo como prueba
+   en ese equipo, con los pasos 1 a 4 ya hechos, y anota el resultado: no está confirmada en
+   documentación oficial (tabla siguiente) ni probada por nosotros, así que el piloto no
+   depende de ella.
 
 Lo que podemos afirmar hoy por navegador:
 
@@ -140,8 +246,9 @@ Lo que podemos afirmar hoy por navegador:
 
 **Para el piloto, cuenta con que el diálogo de impresión aparece cada vez.** La
 impresión automática en «Cocina» solo es práctica en un equipo donde se compruebe que
-imprime sin diálogo. Si la cocina no tiene impresora o el iPad no puede imprimir, la
-pantalla de cocina y la lista «Comandas (N)» de la caja son la alternativa.
+imprime sin diálogo. Si la cocina no tiene impresora o el iPad no puede imprimir (en
+Juanberto's, el iPad de cocina no puede: sección 1.2), la pantalla de cocina con su sonido
+activado y la lista «Comandas (N)» de la caja son la alternativa.
 
 ## 2. Tablets y vinculación
 
@@ -169,14 +276,16 @@ El procedimiento completo y sus reglas están en
 - **Plan Free:** «En Free solo un dispositivo inicia ventas. Si este será tu caja,
   selecciónalo en «Registro y equipo Free».» Free también limita el equipo a dos
   empleados además del propietario ([límites](FREE_LIMITS.md)). Para un piloto con
-  varias cajas, el acceso Pro lo otorga soporte: **pendiente** (llega con la ola 2,
-  área de cuenta). Hasta entonces, solo el dispositivo seleccionado abre caja y vende.
+  varias cajas, el acceso Pro lo otorga soporte el día en que el propietario se da de
+  alta (hasta 90 días, renovable; sección 6). Hasta que soporte lo otorgue, solo el
+  dispositivo seleccionado abre caja y vende.
 - **Bloqueo:** las sesiones con PIN se bloquean solas a los 3 minutos sin uso (cocina
   nunca, de fábrica). Se cambia por dispositivo en «Dispositivos» → «Editar» →
   «Bloqueo automático». Al alejarte de la caja, toca «Bloquear pantalla».
-- **Cocina:** desactiva el apagado automático de pantalla en el sistema de la tablet y
-  toca «Activar sonido» después de cada recarga (el navegador bloquea el sonido hasta
-  que alguien toca la pantalla).
+- **Cocina:** desactiva el apagado automático de pantalla en el sistema de la tablet. El
+  sonido viene apagado de fábrica en cada dispositivo: actívalo en el de cocina con
+  «Activar sonido» y vuelve a tocarlo después de cada recarga (el navegador bloquea el
+  sonido hasta que alguien toca la pantalla; sección 1.2, paso 9).
 - **Hora automática:** deja activada la hora automática del sistema. Si la hora de la
   tablet se desvía, la app avisa «La hora de este dispositivo difiere N min de la del
   servidor. Activa la hora automática.»
@@ -257,7 +366,7 @@ que diga «Completo». Si el mismo RFC tiene otros locales, marca «Este RFC tie
 una sucursal» y escribe el domicilio de este local. Sin esos datos, cada ticket dice
 «Ticket sin datos fiscales del emisor.».
 
-1. Enciende el módem, la impresora (con papel) y las tablets.
+1. Enciende el módem, la impresora (con papel), la Mac de la caja y las tablets.
 2. En la caja, toca tu nombre en «¿Quién entra?» y escribe tu PIN.
 3. Revisa que el indicador de conexión diga «Conectado». Si dice «Sin conexión»,
    espera: abrir caja necesita conexión.
@@ -272,7 +381,7 @@ una sucursal» y escribe el domicilio de este local. Sin esos datos, cada ticket
 6. Repite en cada dispositivo que vaya a cobrar. Sin caja abierta, «Cobrar» avisa «Abre
    caja en este dispositivo antes de cobrar.» con el botón «Ir a Caja».
 7. En la cocina, la persona de cocina entra con su PIN, elige la «Estación» («Todas»,
-   «Cocina» o «Barra») y toca «Activar sonido».
+   «Cocina» o «Barra») y toca «Activar sonido»; el botón debe decir «Sonido activado».
 8. En cada dispositivo que cobra, un gerente abre «Sincronización»: ahí ve las ventas
    pendientes de todas las personas en ese dispositivo (el indicador de conexión solo
    cuenta las de quien tiene la sesión abierta). «Reintentar sincronización» solo envía
@@ -285,10 +394,13 @@ una sucursal» y escribe el domicilio de este local. Sin esos datos, cada ticket
 
 - **«Efectivo esperado»** suma el fondo inicial y los cobros en efectivo con su
   propina, y resta los reembolsos hechos desde esa caja y las salidas de efectivo.
-- **Reembolsos:** solo de cobros en efectivo. Un gerente o el propietario los hace
-  desde el detalle de la orden («Reembolsar», con «Motivo del reembolso») en un
-  dispositivo con caja abierta; el dinero sale de esa caja. Una cuenta con saldo
-  pendiente y sin ticket no se reembolsa: antes de cobrarla, anula las líneas.
+- **Reembolsos:** de cobros en «Efectivo» y con «Terminal externa», desde el detalle de
+  la orden («Reembolsar», con «Motivo del reembolso»); siempre los autoriza un gerente o
+  el propietario con su PIN, y necesitan conexión. La parte en efectivo sale de la caja
+  abierta de ese dispositivo. La parte de terminal se reembolsa primero en la terminal;
+  después escribe su referencia y marca «Confirmo que la terminal aprobó el reembolso de
+  …». Una cuenta con saldo pendiente y sin ticket no se reembolsa: antes de cobrarla,
+  anula las líneas ([detalle](DISCOUNTS.md)).
 - **Salidas de efectivo** (pago a un proveedor, retiro de propinas): un gerente toca
   «Registrar salida» en «Caja», escribe el importe y el motivo y, si la app lo pide
   («Confirma con tu PIN»), confirma con su PIN.
@@ -388,13 +500,16 @@ cómo conservar la bitácora.
 | Función | Estado | Mientras tanto | Dónde se documentará |
 | --- | --- | --- | --- |
 | Ticket fiscal (folio consecutivo, RFC, régimen, desglose de IVA en el recibo) | Disponible (fiscal, migración 027) | Cada venta cobrada imprime su ticket con folio; llena «Datos fiscales» antes del piloto (sección 4.1). | [Fiscal](FISCAL.md#the-printed-ticket) |
-| Factura electrónica (CFDI) para el cliente y factura global del día | Construida (CFDI, migración 030), sin verificar con Facturapi; desactivada hasta configurar las llaves y el CSD | Mientras no esté activada y verificada, si un cliente pide factura usa el proceso que el restaurante ya tenga con su contador. | [CFDI](CFDI.md#onboarding-runbook) |
-| Descuentos y cortesías | Pendiente (ola 2, descuentos) | No hay descuentos en la app. No cambies precios del menú para simularlos. | `docs/DISCOUNTS.md`, que agrega esa ola |
+| Factura electrónica (CFDI) para el cliente y factura global del día | Construida (CFDI, migraciones 030 y 036). En producción la plataforma ya tiene su llave de Facturapi en modo prueba; el restaurante la activa en modo prueba con su CSD. El modo real, solo después de que el contador lo apruebe | Mientras no esté en modo real, si un cliente pide factura usa el proceso que el restaurante ya tenga con su contador. Quién emite la factura global y desde qué fecha está en la [lista de cambio](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos). | [CFDI](CFDI.md#onboarding-runbook) |
+| Descuentos y cortesías | Disponible (descuentos, migración 028) | Con motivo. De fábrica, cajeros y meseros tienen límite 0 % / $0, así que cada descuento pide el PIN de un gerente; el propietario fija los límites en «Configuración» → «Descuentos y corte de caja» antes del primer día. No cambies precios del menú para simular descuentos. | [Discounts](DISCOUNTS.md) |
 | Reportes y cortes por forma de pago | Disponible (reportes, migración 029) | «Hoy» y «Finanzas» (propietario y gerentes); corte X, corte Z y corte del día impresos desde «Caja» o «Finanzas → Cortes». | [Reports](REPORTS.md#cortes) |
 | Cerrar una caja desde otro dispositivo | Disponible (reportes, migración 029) | «Finanzas → Cortes → Cerrar caja desde aquí» (gerente, con PIN) para una caja de un dispositivo desvinculado o que quedó abierta de un día anterior; si su tablet funciona, ciérrala ahí. | [Reports](REPORTS.md#cortes) |
-| Acceso Pro del piloto otorgado por soporte, aviso de privacidad, contacto de soporte dentro de la app | Hecho en la rama de cuenta (031), pendiente de integrarse y de probarse en staging | Mientras no esté integrado: en Free, un solo dispositivo vende (sección 2). Ya integrado: soporte activa Pro para el piloto (hasta 90 días, renovable antes de que termine); el propietario lo ve como «Pro otorgado por soporte» con su fecha de término, y la app avisa 7, 3 y 1 días antes. | [Cuenta y aspectos legales](ACCOUNT_AND_LEGAL.md); [Operations, "Support"](OPERATIONS.md) |
-| Cobro con tarjeta integrado | No incluido | «Terminal externa»: cobras en la terminal del banco y registras su referencia. | [Service](SERVICE.md#payment-dialog) |
-| Impresión directa, corte de papel y apertura del cajón desde la app | No incluido | El controlador de la impresora (sección 1.2). | [Service](SERVICE.md#printing-browseros) |
+| Acceso Pro del piloto otorgado por soporte, aviso de privacidad, contacto de soporte dentro de la app | Disponible (cuenta, migración 031). La cuenta de operador de soporte ya existe en producción; los datos legales y de soporte aún no se publican | Soporte activa Pro para el piloto el día del alta (hasta 90 días, renovable antes de que termine); el propietario lo ve como «Pro otorgado por soporte» con su fecha de término, y la app avisa 7, 3 y 1 días antes. Antes de eso, en Free, un solo dispositivo vende (sección 2). | [Cuenta y aspectos legales](ACCOUNT_AND_LEGAL.md); [Operations, "Support"](OPERATIONS.md) |
+| Cobro con tarjeta integrado (Clip, Mercado Pago Point) | Llega antes del piloto (ola 4, fase 2 de pagos); no está en producción | «Terminal externa»: cobras en la terminal (banco, o Clip / MP en modo independiente), eliges la terminal por su nombre y registras su referencia (sección 8). Para cobrar a mano en Mercado Pago Point, la terminal debe estar en modo independiente ([lista de cambio](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos)). | [Payments](PAYMENTS.md) |
+| Pedidos de plataformas (Uber Eats, Rappi, DiDi): cobro pagado por plataforma y precios por plataforma | Disponible (pagos, migración 037) | «Plataforma» al cobrar; no cuenta como efectivo ni tarjeta (sección 8). Las plataformas vienen apagadas: el propietario las enciende y captura sus precios antes del piloto. El contador decide su tratamiento fiscal. | [Payments](PAYMENTS.md) |
+| Lealtad (sellos, miembros, recompensas) | Llega antes del piloto (ola 4), con la importación de los miembros de pos-lite; no está en producción | El programa de sellos sigue en pos-lite ([lista de cambio](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos)). | Esta guía, cuando llegue |
+| Kiosco con cobro con tarjeta, fotos y sugerencias | Llega antes del piloto (ola 4); no está en producción | No uses el kiosco de pos-lite junto con Green Monkey: serían dos sistemas de órdenes y dos colas de cocina. | [Public ordering](PUBLIC_ORDERING.md) |
+| Impresión directa, corte de papel y apertura del cajón desde la app | No incluido | La cola `ghia-web` corta al final de cada página; el cajón no se abre al imprimir (sección 1.2). | [Service](SERVICE.md#printing-browseros) |
 | Cobro en dólares | No incluido | Sección 5.1. | Esta guía |
 | Servicio de mesa sin conexión | Incluido como «Beta», apagado | Déjalo apagado durante el piloto (sección 3). | [Offline](OFFLINE_RECOVERY.md#table-service-offline-beta-off-by-default) |
 
@@ -429,6 +544,57 @@ sola a venta sin conexión (sección 3). Si no se puede vender en la app, vende 
 y captura después. No borres datos del navegador, no desvincules la tablet y no
 reinstales la app sin hablar antes con soporte: las ventas sin sincronizar viven en esa
 tablet.
+
+## 8. Terminales y plataformas
+
+**Configurar (propietario o gerente, una vez).** En «Configuración → Pagos con tarjeta y
+plataformas»:
+
+1. Agrega cada terminal por su nombre («BBVA», «Clip Mostrador», «MP Caja») con su
+   comisión con IVA (por ejemplo 3.6 % + IVA se escribe 4.18). Una terminal Clip o
+   Mercado Pago se registra por ahora como manual: cobras en ella en modo independiente.
+2. En cada tablet de caja, elige su «Terminal predeterminada de este dispositivo». Sin
+   predeterminada y con varias terminales, el cobro con tarjeta pide «Elige la terminal».
+3. Las plataformas vienen **desactivadas**: activa solo las que usa el restaurante (para
+   Juanberto's: Uber Eats, Rappi y DiDi Food) y escribe su comisión estimada. Deja «Otra»
+   desactivada salvo que de verdad recibas pedidos de otra plataforma: cada cobro con «Otra»
+   aparece en «Finanzas → Excepciones» para revisarlo.
+4. Si los precios en la plataforma son distintos a los del mostrador, escríbelos en
+   «Precios por plataforma». Vacío: se usa el precio del mostrador. Los extras y
+   modificadores siempre usan el precio del mostrador: deja los extras de la plataforma al
+   mismo precio que en el mostrador o cobra la diferencia como una línea de precio abierto
+   (si no, el ticket y la factura declaran menos de lo que cobró la plataforma). Cuando una
+   plataforma tiene precios propios, solo acepta pedidos registrados con «Precios: esa
+   plataforma».
+5. Con tu contador, revisa «Forma de pago SAT para pedidos pagados por plataforma» en
+   la configuración de facturación (31 Intermediario pagos, recomendado).
+
+**Cobrar con tarjeta.** «Cobrar» → «Terminal externa» → elige la terminal → cobra en la
+terminal → escribe la referencia de aprobación → marca la confirmación → «Confirmar
+cobro». El recibo dice «Tarjeta · {terminal}».
+
+**Pedido de plataforma.** Al recibir el pedido en la tablet de la plataforma:
+
+1. En «Vender», con «Para llevar» o «A domicilio» (nunca mesa ni «Comer aquí»), si hay
+   precios por plataforma, elige «Precios: Uber Eats» (o la que corresponda) **antes de
+   enviar**. La orden muestra «Pedido con precios de …». Si la enviaste con precios de
+   mostrador y la plataforma tiene precios propios, la plataforma no podrá cobrarla: pide a
+   un gerente cancelarla y regístrala otra vez con sus precios.
+2. Escribe en «Nombre» el código del pedido (por ejemplo «DiDi 4F2A») y envíalo.
+3. «Cobrar» → «Plataforma» → la plataforma → número de pedido (obligatorio para Uber Eats,
+   Rappi y DiDi; se llena solo con el código del nombre, revísalo) → marca «La plataforma
+   ya cobró este pedido» → «Confirmar cobro». Cubre todo el saldo, sin propina. No entra al
+   efectivo esperado ni a la tarjeta del corte.
+
+**Cerrar caja.** El corte muestra la tarjeta por terminal y «Pagado por plataformas»
+aparte («Total plataformas»; cada nombre de «Otra» en su propia línea). Si usas terminales
+con nombre, escribe el «Total del lote» de **cada** terminal que cobró (o de ninguna): el
+cierre no acepta solo algunas. Las diferencias aparecen en «Finanzas → Excepciones».
+
+**Revisar (gerente, cada día).** En «Finanzas → Excepciones», «Pago por plataforma a revisar»
+lista los cobros con «Otra», los de una orden sin la lista de precios de esa plataforma y los
+registrados sin conexión fuera de las reglas, con quién los cobró y en qué caja. Compáralos
+con el pago de la plataforma: un pago en efectivo registrado como plataforma aparece aquí.
 
 ## 9. Club de lealtad
 

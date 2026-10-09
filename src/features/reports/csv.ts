@@ -23,6 +23,7 @@ import type {
 } from "../../../shared/reports";
 import { strings, type Key } from "../../i18n";
 import { channelLabel, operationLabel, tenderMethodLabel } from "../../labels";
+import { platformLabel } from "../../../shared/payments";
 import { differenceLabel, exceptionKindLabel, hourLabel } from "./format";
 import { summarySections } from "./summary-rows";
 import {
@@ -100,6 +101,12 @@ export const dayColumns: CsvColumn<DayRow>[] = [
   { header: h("reportsColRefunds"), type: "m", value: (r) => r.refunds },
   { header: h("reportsColCash"), type: "m", value: (r) => r.cash },
   { header: h("reportsColTerminal"), type: "m", value: (r) => r.external },
+  // PAYMENTS-MONEY-5: platform money is its own column, so cash + terminal + platforms add up.
+  {
+    header: h("payReportsPlatformSales"),
+    type: "m",
+    value: (r) => r.platform,
+  },
   { header: h("reportsColTips"), type: "m", value: (r) => r.tips },
   { header: h("reportsColPaidOuts"), type: "m", value: (r) => r.paidOuts },
 ];
@@ -229,6 +236,42 @@ export const tenderColumns = (locale: Locale): CsvColumn<TenderReportRow>[] => [
     type: "t",
     value: (r) =>
       r.offline ? strings[locale].reportsYes : strings[locale].reportsNo,
+  },
+  // payments (037): terminal, provider, card and platform columns; fees (this export is the
+  // managers' tender list).
+  { header: h("payTerminal"), type: "t", value: (r) => r.terminal ?? null },
+  { header: h("payCsvProvider"), type: "t", value: (r) => r.provider ?? null },
+  {
+    header: h("payCsvProviderReference"),
+    type: "t",
+    value: (r) => r.providerReference ?? null,
+  },
+  {
+    header: h("payCsvCardBrand"),
+    type: "t",
+    value: (r) => r.cardBrand ?? null,
+  },
+  {
+    header: h("payCsvCardLast4"),
+    type: "t",
+    value: (r) => r.cardLast4 ?? null,
+  },
+  {
+    header: h("payPlatform"),
+    type: "t",
+    value: (r) =>
+      r.platform ? platformLabel(r.platform, r.platformLabel, locale) : null,
+  },
+  { header: h("payReportsFees"), type: "m", value: (r) => r.fee ?? null },
+  {
+    header: h("payCsvFeeSource"),
+    type: "t",
+    value: (r) =>
+      r.feeSource === "provider"
+        ? strings[locale].payCsvFeeProvider
+        : r.feeSource === "estimated"
+          ? strings[locale].payReportsFeesEstimated
+          : null,
   },
 ];
 
@@ -360,6 +403,17 @@ export const drawerColumns = (locale: Locale): CsvColumn<DrawerRow>[] => [
     header: h("reportsColTerminalDifference"),
     type: "m",
     value: (r) => r.terminalDifference,
+  },
+  // PAYMENTS-MONEY-5: paid by platforms in the drawer (never expected cash or card).
+  {
+    header: h("payReportsPlatformSales"),
+    type: "m",
+    value: (r) => r.platformSales,
+  },
+  {
+    header: h("payCsvPlatformRefunds"),
+    type: "m",
+    value: (r) => r.platformRefunds,
   },
   {
     header: h("reportsColReview"),

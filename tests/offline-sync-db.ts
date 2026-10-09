@@ -1370,6 +1370,92 @@ try {
     "a paid order never takes another offline payment",
   );
 
+  // PAYMENTS-MONEY-1 / MONEY-3 (payments 037, LD-72): an order rung offline at DiDi's prices, a
+  // second offline round on it and DiDi's payment of the whole balance. The manager's review
+  // prices each at the list (no price_conflict), the open-orders snapshot names the list, and
+  // every record syncs at it.
+  const didiPrice = prices[ids.plate]! + 900;
+  await admin`insert into payment_platform_prices(tenant_id,product_id,platform,price,updated_by)
+    values(${tenantId},${ids.plate},'didi_food',${didiPrice},${ids.manager})`;
+  const didiLines = [line(ids.plate)];
+  const didiOrder = v3(s1, "order", {
+    provisionalNumber: "C-09",
+    cashSessionId: null,
+    order: {
+      operationId: randomUUID(),
+      lines: didiLines,
+      mode: "takeaway",
+      tableId: null,
+      name: "DiDi 4F2A",
+      note: "",
+      channel: "pos",
+      pricePlatform: "didi_food",
+    },
+    expectedTotal: didiPrice,
+    receiptSnapshot: snapshotOf(didiLines),
+  });
+  const didiTarget = { localOrderOperationId: didiOrder.operationId };
+  const didiRoundLines = [line(ids.plate, 2)];
+  const didiRound = v3(s1, "round", {
+    cashSessionId: null,
+    target: didiTarget,
+    lines: didiRoundLines,
+    expectedTotal: 2 * didiPrice,
+    receiptSnapshot: snapshotOf(didiRoundLines),
+  });
+  const reviewedOrder = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, didiOrder),
+  );
+  assert.equal(reviewedOrder.currentTotal, didiPrice);
+  assert.ok(
+    !reviewedOrder.problems.includes("price_conflict"),
+    JSON.stringify(reviewedOrder.problems),
+  );
+  const didiOpened = await run((tx) => syncOfflineRecord(tx, s1, didiOrder));
+  // The snapshot needs table service (LD-7), off until its own check below turns it on.
+  await admin`update restaurants set offline_table_service=true where id=${tenantId}`;
+  const snapshotDidi = (
+    await run((tx) => openOrdersSnapshot(tx, s1))
+  ).orders.find((o) => o.id === didiOpened.orderId);
+  await admin`update restaurants set offline_table_service=false where id=${tenantId}`;
+  assert.equal(snapshotDidi?.pricePlatform, "didi_food");
+  const reviewedRound = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, didiRound),
+  );
+  assert.equal(reviewedRound.currentTotal, 2 * didiPrice);
+  assert.ok(
+    !reviewedRound.problems.includes("price_conflict"),
+    JSON.stringify(reviewedRound.problems),
+  );
+  const didiAdded = await run((tx) => syncOfflineRecord(tx, s1, didiRound));
+  assert.equal(didiAdded.orderId, didiOpened.orderId);
+  assert.equal(didiAdded.roundNumber, 2);
+  const didiPaid = await run((tx) =>
+    syncOfflineRecord(
+      tx,
+      s1,
+      v3(s1, "payment", {
+        kitchenDelivery: "not_applicable",
+        cashSessionId: ids.drawer1,
+        target: didiTarget,
+        expectedDue: 3 * didiPrice,
+        payment: {
+          method: "platform",
+          amount: 3 * didiPrice,
+          tip: 0,
+          received: 3 * didiPrice,
+          reference: "4F2A",
+          externalConfirmed: true,
+          platform: "didi_food",
+        },
+      }),
+    ),
+  );
+  assert.deepEqual(
+    { total: didiPaid.order.total, paid: didiPaid.order.paid },
+    { total: 3 * didiPrice, paid: 3 * didiPrice },
+  );
+
   // An archived parent: dependents never apply; the money is still reconcilable.
   const lost = orderRecord(s1, [line(ids.plate)]);
   await run((tx) =>
@@ -2689,6 +2775,8 @@ try {
       "stock_movements",
       "stock_items",
       "recipe_versions",
+      // payments (037): the platform prices a fixture sets reference catalog rows.
+      "payment_platform_prices",
       // menu (025): catalog writes file products under menu rows.
       "menu_state",
       "menu_categories",

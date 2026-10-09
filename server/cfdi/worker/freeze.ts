@@ -7,7 +7,7 @@
 import type { Tx } from "../../db.js";
 import { DomainError } from "../../../shared/domain.js";
 import { formatFolio, type TaxCategory } from "../../../shared/fiscal.js";
-import { paymentFormFor } from "../../../shared/cfdi.js";
+import { paymentFormFor, type SubstituteForm } from "../../../shared/cfdi.js";
 import {
   buildEgresoRequest,
   buildGlobalRequests,
@@ -76,6 +76,7 @@ async function freezeInvoice(
     },
     issuerPostalCode: facts.postalCode,
     cardForm: doc.cardPaymentForm ?? settings.cardPaymentForm,
+    platformForm: settings.platformPaymentForm,
     timezone: facts.timezone,
     nettedRefunds: payload.refunds,
     replacesUuid,
@@ -124,6 +125,7 @@ async function freezeGlobal(
     period: info,
     issuerPostalCode: facts.postalCode,
     cardForm: settings.cardPaymentForm,
+    platformForm: settings.platformPaymentForm,
     maxConcepts: Infinity,
   });
   const part = parts[0];
@@ -158,7 +160,7 @@ async function freezeEgreso(
     throw new DomainError("cfdi_not_valid", 409);
   let groups: { category: TaxCategory; gross: number; tax: number }[];
   let folio: string;
-  let method: "cash" | "external" = "cash";
+  let method: string = "cash";
   let credit: EgresoBuildInput["credit"] = null;
   let nettedRefundIds: string[] = [];
   if (doc.creditTicketId) {
@@ -188,7 +190,10 @@ async function freezeEgreso(
     folio = payload.ticket.folio;
     credit = {
       purpose: "invoiced",
-      paymentForm: paymentFormFor(payload.payments, settings.cardPaymentForm),
+      paymentForm: paymentFormFor(payload.payments, {
+        card: settings.cardPaymentForm,
+        platform: settings.platformPaymentForm,
+      }),
     };
   } else {
     groups = (await tx`
@@ -200,15 +205,15 @@ async function freezeEgreso(
       where a.refund_id = ${doc.refundId} limit 1`;
     if (!ticket) throw nothing();
     folio = formatFolio(ticket.series, Number(ticket.number));
-    // 028's refunds.method ('cash' | 'external', NOT NULL DEFAULT 'cash'): the egreso payment form
-    // (wave2-cross-track C26).
-    const [refund] = await tx<{ method: "cash" | "external" }[]>`
+    // 028's refunds.method ('cash' | 'external' | 'platform' since payments 037, NOT NULL DEFAULT
+    // 'cash'): the egreso payment form (wave2-cross-track C26).
+    const [refund] = await tx<{ method: string }[]>`
       select method from refunds where id = ${doc.refundId}`;
     method = refund?.method ?? "cash";
   }
   if (!groups.length) throw nothing();
   // A substitute credit note relates 04 to the one it replaces, which must still be valid.
-  let replaces: { uuid: string; paymentForm: "01" | "04" | "28" } | null = null;
+  let replaces: { uuid: string; paymentForm: SubstituteForm } | null = null;
   if (doc.replacesDocumentId) {
     const replaced = await loadDocument(tx, doc.replacesDocumentId);
     if (!replaced?.uuid || replaced.status !== "valid")
@@ -238,6 +243,7 @@ async function freezeEgreso(
     },
     issuerPostalCode: facts.postalCode,
     cardForm: settings.cardPaymentForm,
+    platformForm: settings.platformPaymentForm,
     replaces,
     credit,
   });

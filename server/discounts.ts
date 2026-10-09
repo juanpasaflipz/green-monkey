@@ -13,6 +13,7 @@ import { audit, getOrder, once } from "./orders.js";
 import { assertCheckWritable, refreshCheckState } from "./checks.js";
 import { assertNoFiscalTicket } from "./fiscal.js";
 import { loyaltyRewardDiscountReversed } from "./loyalty/hooks.js";
+import { assertNoLiveAttempt } from "./payments/guards.js";
 import { DomainError, type Order, type Session } from "../shared/domain.js";
 import {
   canCloseDrawer,
@@ -251,6 +252,10 @@ export async function recordDiscount(
 ): Promise<Order> {
   await requireSelling(tx, s);
   const locked = await lockOrder(tx, orderId, p.expectedVersion);
+  // payments (037, critic R17): right after the order lock, here in
+  // recordDiscount so a staff discount and a club reward are both refused
+  // while a terminal attempt is live (payments_order_attempt_live).
+  await assertNoLiveAttempt(tx, orderId);
   assertCheckWritable(locked);
   await assertNoFiscalTicket(tx, orderId);
   const controls = await moneyControls(tx);
@@ -445,7 +450,7 @@ export async function adjustmentRows(
        join employees e on e.tenant_id=r.tenant_id and e.id=r.actor_id
        where t.order_id=i.id) as refunds,
       (select coalesce(jsonb_agg(jsonb_build_object('id',b.id,'mode',b.mode,'amount',b.amount,
-          'cashAmount',b.cash_amount,'externalAmount',b.external_amount,'reasonCode',b.reason_code,'note',b.note,
+          'cashAmount',b.cash_amount,'externalAmount',b.external_amount,'platformAmount',b.platform_amount,'reasonCode',b.reason_code,'note',b.note,
           'restock',b.restock,'actorName',ea.name,'approverName',em.name,'createdAt',b.created_at,
           'businessDate',b.business_date) order by b.created_at,b.id),'[]')
        from refund_batches b

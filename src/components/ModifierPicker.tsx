@@ -2,9 +2,11 @@ import { useState } from "react";
 import { Minus, Plus } from "lucide-react";
 import {
   currencyExponent,
+  listPrice,
   quote,
   type Group,
   type Locale,
+  type PricePlatform,
   type Product,
 } from "../../shared/domain";
 import {
@@ -39,10 +41,13 @@ export function ModifierPicker(props: {
   currency: string;
   canOpen: boolean;
   initial?: PickerSelection;
+  /** payments (037, LD-72; PAYMENTS-MONEY-7): the cart's price list, so the preview matches. */
+  priceList?: PricePlatform | null;
   onConfirm: (selection: PickerSelection) => void;
   onClose: () => void;
 }) {
   const { product, locale, currency, canOpen } = props;
+  const priceList = props.priceList ?? null;
   const t = translator(locale);
   const money = moneyFormatter(locale, currency);
   const [counts, setCounts] = useState<Map<string, number>>(() =>
@@ -82,10 +87,12 @@ export function ModifierPicker(props: {
       ],
       [product],
       canOpen,
+      undefined,
+      priceList,
     )[0].unitPrice;
   } catch {
     price =
-      (openAmount ?? product.price) +
+      (openAmount ?? listPrice(product, priceList)) +
       product.groups
         .flatMap((g) => g.options)
         .reduce((a, o) => a + o.price * (counts.get(o.id) ?? 0), 0);

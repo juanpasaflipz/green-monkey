@@ -1056,7 +1056,8 @@ function summaryFromRecords(world: World, range: DateRange): SalesSummary {
   const paidOuts = world.paidOuts.filter((p) => inRange(p.date));
   const fiscal = worldFiscalTotals(world, range);
 
-  const byMethod = (["cash", "external"] as const).map((method) => {
+  // payments (037): the metric contract has one row per tender method, platform included.
+  const byMethod = (["cash", "external", "platform"] as const).map((method) => {
     const own = tenders.filter((t) => t.method === method);
     const amount = sum(own, (t) => t.amount);
     const tips = sum(own, (t) => t.tip);
@@ -1148,10 +1149,14 @@ function summaryFromRecords(world: World, range: DateRange): SalesSummary {
       total: refundTotal,
       cash: sum(refundsOf("cash"), (r) => r.amount),
       external: sum(refundsOf("external"), (r) => r.amount),
+      platform: sum(refundsOf("platform"), (r) => r.amount),
       restockedCost,
     },
     collections: {
       byMethod,
+      // The worlds pass no S6/S7 aggregates (unit fixtures).
+      byTerminal: [],
+      byPlatform: [],
       collected,
       tips,
       refunds: refundTotal,
@@ -1168,6 +1173,10 @@ function summaryFromRecords(world: World, range: DateRange): SalesSummary {
       cogs,
       restockedCost,
       estimatedMargin: fiscal ? fiscal.netBase - cogs + restockedCost : null,
+      processorFees: 0,
+      platformCommissions: 0,
+      feesEstimated: false,
+      marginAfterFees: fiscal ? fiscal.netBase - cogs + restockedCost : null,
     },
     drawers: {
       open: 0,
@@ -1203,6 +1212,7 @@ function summaryFromRecords(world: World, range: DateRange): SalesSummary {
               ),
               cash: on("cash"),
               external: on("external"),
+              platform: on("platform"),
               tips: sum(collectedOn, (t) => t.tip),
               paidOuts: sum(
                 paidOuts.filter((p) => p.date === date),
@@ -1365,6 +1375,16 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
         refundCount: 0,
         net: 1_147_000,
       },
+      // payments (037): the platform row is always present (zero in this sample).
+      {
+        method: "platform",
+        count: 0,
+        amount: 0,
+        tips: 0,
+        refunds: 0,
+        refundCount: 0,
+        net: 0,
+      },
     ]);
     expect(summary.collections).toMatchObject({
       collected: 2_454_000,
@@ -1380,12 +1400,18 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
       cogs: 810_000,
       restockedCost: 0,
       estimatedMargin: 2_107_758 - 810_000,
+      // payments (037): no fees or commissions in this sample (no S6/S7 rows).
+      processorFees: 0,
+      platformCommissions: 0,
+      feesEstimated: false,
+      marginAfterFees: 2_107_758 - 810_000,
     });
     expect(summary.refunds).toEqual({
       count: 1,
       total: 9_000,
       cash: 9_000,
       external: 0,
+      platform: 0,
       restockedCost: 0,
     });
     expect(summary.sales.costCoverageBps).toBe(9200);
