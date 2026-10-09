@@ -3,18 +3,26 @@
 -- ("Pagado por plataforma") with per-platform product prices (LD-72), per-terminal drawer counts and
 -- the CFDI FormaPago of platform tenders. This is the FINAL shape of the area's schema: phase P2
 -- (providers, worker, integrated charging) and the kiosk (039) add no payments migration.
--- Expand-only: new tables and nullable (or constant-default) columns. Three checks are REPLACED in
--- this file, which RELEASE.md allows: tenders_method_check (same name, critic R37, so
--- migrations-lint sees the replacement), refunds_method_valid (same name) and the refund batch
--- split check (looked up by definition: 028 declared it inline, so its name is not deterministic;
--- the DO body is invisible to migrations-lint, and that widening is recorded here: the split now
--- also counts platform_amount, and every old row has platform_amount = 0).
+-- Expand-only: new tables and nullable (or constant-default) columns. Four checks are REPLACED in
+-- this file, which RELEASE.md allows, each one only widened: tenders_method_check (same name,
+-- critic R37, so migrations-lint sees the replacement), refunds_method_valid (same name),
+-- cfdi_documents_payment_form_override_check (same name; 030 declared it on the column, so its
+-- name is deterministic; it now also accepts the platform forms 03 and 31, PAYMENTS-FISCAL-1) and
+-- the refund batch split check (looked up by definition: 028 declared it inline, so its name is
+-- not deterministic; the DO body is invisible to migrations-lint, and that widening is recorded
+-- here: the split now also counts platform_amount, and every old row has platform_amount = 0).
 -- No backfill and no DML on existing rows (the LD-6 NO FORCE / FORCE wrapper is not needed).
 -- Grants (runtime role and worker) live in scripts/grants.sql ("-- 037 payments"), never here.
 -- Reuses money_immutable() (028) and cfdi_is_worker() (030) instead of duplicating them.
--- Deploy outside service hours: sections 9-11 take ACCESS EXCLUSIVE on tenders, refunds,
--- refund_batches and orders for the ADD/VALIDATE (small tables; lock_timeout 5 s, runner retries).
+-- Deploy outside service hours WITH THE WORKER IDLE (PAYMENTS-CONCURRENCY-4): the file takes
+-- ACCESS EXCLUSIVE on orders, tenders, refunds, refund_batches, cfdi_documents, cfdi_settings and
+-- jobs (ADD/VALIDATE, CREATE POLICY). It takes them all up front, in the runtime's order (orders,
+-- then tenders, then jobs), so no later statement upgrades a lock a payment or refund is waiting
+-- behind (small tables; lock_timeout 5 s, runner retries). A worker tick holds a jobs claim and
+-- then reads orders, the reverse order, which is why the worker must be idle.
 SET LOCAL lock_timeout = '5s';
+LOCK TABLE orders, tenders, refunds, refund_batches, cfdi_documents, cfdi_settings, jobs
+  IN ACCESS EXCLUSIVE MODE;
 
 -- 1. Worker-published platform state (no tenant data), like cfdi_platform.
 CREATE TABLE payments_platform(
@@ -75,11 +83,12 @@ CREATE TRIGGER payment_terminals_guard BEFORE UPDATE OR DELETE ON payment_termin
   FOR EACH ROW EXECUTE FUNCTION payment_terminals_guard();
 
 -- 3. Platforms offered at payment, with an estimated commission (never guessed: NULL = not tracked).
---    No row means enabled with no commission.
+--    No row means DISABLED (LD-75, PAYMENTS-SECURITY-1): the owner opts in per platform, and
+--    «Otra» stays off until enabled the same way.
 CREATE TABLE payment_platforms(
   tenant_id uuid NOT NULL REFERENCES restaurants(id),
   platform text NOT NULL CHECK (platform IN ('uber_eats','rappi','didi_food','other')),
-  enabled boolean NOT NULL DEFAULT true,
+  enabled boolean NOT NULL DEFAULT false,
   commission_bp integer CHECK (commission_bp BETWEEN 0 AND 5000),
   version integer NOT NULL DEFAULT 1,
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -316,6 +325,15 @@ BEGIN
   IF OLD.state IN ('settled','declined','cancelled','expired','dismissed') THEN
     RAISE EXCEPTION 'payment_attempt_final' USING ERRCODE = 'check_violation';
   END IF;
+  -- The provider's reference is written once, null -> value (PAYMENTS-CONCURRENCY-2): the webhook
+  -- lookup, payment_attempts_reference and the integrated tender rely on it staying the provider's.
+  -- Outside the worker it is set only by a manager's 'record' resolution, in the same UPDATE that
+  -- settles the attempt.
+  IF NEW.provider_reference IS DISTINCT FROM OLD.provider_reference
+     AND (OLD.provider_reference IS NOT NULL
+          OR (NOT w AND NOT (NEW.state = 'settled' AND NEW.resolution = 'recorded'))) THEN
+    RAISE EXCEPTION 'payment_attempt_identity_immutable' USING ERRCODE = 'check_violation';
+  END IF;
   IF NEW.state = OLD.state THEN RETURN NEW; END IF;      -- same-state updates (cancel request, poll data)
   ok := CASE
     WHEN w THEN (OLD.state, NEW.state) IN (
@@ -331,6 +349,26 @@ BEGIN
 END $$;
 CREATE TRIGGER payment_attempts_transition BEFORE UPDATE OR DELETE ON payment_attempts
   FOR EACH ROW EXECUTE FUNCTION payment_attempts_transition();
+-- An attempt is born 'created' with nothing a provider, the worker or a settle attests
+-- (PAYMENTS-CONCURRENCY-1 / SECURITY-6): only the worker's transitions reach approved, and only a
+-- settle or a resolution writes the tender and resolution columns, like the accounts' insert guard.
+CREATE FUNCTION payment_attempts_insert_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF cfdi_is_worker() THEN RETURN NEW; END IF;
+  IF NEW.state <> 'created' OR NEW.version <> 1
+     OR NEW.provider_reference IS NOT NULL OR NEW.provider_payment_id IS NOT NULL OR NEW.provider_status IS NOT NULL
+     OR NEW.paid_amount IS NOT NULL OR NEW.fee IS NOT NULL OR NEW.fee_source IS NOT NULL
+     OR NEW.card_type IS NOT NULL OR NEW.card_brand IS NOT NULL OR NEW.card_last4 IS NOT NULL
+     OR NEW.error_code IS NOT NULL OR NEW.cancel_requested_at IS NOT NULL OR NEW.cancel_requested_by IS NOT NULL
+     OR NEW.tender_id IS NOT NULL OR NEW.resolution IS NOT NULL OR NEW.resolution_note IS NOT NULL
+     OR NEW.resolved_by IS NOT NULL OR NEW.resolved_at IS NOT NULL
+     OR NEW.sent_at IS NOT NULL OR NEW.decided_at IS NOT NULL OR NEW.settled_at IS NOT NULL THEN
+    RAISE EXCEPTION 'payment_attempt_insert_created_only' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER payment_attempts_insert_guard BEFORE INSERT ON payment_attempts
+  FOR EACH ROW EXECUTE FUNCTION payment_attempts_insert_guard();
 
 CREATE TABLE payment_attempt_events(
   tenant_id uuid NOT NULL,
@@ -351,6 +389,16 @@ CREATE TABLE payment_attempt_events(
 CREATE INDEX payment_attempt_events_attempt ON payment_attempt_events(tenant_id, attempt_id, created_at);
 CREATE TRIGGER payment_attempt_events_immutable BEFORE UPDATE OR DELETE ON payment_attempt_events
   FOR EACH ROW EXECUTE FUNCTION money_immutable();                   -- 028's function
+-- Only the worker writes the worker's events (PAYMENTS-CONCURRENCY-1 / SECURITY-6).
+CREATE FUNCTION payment_attempt_events_insert_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.actor = 'worker' AND NOT cfdi_is_worker() THEN
+    RAISE EXCEPTION 'payment_attempt_event_worker_only' USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER payment_attempt_events_insert_guard BEFORE INSERT ON payment_attempt_events
+  FOR EACH ROW EXECUTE FUNCTION payment_attempt_events_insert_guard();
 
 -- 9. Tenders: platform method, terminal/provider/card/platform/fee columns (all NULL on old rows).
 ALTER TABLE tenders
@@ -492,11 +540,33 @@ CREATE TABLE drawer_terminal_counts(
 CREATE UNIQUE INDEX drawer_terminal_counts_one ON drawer_terminal_counts(tenant_id, drawer_id, terminal_id) NULLS NOT DISTINCT;
 CREATE TRIGGER drawer_terminal_counts_immutable BEFORE UPDATE OR DELETE ON drawer_terminal_counts
   FOR EACH ROW EXECUTE FUNCTION money_immutable();
+-- No TRUNCATE either, as 028 does for the money tables (PAYMENTS-CONCURRENCY-1).
+CREATE TRIGGER payment_attempts_no_truncate BEFORE TRUNCATE ON payment_attempts
+  FOR EACH STATEMENT EXECUTE FUNCTION money_immutable();
+CREATE TRIGGER payment_attempt_events_no_truncate BEFORE TRUNCATE ON payment_attempt_events
+  FOR EACH STATEMENT EXECUTE FUNCTION money_immutable();
+CREATE TRIGGER drawer_terminal_counts_no_truncate BEFORE TRUNCATE ON drawer_terminal_counts
+  FOR EACH STATEMENT EXECUTE FUNCTION money_immutable();
 
 -- 13. CFDI FormaPago of platform tenders (cfdi 030 table; owner/manager setting; the accountant
 --     confirms the default before CFDI goes live). 99 is never offered: green-monkey stamps PUE.
 ALTER TABLE cfdi_settings ADD COLUMN platform_payment_form text NOT NULL DEFAULT '31'
   CHECK (platform_payment_form IN ('31','03','04','28'));
+-- A credit note's substitute (relation 04, CFDI-SAT-2) may carry the platform forms too
+-- (PAYMENTS-FISCAL-1): a platform refund's note is stamped 31 or 03 and must be correctable to
+-- either. 030 declared the check on the column, so its name is deterministic; refuse to run on a
+-- schema where it is missing.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'cfdi_documents'::regclass AND contype = 'c'
+                   AND conname = 'cfdi_documents_payment_form_override_check') THEN
+    RAISE EXCEPTION '037: cfdi_documents_payment_form_override_check not found';
+  END IF;
+END $$;
+ALTER TABLE cfdi_documents
+  DROP CONSTRAINT cfdi_documents_payment_form_override_check,
+  ADD CONSTRAINT cfdi_documents_payment_form_override_check
+    CHECK (payment_form_override IN ('01','03','04','28','31')) NOT VALID;
+ALTER TABLE cfdi_documents VALIDATE CONSTRAINT cfdi_documents_payment_form_override_check;
 
 -- 14. RLS on the tenant tables.
 DO $$ DECLARE t text; BEGIN

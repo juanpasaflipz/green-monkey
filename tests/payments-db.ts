@@ -569,6 +569,134 @@ try {
     }
   });
 
+  await test("3b. PAYMENTS-CONCURRENCY-1/2, SECURITY-6: the runtime role inserts attempts only as 'created' with no provider data, never a worker event, never truncates; the provider reference is written once", async () => {
+    const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const base = (extra: Record<string, unknown> = {}) => ({
+      tenant_id: A,
+      id: randomUUID(),
+      operation_id: randomUUID(),
+      settle_operation_id: randomUUID(),
+      target: "order",
+      origin: "pos",
+      order_id: o.id,
+      terminal_id: mpTerminal,
+      provider: "mercadopago",
+      provider_device_id: "NEWLAND_N950__N950NCB801293324",
+      terminal_label: "MP Caja",
+      amount: 4500,
+      tip: 0,
+      currency: "MXN",
+      employee_id: ids.cashier,
+      device_id: ids.device1,
+      session_id: randomUUID(),
+      cash_session_id: ids.drawer1,
+      ...extra,
+    });
+    const insert = (row: Record<string, unknown>) =>
+      write(owner, (tx) => tx`insert into payment_attempts ${tx(row)}`);
+    for (const extra of [
+      { state: "approved", paid_amount: 4500 },
+      { state: "review", paid_amount: 4500 },
+      { state: "unknown" },
+      { paid_amount: 4500 },
+      { provider_reference: "MP123" },
+      { fee: 100, fee_source: "provider" },
+      { card_last4: "4242" },
+      { version: 2 },
+      { sent_at: new Date() },
+    ])
+      await rejects(insert(base(extra)), /payment_attempt_insert_created_only/);
+    const created = base();
+    await insert(created);
+    await rejects(
+      write(
+        owner,
+        (tx) =>
+          tx`insert into payment_attempt_events(tenant_id,id,attempt_id,kind,actor) values(${A},${randomUUID()},${created.id},'approved','worker')`,
+      ),
+      /payment_attempt_event_worker_only/,
+    );
+    await write(
+      owner,
+      (tx) =>
+        tx`insert into payment_attempt_events(tenant_id,id,attempt_id,kind,actor,employee_id) values(${A},${randomUUID()},${created.id},'created','employee',${ids.cashier})`,
+    );
+    // The runtime role never sets the provider's reference outside a 'record' settle.
+    await rejects(
+      write(
+        owner,
+        (tx) =>
+          tx`update payment_attempts set provider_reference='MPWEB1' where id=${created.id}`,
+      ),
+      /payment_attempt_identity_immutable/,
+    );
+    // payment_attempts is also FK-referenced (TRUNCATE fails before its trigger), so the
+    // triggers are read from the catalog and the two leaf tables are truncated for real.
+    const noTruncate = await admin`select tgrelid::regclass::text as rel from pg_trigger
+      where tgname like '%_no_truncate' and tgrelid in ('payment_attempts'::regclass,
+        'payment_attempt_events'::regclass,'drawer_terminal_counts'::regclass) order by 1`;
+    assert.deepEqual(
+      noTruncate.map((r) => r.rel),
+      ["drawer_terminal_counts", "payment_attempt_events", "payment_attempts"],
+    );
+    for (const table of ["payment_attempt_events", "drawer_terminal_counts"])
+      await rejects(
+        asOwner(A, (tx) => tx.unsafe(`truncate ${table}`)),
+        /immutable financial records/,
+      );
+    if (target.worker) {
+      const worker = postgres(target.worker, { max: 1 });
+      const asWorker = (q: (tx: any) => Promise<unknown>) =>
+        worker.begin(async (tx) => {
+          await tx`select set_config('app.tenant_id', ${A}, true)`;
+          return q(tx);
+        });
+      try {
+        await asWorker(
+          (tx) =>
+            tx`update payment_attempts set state='sending',sent_at=now(),provider_reference='MPORD1' where id=${created.id}`,
+        );
+        // value -> other value, and value -> null, are refused for every actor.
+        await rejects(
+          asWorker(
+            (tx) =>
+              tx`update payment_attempts set provider_reference='MPORD2' where id=${created.id}`,
+          ),
+          /payment_attempt_identity_immutable/,
+        );
+        await rejects(
+          asWorker(
+            (tx) =>
+              tx`update payment_attempts set provider_reference=null where id=${created.id}`,
+          ),
+          /payment_attempt_identity_immutable/,
+        );
+        await asWorker(
+          (tx) =>
+            tx`update payment_attempts set state='unknown' where id=${created.id}`,
+        );
+      } finally {
+        await worker.end();
+      }
+      await rejects(
+        write(
+          owner,
+          (tx) =>
+            tx`update payment_attempts set provider_reference='AUT999' where id=${created.id}`,
+        ),
+        /payment_attempt_identity_immutable/,
+      );
+      await write(
+        owner,
+        (tx) =>
+          tx`update payment_attempts set state='dismissed',resolution='not_charged',resolution_note='No se cobró en la terminal',resolved_by=${ids.manager},resolved_at=now() where id=${created.id}`,
+      );
+    } else {
+      await cancelAttempt(created.id);
+      console.log("  (worker login not configured: worker reference rule skipped)");
+    }
+  });
+
   await test("4b. tender shape checks refuse each malformed row once", async () => {
     const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
     const tender = (cols: Record<string, unknown>) =>
