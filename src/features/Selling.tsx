@@ -259,11 +259,10 @@ export function Selling({
    */
   const [clubResult, setClubResult] = useState<{ orderId: string; text: string } | null>(null);
   /**
-   * R18: the single "payment settled" exit payments P1 introduces (stubbed until it merges). The
-   * club's link, reconcile and toast hang on it; their failure is a notice, never an error.
+   * The club's after-payment work for the cart's own settled order: link, reconcile and toast;
+   * their failure is a notice, never an error.
    */
   function paymentSettled(order: Order) {
-    onPaymentSettled(order);
     void loyalty.afterPayment(order).then((text) => {
       if (!text) return;
       setClubResult({ orderId: order.id, text });
