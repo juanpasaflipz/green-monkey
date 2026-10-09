@@ -84,9 +84,14 @@ function failure(r: HttpResponse): ProviderError {
 
 /**
  * POST /payment. The amount and tip go as decimal pesos (pos-lite's pre-docs scaffold sent cents:
- * 100× the bill). The reader's own tip screen is off (the tip is chosen at the POS), and split
- * payments are off (one charge = one attempt). Throws ProviderError: a retryable one (network,
- * 5xx, 429) or a 2xx without pinpad_request_id means the outcome is UNKNOWN for Clip.
+ * 100× the bill). Preferences that change what is charged are pinned, never left to the account's
+ * defaults (developer.clip.mx post_payment-1 documents none; P2-PROVIDERS-4): the reader's own tip
+ * screen is off (the tip is chosen at the POS), split payments are off (one charge = one attempt),
+ * installments with interest (MCI) and dynamic currency conversion (DCC) are off (either would make
+ * amount_paid more than the bill, read as a tip), and retries on the reader are off (one request =
+ * one card outcome). Interest-free installments (MSI) stay the account's choice (the restaurant
+ * pays them; the amount is unchanged). Throws ProviderError: a retryable one (network, 5xx, 429)
+ * or a 2xx without pinpad_request_id means the outcome is UNKNOWN for Clip.
  */
 export async function createPinPadPayment(
   c: ClipClient,
@@ -102,7 +107,13 @@ export async function createPinPadPayment(
     amount: minorToPesos(o.amount),
     reference: o.reference,
     serial_number_pos: o.serial,
-    preferences: { is_tip_enabled: false, is_split_payment_enabled: false },
+    preferences: {
+      is_tip_enabled: false,
+      is_split_payment_enabled: false,
+      is_mci_enabled: false,
+      is_dcc_enabled: false,
+      is_retry_enabled: false,
+    },
   };
   if (o.tip > 0) body.tip_amount = minorToPesos(o.tip);
   if (o.webhookUrl) body.webhook_url = o.webhookUrl;

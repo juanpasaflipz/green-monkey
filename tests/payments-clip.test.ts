@@ -77,6 +77,13 @@ describe("createPinPadPayment: request shape", () => {
     // A second tip screen on the reader would let the customer tip twice.
     expect(body.preferences.is_tip_enabled).toBe(false);
     expect(body.preferences.is_split_payment_enabled).toBe(false);
+    // Pinned, never the account's default (P2-PROVIDERS-4): interest-bearing installments and
+    // currency conversion would raise amount_paid above the bill (read as a tip); a retry on the
+    // reader would give one request two card outcomes. MSI stays the account's choice.
+    expect(body.preferences.is_mci_enabled).toBe(false);
+    expect(body.preferences.is_dcc_enabled).toBe(false);
+    expect(body.preferences.is_retry_enabled).toBe(false);
+    expect(body.preferences.is_msi_enabled).toBeUndefined();
     // Legacy guessed field names must be gone.
     expect(body.pinpad_id).toBeUndefined();
     expect(body.external_reference).toBeUndefined();
