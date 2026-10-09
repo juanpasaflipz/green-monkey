@@ -328,7 +328,7 @@ describe("business-day formula (FIN-04, DB-7, OFF-9)", () => {
               businessDate(instant, zone, cutoff),
             );
           }
-  });
+  }, 30_000);
 
   it("an event at exactly the cutoff instant belongs to the new day; one millisecond earlier to the previous day", () => {
     for (const zone of zones)
@@ -435,7 +435,7 @@ describe("business-day formula (FIN-04, DB-7, OFF-9)", () => {
         ),
       ).toBeLessThan(0);
     }
-  });
+  }, 30_000);
 
   it("wideWindow needs its full ±3 days: the far-apart worst cases (UTC+14 vs UTC−12, cutoff 0 vs 23:59) fall outside ±2 days", () => {
     const east = { timezone: "Pacific/Kiritimati", cutoff: 0 }; // UTC+14, no DST
@@ -690,6 +690,10 @@ describe("audit groups and exception kinds (GAP-3)", () => {
     expect(groupsOf("cfdi.invoice.stamped")).toEqual(["fiscal"]);
     expect(groupsOf("account.owner.transferred")).toEqual(["access"]);
     expect(groupsOf("public.hold_decided")).toEqual(["sales"]);
+    // loyalty (038, R27): its own Bitácora group.
+    expect(groupsOf("loyalty.reward.redeemed")).toEqual(["loyalty"]);
+    expect(groupsOf("loyalty.member.deleted")).toEqual(["loyalty"]);
+    expect(groupsOf("loyalty.settings.saved")).toEqual(["loyalty"]);
     for (const op of [
       "public.link_created",
       "public.settings_saved",

@@ -11,3 +11,4 @@ import "./ops.js";
 // import "./cfdi.js";
 // import "./account.js";
 import "./payments.js";
+import "./loyalty.js";

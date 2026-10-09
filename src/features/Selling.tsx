@@ -11,6 +11,7 @@ import {
   Pause,
   Printer,
   SlidersHorizontal,
+  Gift,
 } from "lucide-react";
 import {
   listPrice,
@@ -65,6 +66,11 @@ import {
   type ParkedOrderTarget,
 } from "../offline-records";
 import { DiscountButton } from "./discounts/DiscountButton";
+import { useLoyaltyCheckout } from "./loyalty/useLoyaltyCheckout";
+import { LoyaltyLookupDialog } from "./loyalty/LoyaltyLookupDialog";
+import { RedeemRewardButton } from "./loyalty/RedeemReward";
+import { fill as fillText } from "./loyalty/format";
+import "./loyalty/loyalty.css";
 import { CheckDiscountSummary } from "./discounts/OrderAdjustments";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 import { useMediaQuery } from "../serviceHooks";
@@ -227,6 +233,8 @@ export function Selling({
    * answers after a move never writes its order into the new cart.
    */
   const contextEpoch = useRef(0);
+  /** The same count as state: the club's member follows the cart (LOYALTY-UX-2). */
+  const [contextCount, setContextCount] = useState(0);
   const activeRef = useRef(active);
   activeRef.current = active;
   /** SVC-R10: a switch from Mesas or Órdenes is waiting for a request. */
@@ -240,6 +248,22 @@ export function Selling({
   const nameCache = useRef(new Map<string, Label>());
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  // loyalty (038 §2.5): the cart's club member; never on the money path.
+  const loyalty = useLoyaltyCheckout({
+    session,
+    locale,
+    online,
+    lines: draft.lines.length,
+    current,
+    context: contextCount,
+    draftId: draft.operationId,
+    orderLabel: (o) => numberText(o),
+  });
+  /**
+   * The club's after-payment result (stamps, a completed card or a link failure), shown in the
+   * receipt dialog of its order, where the cashier looks (LOYALTY-UX-3).
+   */
+  const [clubResult, setClubResult] = useState<{ orderId: string; text: string } | null>(null);
   const currentRef = useRef(current);
   currentRef.current = current;
   /** ACC-PR-2: the payment dialog and the receipt, as a late answer sees them. */
@@ -341,6 +365,7 @@ export function Selling({
    */
   function replaceContext(order: Order | null, next: OrderInput) {
     contextEpoch.current++;
+    setContextCount(contextEpoch.current);
     unseenFailure.current = false;
     switchDeferred.current = false;
     currentRef.current = order;
@@ -972,6 +997,7 @@ export function Selling({
       setCurrent(o);
       setDraft((x) => reconcileLostSend(x, o, operationId, ids()).draft);
       if (next.changed) setNotice(t("serviceSendChanged"));
+      loyalty.afterOrderExists(o); // loyalty (038): link the cart's member, fire-and-forget
       await db.cache.put({ id: contextId, value: o.id });
       if (readPrintSettings().kitchenOnSend) printNewRound(o);
       return o;
@@ -1101,20 +1127,45 @@ export function Selling({
     setError("");
     setNotice("");
   }
-  /** payments (037, critic R18): every server-settled payment ends here once. */
-  function onPaymentSettled(order: Order) {
+  /**
+   * payments (037, critic R18): every server-settled payment ends here once.
+   * `cartOwn`: the order is the cart's own (owned, same context epoch) and its
+   * receipt replaces the cart; otherwise the cart moved on from it.
+   */
+  function onPaymentSettled(order: Order, cartOwn: boolean) {
     try {
       onPaymentSettledProp?.(order);
     } catch {
       // A consumer's failure never hides the receipt of money already taken.
     }
+    // loyalty (038, R18): the club's after-payment work hangs only on this
+    // exit; its failure is a notice, never an error. The cart's own order:
+    // link the cart's member if needed, reconcile, and show the result in the
+    // receipt status. An order the cart moved on from: reconcile only, never
+    // linking the cart's current member to it.
+    if (!cartOwn) {
+      loyalty.reconcileOnly(order);
+      return;
+    }
+    void loyalty.afterPayment(order).then((text) => {
+      if (!text) return;
+      setClubResult({ orderId: order.id, text });
+      // No receipt for this order on screen: the cart shows it instead.
+      if (
+        receiptRef.current?.id !== order.id &&
+        currentRef.current?.id === order.id
+      )
+        setNotice(text);
+    });
   }
   /**
    * payments (037, P2): a terminal charge settled (the sync, a retry or a manager record). The
    * receipt replaces the cart only while it still shows that order; otherwise it is announced.
    */
   function settledFromTerminal(order: Order) {
-    onPaymentSettled(order);
+    // R18: the one exit. The cart's own order while the cart still shows it; otherwise the club
+    // only reconciles it and never links the cart's current member to it.
+    onPaymentSettled(order, currentRef.current?.id === order.id);
     if (currentRef.current?.id === order.id) {
       setPayment(false);
       setCurrent(order);
@@ -1275,7 +1326,13 @@ export function Selling({
                 : null;
               await settleActiveAttempt(orderId ?? null, (result, owned) => {
                 setPayment(false);
-                onPaymentSettled(result);
+                // R18: "Recuperar pago" takes the one exit too (LOYALTY-MONEY-7). An empty
+                // new cart shows the receipt, but the order is not its own: the club only
+                // reconciles it, so a member picked for the new cart is never linked to it.
+                onPaymentSettled(
+                  result,
+                  owned && currentRef.current?.id === result.id,
+                );
                 if (owned) {
                   setCurrent(result);
                   setReceipt(result);
@@ -1307,8 +1364,9 @@ export function Selling({
     const settled = (result: Order, owned = true) => {
       setPendingPayment(false);
       setPayment(false);
-      onPaymentSettled(result);
-      if (!owned || epoch !== contextEpoch.current) {
+      const cartOwn = owned && epoch === contextEpoch.current;
+      onPaymentSettled(result, cartOwn);
+      if (!cartOwn) {
         setNotice(
           t("servicePaidAfterSwitch").replace("{n}", numberText(result)),
         );
@@ -1608,6 +1666,77 @@ export function Selling({
           </button>
         ))}
       </div>
+      {loyalty.club && (
+        <div className="loyalty-cart">
+          {loyalty.member ? (
+            <span className="loyalty-chip">
+              {fillText(t("loyaltyChip"), {
+                name: loyalty.member.firstName,
+                stamps: loyalty.member.stamps,
+                required: loyalty.member.required,
+              })}
+              {loyalty.member.rewards > 0 && (
+                // A reward to use is on the chip itself, not only in Canjear premio (UX-16).
+                <strong className="loyalty-chip-reward">
+                  {" · "}
+                  <Gift size={14} aria-hidden="true" />{" "}
+                  {loyalty.member.rewards === 1
+                    ? t("loyaltyChipRewardOne")
+                    : fillText(t("loyaltyChipRewardMany"), { n: loyalty.member.rewards })}
+                </strong>
+              )}
+              <button
+                type="button"
+                className="text-button"
+                aria-label={t("loyaltyRemove")}
+                disabled={!online}
+                onClick={loyalty.remove}
+              >
+                ✕
+              </button>
+            </span>
+          ) : (
+            <Button
+              disabled={!online}
+              aria-describedby={online ? undefined : "loyalty-offline-hint"}
+              onClick={loyalty.openPrompt}
+            >
+              {t("loyaltyClubButton")}
+            </Button>
+          )}
+          {!online && (
+            <small id="loyalty-offline-hint" className="tiny muted">
+              {t("loyaltyOfflineHint")}
+            </small>
+          )}
+          {loyalty.notices.map((n) => (
+            <p role="status" className="tiny loyalty-failure" key={n.orderId}>
+              {n.text}{" "}
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => loyalty.dismissNotice(n.orderId)}
+              >
+                {t("loyaltyDismiss")}
+              </button>
+            </p>
+          ))}
+        </div>
+      )}
+      {loyalty.prompt && loyalty.club && (
+        <LoyaltyLookupDialog
+          locale={locale}
+          club={loyalty.club}
+          online={online}
+          onUse={(m) => {
+            loyalty.use(m);
+            // The kitchen and the counter call the order by the member's first name.
+            if (!current && !draftRef.current.name.trim())
+              setDraft((d) => ({ ...d, name: m.firstName }));
+          }}
+          onClose={loyalty.closePrompt}
+        />
+      )}
       {compact ? (
         <button
           type="button"
@@ -1842,7 +1971,9 @@ export function Selling({
         {!online && !current && !offline.tableService && (
           <p className="muted tiny">{t("offlineTableServiceOffHint")}</p>
         )}
-        <div className="row between">
+        {/* Guardar borrador, Descuento, the club's Canjear premio and the saved note
+            (.cart-actions in styles.css: they wrap only on narrow screens). */}
+        <div className="row between cart-actions">
           <button
             className="text-button"
             disabled={!draft.lines.length || busy}
@@ -1880,6 +2011,33 @@ export function Selling({
               // receipt opens, as after a payment (LD-15 discounts Q7).
               if (currentRef.current?.id !== o.id) return;
               setCurrent(o);
+              if (o.checkState === "closed") setReceipt(o);
+            }}
+          />
+          <RedeemRewardButton
+            order={current && isServerOrder(current) ? current : null}
+            hasDraftLines={
+              draft.lines.length > 0 && (!current || isServerOrder(current))
+            }
+            send={async () => {
+              try {
+                const o = await send();
+                return isServerOrder(o) ? o : null;
+              } catch (e) {
+                if (!(e instanceof HandledError)) throw e;
+                return null;
+              }
+            }}
+            member={loyalty.member}
+            club={loyalty.club}
+            locale={locale}
+            online={online}
+            money={money}
+            onApplied={(o, view) => {
+              if (currentRef.current?.id !== o.id) return;
+              setCurrent(o);
+              // The chip and Canjear premio follow the rewards left (LOYALTY-UX-11).
+              if (view.member) loyalty.refreshMember(view.member);
               if (o.checkState === "closed") setReceipt(o);
             }}
           />
@@ -2162,6 +2320,7 @@ export function Selling({
           locale={locale}
           onNext={reset}
           onBack={() => setReceipt(null)}
+          status={clubResult?.orderId === receipt.id ? clubResult.text : undefined}
           label={offline.receiptProps(receipt)?.label}
           labelHint={offline.receiptProps(receipt)?.labelHint}
           printLabel={offline.receiptProps(receipt)?.printLabel}

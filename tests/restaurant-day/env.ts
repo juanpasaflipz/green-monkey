@@ -128,10 +128,14 @@ export type RunState = {
   appUrl: string;
   cutoffA: string;
   cutoffB: string;
+  /** Restaurant L (branch L, loyalty spec §9.4): Mexico City, like A */
+  cutoffL: string;
   businessDateA: string;
   businessDateB: string;
+  businessDateL: string;
   tenantA?: string;
   tenantB?: string;
+  tenantL?: string;
   /** order-book id (A01…, B1…) → orders.id */
   orders: Record<string, string>;
   /** order-book id → order number shown on screen */

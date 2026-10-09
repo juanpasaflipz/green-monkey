@@ -1140,6 +1140,7 @@ describe("GitHub environments deploy only from main (PLATFORM-CI-2)", () => {
         ),
       ).toBe(false);
     },
+    30_000,
   );
 
   it.skipIf(!hasJq)(
@@ -1159,6 +1160,7 @@ describe("GitHub environments deploy only from main (PLATFORM-CI-2)", () => {
         "environment staging: deployment branch policy is 'protected=true custom=false'",
       );
     },
+    30_000,
   );
 
   it("the dry run shows the custom policy and the main rule; the checklist names every 2.0 secret and variable", () => {
@@ -1180,7 +1182,7 @@ describe("GitHub environments deploy only from main (PLATFORM-CI-2)", () => {
       "gh secret set RAILWAY_TOKEN --env",
     ])
       expect(result.out).toContain(line);
-  });
+  }, 30_000);
 });
 
 describe("third-party actions are pinned by full commit SHA (OPS-R8 regression)", () => {

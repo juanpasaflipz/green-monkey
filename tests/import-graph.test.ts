@@ -95,6 +95,29 @@ describe("process boundaries", () => {
     );
   });
 
+  it("loyalty (038): the hooks inside money transactions import only jobs.ts (no cycle from checks, refunds or discounts); the web reaches the loyalty modules and its job handler; the worker never reaches any of them", () => {
+    const hooks = directImports(resolve("server/loyalty/hooks.ts")).map((f) =>
+      relative(process.cwd(), f),
+    );
+    expect(hooks.sort()).toEqual(["server/db.ts", "server/jobs.ts", "shared/domain.ts"]);
+    // db.ts and domain.ts are type-only imports (erased): at runtime the hooks reach jobs.ts only.
+    const text = readFileSync("server/loyalty/hooks.ts", "utf8");
+    expect(text).toMatch(/import type \{ Tx \} from "\.\.\/db\.js";/);
+    expect(text).toMatch(/import type \{ Session \} from "\.\.\/\.\.\/shared\/domain\.js";/);
+    for (const caller of ["server/checks.ts", "server/refunds.ts", "server/discounts.ts"]) {
+      const imports = directImports(resolve(caller)).map((f) => relative(process.cwd(), f));
+      expect(imports.filter((f) => f.startsWith("server/loyalty/")), caller).toEqual([
+        "server/loyalty/hooks.ts",
+      ]);
+    }
+    const web = reachable("server/index.ts");
+    expect(web.has("server/routes/loyalty.ts")).toBe(true);
+    expect(web.has("server/jobs/handlers/loyalty.ts")).toBe(true);
+    const worker = reachable("server/worker.ts");
+    expect([...worker].filter((f) => f.startsWith("server/loyalty/"))).toEqual([]);
+    expect(worker.has("server/jobs/handlers/loyalty.ts")).toBe(false);
+  });
+
   it("cfdi (030): the web never reaches the worker registry, cfdi's worker modules, its vault or the Facturapi client; the worker reaches cfdi's register and boot modules, never its web service, portal, routes or the token module", () => {
     const web = reachable("server/index.ts");
     for (const forbidden of [

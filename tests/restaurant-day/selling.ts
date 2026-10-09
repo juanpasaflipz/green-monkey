@@ -9,6 +9,7 @@ import { change, mxn, ticketFigures, unitPrice } from "./oracle.js";
 import {
   RESTAURANT_A,
   RESTAURANT_B,
+  RESTAURANT_L,
   type GroupDef,
   type Line,
   type Payment,
@@ -28,7 +29,10 @@ import {
   type Print,
 } from "./ui.js";
 
-export type Restaurant = typeof RESTAURANT_A | typeof RESTAURANT_B;
+export type Restaurant =
+  | typeof RESTAURANT_A
+  | typeof RESTAURANT_B
+  | typeof RESTAURANT_L;
 export const FIGURES = ticketFigures();
 
 /** Collapses whitespace so row texts ("Total\n$82.00") compare as "Total $82.00". */

@@ -4726,9 +4726,13 @@ try {
         summary.redacted.public_order_holds,
         result.redacted.public_order_holds,
       );
-      // A second run finds nothing left of these holds to blank.
+      // A second run finds nothing left of these holds to blank (nor, loyalty 038's rule, any
+      // inactive club member: every rule reports its table).
       const again = await runRetention(owner, { pauseMs: 0 });
-      assert.deepEqual(again.redacted, { public_order_holds: 0 });
+      assert.deepEqual(again.redacted, {
+        public_order_holds: 0,
+        loyalty_members: 0,
+      });
     } finally {
       await owner.end();
     }

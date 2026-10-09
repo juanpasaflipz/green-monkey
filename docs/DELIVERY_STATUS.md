@@ -1,5 +1,17 @@
 # Delivery status
 
+**Production, October 9, 2026.** Production is live at `https://app.greenmonkey.online`
+(07:35 Mexico City; LD-73). Deploy run 37937786778 put `739131a` on `web` and `worker`,
+applied migrations 001–036 as `gm_migrator`, and passed all six smoke checks on the custom
+domain; the worker runs its jobs. Configured: the domain (DNS-only), Google sign-in, the
+CFDI `organizations` provider in test mode with the owner's Facturapi User key, and the
+support operator login `gm_support_lead` for the pilot's Pro grant. No restaurant is
+onboarded, and owner signup is paused until the legal values are published. Still to do
+([LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) section 2): step 10 (the first production backup
+and restore drill), step 11 (`OPS_LIVE_ENVIRONMENTS`) and step 12 (the Juanberto's pilot,
+with its cutover checklist). Wave 4 (payments 037, loyalty 038, kiosk 039) is being built,
+is not live, and comes before the pilot. The paragraphs below predate the launch.
+
 **Wave 3, October 8, 2026 (`integration/v1`).** Landed since the October 6 status: the W3-1
 polish (kitchen paper and offline lists dated with the business day, "#10 · 5 oct"; support
 references readable aloud; unexpected 4xx answers logged with their request id; LD-44, LD-48,
@@ -77,7 +89,7 @@ This is an in-progress implementation, not release approval. Required features r
 | Fiscal profile, IVA and consecutive ticket folios (Mexico) | locally verified, staged | October 5 (fiscal 027): restaurant fiscal profile (RFC with check digit, régimen by RFC type, C.P., optional address and series, border-region IVA 8% with attestation), per-product tax category and SAT keys, immutable per-line tax snapshots, one ticket per settled check with a tenant-wide gapless folio (DB-enforced), refund IVA adjustments by complement extraction, missing-ticket repair, `FISCAL_TICKETS_ENABLED` kill switch. Evidence: `tests/fiscal.test.ts`, `tests/tax.test.ts`, `tests/fiscal-client.test.ts`, `tests/fiscal-db.ts` (38 checks, `npm run test:db:fiscal`), `tests/browser/fiscal.spec.ts`. MXN only; IEPS out of scope; an accountant has not reviewed the documented rules (D7, D9, D14, D15). | No PAC or SAT service contacted. |
 | Uber Eats/Rappi/DiDi imports and connectors | pending | Not implemented. | — |
 | Courier dispatch (Uber Direct) | optional follow-on | Not implemented. | Provider/account/device verification required; none performed. |
-| Loyalty/stamps/referrals | pending | Not implemented. | — |
+| Loyalty/stamps/referrals | built (track/loyalty, 038) | Members by phone, stamps on the paid amount (platform tenders excluded), rewards as audited discounts, join QR (`/club`), lookup at checkout, LFPDPPP consent, in-app ARCO, 24-month retention, pos-lite import with verification, Finanzas › Club de lealtad; kiosk functions for 039. Referrals, SMS/WhatsApp and wallet passes deferred (LD-72). See [Loyalty](LOYALTY.md). | DB suite `test:db:loyalty` (L1–L30 and H1; with payments P1 merged, L9 asserts that a platform tender earns nothing and cash plus platform earns on the cash part, and L10 that a reward is refused while a terminal attempt is live; L28 asserts acceptance criterion 5: the reward in Excepciones and the corte, the refund reversal in the club report), browser `loyalty.spec.ts`; LD-5 second opinion fixed (LD-74); restaurant-day branch L (spec §9.4, LD-80): its own restaurant, "Tortas El Mezquite", links, pays, earns, redeems and reverses a stamp by refund through the UI, reconciled by D20–D23 (see [Loyalty](LOYALTY.md#restaurant-day-branch-l-spec-94)). |
 | Apple/Google wallet passes | optional follow-on | Not implemented. | Provider/account/device verification required; none performed. |
 | SMS/WhatsApp and voice operations | optional follow-on | Not implemented. | Provider/account/device verification required; none performed. |
 | AI receipt/menu parsing and recipe matching | pending | Not implemented. | — |

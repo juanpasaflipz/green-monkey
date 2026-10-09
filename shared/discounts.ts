@@ -28,7 +28,16 @@ export const DISCOUNT_REASONS = [
   "promotion",
   "regular_customer",
   "other",
+  // loyalty (038 §4.5): a club reward. Recorded only by loyalty's redemption (no approver, never
+  // counted against a cashier's limit); applyDiscount refuses it (discount_reason_reserved).
+  "loyalty_reward",
 ] as const;
+/** The reason only loyalty's redemption records. */
+export const RESERVED_DISCOUNT_REASON = "loyalty_reward";
+/** The reasons Descuento offers (every reason but the reserved one). */
+export const SELECTABLE_DISCOUNT_REASONS = DISCOUNT_REASONS.filter(
+  (r) => r !== RESERVED_DISCOUNT_REASON,
+);
 export const REFUND_REASONS = [
   "customer_cancelled",
   "quality",
@@ -370,7 +379,12 @@ export function unapprovedDiscounts(order: Pick<Order, "discounts">): {
   count: number;
 } {
   const own = (order.discounts ?? []).filter(
-    (d) => !d.reversal && d.approverName === null && d.activeAmount > 0,
+    (d) =>
+      !d.reversal &&
+      d.approverName === null &&
+      d.activeAmount > 0 &&
+      // A club reward is proven by the member's ledger, not a staff decision (038 §2.6).
+      d.reasonCode !== RESERVED_DISCOUNT_REASON,
   );
   return { amount: sum(own.map((d) => d.activeAmount)), count: own.length };
 }

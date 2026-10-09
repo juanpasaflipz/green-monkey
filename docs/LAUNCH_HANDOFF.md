@@ -6,18 +6,33 @@ needs your accounts, your credentials, your legal identity or your signature is 
 This page lists those steps and the order in which to take them. It does not repeat
 the runbooks; it links to their sections.
 
-Release version of October 8, 2026, written against `integration/v1` (migrations
-through 036; every Wave 2 area, public ordering, the Wave 3 polish, flake, client-address
-and CFDI rehearsal fixes and the restaurant-day acceptance gate merged). `main` carries
-everything through migration 035; the release pull request brings 036 and the gate.
+Production version of October 9, 2026. `main` carries the release (migrations 001–036,
+every Wave 2 area, public ordering, the Wave 3 polish, flake, client-address and CFDI
+rehearsal fixes and the restaurant-day acceptance gate; pull request #8, LD-64), and
+staging and production run it.
 
 - **Staging is cut over.** Steps 1–13 of [RUNBOOK.md, "Staging cutover"](RUNBOOK.md#staging-cutover)
   ran on October 6–7, 2026, including the rotations; staging deploys from `main` through
-  GitHub Actions and its smoke is green. The record, without secrets, is in
-  [STAGING.md](STAGING.md#wave-20-cutover-record). Steps 14 (backup and restore drill)
-  and 15 (load test) are still open, with the other items in section 3.
-- **Production is not launched.** Nothing has run against it. You launch it, following
-  section 2, which mirrors what staging actually needed.
+  GitHub Actions and its smoke is green. Step 14 (first backup, restore drill,
+  `OPS_LIVE_ENVIRONMENTS=staging`) passed on October 8 (1.8). The record, without
+  secrets, is in [STAGING.md](STAGING.md#wave-20-cutover-record). Step 15 (load test) is
+  still open, with the other items in section 3.
+- **Production is live (October 9, 2026, 07:35 Mexico City) at
+  `https://app.greenmonkey.online`.** Section 2 steps 0–9 are done (LD-68, LD-69, LD-73):
+  the Neon project and logins, Railway `web` and `worker`, the GitHub `production`
+  environment, the custom domain (DNS-only), Google sign-in and the Facturapi User key
+  (CFDI in test mode). The production deploy applied migrations 001–036, its smoke passed
+  all six checks on the domain and the worker runs its jobs. The support operator login
+  `gm_support_lead` is provisioned for the pilot's Pro grant (1.12).
+  - **No restaurant is onboarded yet.** Owner signup stays paused (`signup_paused`)
+    until the legal values are published (1.11, 1.12).
+  - **What remains:** step 10 (the first production backup and restore drill; it needs
+    your `gm-backups-production` bucket and token, 1.8), step 11
+    (`OPS_LIVE_ENVIRONMENTS="staging production"`, after the drill) and step 12 (the
+    pilot, with [the cutover checklist for Juanberto's](#4-cutover-checklist-for-juanbertos)).
+  - **Opened on your decision (LD-68).** Some of step 0's preconditions were still open at
+    launch: the staging load test, the alert topic (1.7), the legal values (1.11, 1.12),
+    the pilot hardware (1.16) and the contacts (1.17). They now gate step 12.
 
 Dates on this page are UTC unless they say Mexico City. Each item in section 1 says
 what was done on **staging** (and when) and what remains yours for **production**.
@@ -30,25 +45,26 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
 
 | # | Item | Staging | Production |
 | --- | --- | --- | --- |
-| 1.1 | Railway access and project tokens | Done (2026-10-06) | Yours: production project token |
-| 1.2 | Production domain and DNS (DNS-only) | Not needed (Railway domain) | Yours |
-| 1.3 | Neon project and roles | Done (2026-10-06, cutover step 2) | Yours |
+| 1.1 | Railway access and project tokens | Done (2026-10-06) | **Done (2026-10-08):** project token `github-cd-production` |
+| 1.2 | Production domain and DNS (DNS-only) | Not needed (Railway domain) | **Done (2026-10-08):** `app.greenmonkey.online`, DNS-only; yours: revoke the temporary DNS token |
+| 1.3 | Neon project and roles | Done (2026-10-06, cutover step 2) | **Done (2026-10-08)**; yours: revoke the temporary Neon API key |
 | 1.4 | Rotate the exposed staging database passwords | Done (2026-10-07, cutover steps 11–13) | Nothing exposed; routine rotations only |
-| 1.5 | Google OAuth client | Exists (prior staging client) | Yours |
-| 1.6 | GitHub protection and environment secrets | Done (2026-10-07, cutover step 8) | Yours: production environment secrets and variables |
-| 1.7 | Alert channel (ntfy topic) | **Pending: none set** | Yours |
-| 1.8 | Backup encryption key (age) and off-platform storage (R2) | **Staging live 2026-10-08** (backup, retention and a passed restore drill; scheduled); lifecycle rules, token renewal before 2026-11-07 and production remain | Yours |
+| 1.5 | Google OAuth client | Exists (prior staging client) | **Done:** production client on `web`; yours: rotate its secret at cutover |
+| 1.6 | GitHub protection and environment secrets | Done (2026-10-07, cutover step 8) | **Done for the deploy (2026-10-08)**; R2 and alert values follow 1.7 and 1.8 |
+| 1.7 | Alert channel (ntfy topic) | **Pending: none set** | **Pending: none set** |
+| 1.8 | Backup encryption key (age) and off-platform storage (R2) | **Staging live 2026-10-08** (backup, retention and a passed restore drill; scheduled); lifecycle rules, token renewal before 2026-11-07 and production remain | Yours: `gm-backups-production` and its token (step 10) |
 | 1.9 | Error tracking (Sentry DSN): approve or decline | Off | Your decision |
-| 1.10 | Secrets you generate | `SIGNING_KEYS` done (2026-10-07) | Yours |
-| 1.11 | Legal entity data (LD-3) | Not set | Yours, after counsel (1.12) |
-| 1.12 | Privacy notice publication (counsel) | — | Yours |
+| 1.10 | Secrets you generate | `SIGNING_KEYS` done (2026-10-07) | **Done (2026-10-08)**; yours: an offline copy of `CREDENTIAL_ENCRYPTION_KEY` |
+| 1.11 | Legal entity data (LD-3) | Not set | **Not set: owner signup paused**; yours, after counsel (1.12) |
+| 1.12 | Privacy notice publication (counsel) | — | Yours. Support operator for the Pro grant: **provisioned** (`gm_support_lead`) |
 | 1.13 | An accountant's confirmation of IVA, CFDI and RESICO behaviour | — | Yours, before live CFDI |
-| 1.14 | Facturapi keys and each restaurant's CSD | Test key in place (2026-10-07) | Yours: User key, then live |
+| 1.14 | Facturapi keys and each restaurant's CSD | Test key in place (2026-10-07) | **User key done (2026-10-08): test mode**; live after the accountant (1.13); each restaurant's CSD |
 | 1.15 | Stripe live mode | Sandbox | Not needed for the pilot launch |
-| 1.16 | The pilot restaurant's printer and tablets | — | Yours |
+| 1.16 | The pilot restaurant's printer and tablets | — | Yours: GHIA GTP801 through pos-lite's `ghia-web` queue, not yet test-printed |
 | 1.17 | Contacts, escalation and the go-live decision | — | Yours |
-| 1.18 | Custody of the `neondb_owner` password | Rotated 2026-10-07; held by the operator | Yours |
+| 1.18 | Custody of the `neondb_owner` password | Rotated 2026-10-07; held by the operator | Held by the operator, never displayed; yours: reset and keep it |
 | 1.19 | The older staging Neon branch | **Done: both restore branches deleted (2026-10-07, 2026-10-08)** | — |
+| 1.20 | Loyalty club inputs (038): the club reward and its cap (LD-72: one free product up to $150 by default), the restaurant's privacy-notice update that covers the club (counsel), the pos-lite export run at cutover and pos-lite's copy purged after it; the platform notice and DPA that cover the club are published first (1.12; the club refuses to turn on before, `loyalty_legal_required`) | — | Yours, before enabling the club |
 
 ### 1.1 Railway access and project tokens
 
@@ -57,11 +73,11 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
   used Railway's public API, or `RAILWAY_API_TOKEN` per command, and minted a project
   token scoped to the staging environment (`github-cd-staging`), stored as the GitHub
   environment secret `RAILWAY_TOKEN` for `staging`.
-- **Production: yours.** A project token scoped to the `production` environment of the
-  same Railway project, stored as the `production` environment secret `RAILWAY_TOKEN`
-  ([PROVISIONING.md §3](PROVISIONING.md#3-railway) step 2,
-  [§7](PROVISIONING.md#7-github)). Mint it yourself in the dashboard, or let the operator
-  mint it with the workspace token. Railway's CLI treats `RAILWAY_TOKEN` (project token)
+- **Production: done (2026-10-08, LD-68).** The operator minted a project token scoped to
+  the `production` environment of the same Railway project (`github-cd-production`,
+  verified) with the workspace token and stored it as the `production` environment secret
+  `RAILWAY_TOKEN` ([PROVISIONING.md §3](PROVISIONING.md#3-railway) step 2,
+  [§7](PROVISIONING.md#7-github)). Railway's CLI treats `RAILWAY_TOKEN` (project token)
   and `RAILWAY_API_TOKEN` (account or workspace token) as the non-interactive
   alternatives to `railway login` and accepts only one of the two at a time.
 - **How to verify.** Listing variable **names** works:
@@ -70,6 +86,15 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
 
 ### 1.2 Production domain and DNS
 
+- **Production: done (2026-10-08, LD-69).** `app.greenmonkey.online` is the custom domain
+  of the production `web` service (the apex stays free). Cloudflare holds Railway's `CNAME`
+  and `TXT` ownership records for it, both DNS-only, created with your temporary DNS
+  token; Railway verified the domain and its certificate. `APP_URL` (both services and the
+  GitHub `production` variable) was set to `https://app.greenmonkey.online` before the
+  first deploy, so the smoke ran on the domain. On 2026-10-09
+  `/api/ops/diagnostics/ip` returned the operator's own public address with source
+  `x-real-ip`, and the domain serves HTTPS with HSTS and CSP. **Yours:** revoke the
+  temporary Cloudflare DNS token; the records are in place.
 - **Why.** Deployed processes refuse to start without an `https` `APP_URL`
   (`server/config-rules.ts`). The Google OAuth redirect must share `APP_URL`'s origin,
   and session cookies are `Secure`. Staging uses its Railway domain and needs none of
@@ -102,8 +127,18 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
   ran as `neondb_owner`: capability roles from `globals.sql` (`gm_jobs_worker`,
   `gm_support` and the others), the `gm_migrator` login with the tables' ownership, the
   worker's jobs login `gm_staging_worker` and the backup login `gm_staging_backup`.
-- **Production: yours.** Production gets its own Neon project and least-privilege
-  logins: `gm_migrator` owns the schema, `gm_production_app` serves traffic,
+- **Production: done (2026-10-08, LD-69).** Project `green-monkey-production` in
+  `aws-us-east-1` (PostgreSQL 18), database `green_monkey_production`, 7-day history,
+  daily and weekly snapshots kept 35 days, protected default branch; logins
+  `gm_migrator`, `gm_production_app`, `gm_production_billing`, `gm_production_worker` and
+  `gm_production_backup`. `provision-neon.sh` created the project but failed parsing
+  `neonctl`'s JSON before its remaining steps; the lead finished them through the Neon
+  API (follow-up: make the script's parsing robust). The owner connection and the logins
+  are held by the operator outside the repository and were never displayed. **Yours:**
+  revoke the temporary Neon API key (the production Neon steps are done), and reset and
+  keep `neondb_owner` (1.18).
+- **The procedure, for reference.** Production gets its own Neon project and
+  least-privilege logins: `gm_migrator` owns the schema, `gm_production_app` serves traffic,
   `gm_production_worker` runs the worker's jobs, and the billing and backup logins
   each have one job ([INFRASTRUCTURE.md, "Neon connections"](INFRASTRUCTURE.md#neon-connections)).
   - Your Neon organization, plan and region: Launch (7-day history) or Scale (30-day),
@@ -153,6 +188,12 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
 
 ### 1.5 Google OAuth production client
 
+- **Production: done (before the 2026-10-09 go-live, LD-71).** Your production OAuth
+  client is set on `web`: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and
+  `GOOGLE_REDIRECT_URI=https://app.greenmonkey.online/api/auth/google/callback`.
+  **Yours:** make sure the consent screen is published before the pilot owner signs up,
+  and rotate the client secret at cutover, since it passed through a chat (LD-72; section
+  4).
 - **Why.** Owners sign up and enter with Google, and each environment needs its own
   OAuth client ([README](../README.md), "Owner signup"). Staging keeps the client it
   already had.
@@ -178,14 +219,15 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
   also lists `restaurant-day` and `restaurant-day-cfdi`. The lead re-applies it with
   `github-protect.sh` right after the release pull request merges (applying it earlier
   would block pull requests before the workflow exists on `main`; LD-57). See section 3.
-- **Production: yours.** The `production` environment has no secrets or variables yet.
-  Set them as [PROVISIONING.md §7](PROVISIONING.md#7-github) lists: the secrets
-  `RAILWAY_TOKEN` (1.1), `MIGRATION_DATABASE_URL` (`gm_migrator`, direct endpoint, from
-  `.env.provisioned-production` on stdin, never on the command line),
-  `BACKUP_DATABASE_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
-  `ALERT_WEBHOOK_URL`; the variables `APP_URL`, `PG_APP_USER` (`gm_production_app`),
-  `ALERT_WEBHOOK_KIND` (`ntfy`), `R2_ACCOUNT_ID` and `R2_BUCKET`. No Railway service
-  holds the migration credential: both processes refuse it.
+- **Production: done for the deploy (2026-10-08, LD-69).** The `production` environment
+  holds the secrets `RAILWAY_TOKEN` (1.1), `MIGRATION_DATABASE_URL` (`gm_migrator`, direct
+  endpoint) and `BACKUP_DATABASE_URL`, and the variables `APP_URL`
+  (`https://app.greenmonkey.online`), `PG_APP_USER` (`gm_production_app`) and
+  `ALERT_WEBHOOK_KIND` (`ntfy`). **Still to add**, as
+  [PROVISIONING.md §7](PROVISIONING.md#7-github) lists: the secrets `R2_ACCESS_KEY_ID`,
+  `R2_SECRET_ACCESS_KEY` and `ALERT_WEBHOOK_URL`, and the variables `R2_ACCOUNT_ID` and
+  `R2_BUCKET` (1.7, 1.8). No Railway service holds the migration credential: both
+  processes refuse it.
 - **How to verify.** `gh secret list --env production` lists the names;
   `gh variable list --env production` shows `PG_APP_USER`; a pull request shows the
   required checks.
@@ -227,6 +269,8 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
   (with your private key, on Neon: all four checks passed, RTO 117 s;
   [evidence](evidence/restore/2026-10-08-staging.json)) ran on 2026-10-08, and
   `OPS_LIVE_ENVIRONMENTS=staging` turned on the scheduled staging jobs (LD-67).
+- **Production: yours, for section 2 step 10.** The `gm-backups-production` bucket (with
+  `--lock`) and its bucket-scoped token; the same age key pair serves production.
 - **What you supply.**
   1. **The R2 buckets.** One per environment: `gm-backups-staging` and
      `gm-backups-production`, created by `scripts/ops/provision-r2.sh <env>` with their
@@ -279,6 +323,10 @@ Only someone with production access can set these, so they are yours to generate
 from a private file with `scripts/ops/railway-vars.sh` (never on the command line), and
 keep where noted.
 
+**Production: set on 2026-10-08 (LD-68, LD-69).** The operator generated `SIGNING_KEYS`
+and `JWT_SECRET` (on `web`) and `CREDENTIAL_ENCRYPTION_KEY` (on `worker`); they are held
+outside the repository. **Yours:** take the offline copy of `CREDENTIAL_ENCRYPTION_KEY`.
+
 - `JWT_SECRET` on `web`: at least 32 characters or the web refuses to start;
   [PROVISIONING.md §3](PROVISIONING.md#3-railway) asks for 64+ random characters. It
   still keys the pairing-code, PIN-fingerprint, invitation and transfer digests, so
@@ -321,6 +369,8 @@ keep where noted.
 - **Order.** Setting these values in production **publishes** the documents: do it only
   after your counsel approved the text (1.12). Until then leave them unset; the POS
   works and only new owner signups wait.
+- **Production: not set (2026-10-09).** Owner signup answers `signup_paused`, so no
+  restaurant can be onboarded yet; the Juanberto's pilot waits for these values.
 - **How to verify.** `GET https://<domain>/api/account-config` reports
   `"legal":{"status":"published",…}`; the web logs carry no
   `legal_documents_unpublished` line; the legal pages show your values; owner signup is
@@ -337,7 +387,13 @@ keep where noted.
   `/legal/privacidad`, `/legal/terminos` and `/legal/encargo-de-datos` (English at
   `/legal/privacy`, `/legal/terms`, `/legal/data-processing`), including the
   billing-data consent box, the processor list (Google, Stripe, Neon, Railway,
-  Cloudflare, GitHub, Facturapi) and the support-transfer and ARCO wording (LD-32).
+  Cloudflare, GitHub, Facturapi), the support-transfer and ARCO wording (LD-32) and the
+  loyalty club paragraphs of version `2026-10-09` (privacy §5–§6, DPA §2, §6, §11;
+  [ACCOUNT_AND_LEGAL.md](ACCOUNT_AND_LEGAL.md#the-loyalty-club-038)). No restaurant can
+  turn the club on until this set is published (`loyalty_legal_required`). Ask counsel
+  too about the club's two retention choices: an order's call name (a member's first
+  name) stays on past orders after an ARCO deletion as a sales record, and marketing
+  opt-ins are unverified until a double opt-in exists (LOYALTY.md "Privacy").
   The text is versioned code (`shared/legal.ts`); any change counsel asks for ships as
   a new version (set its `version`, `announcedAt` and `effectiveFrom` to the
   publication date: nothing is in force before it, so nothing needs 15 days' notice).
@@ -364,10 +420,11 @@ keep where noted.
   the simplified notice appears next to the Google button and restaurant signup; a test
   signup records its acceptance.
 - **Pilot restaurants and Pro.** Billing stays disabled at launch, so pilot restaurants
-  get Pro from a support operator: provision one operator login
-  (`npm run support:provision`, kept on the operator's computer, never on Railway),
-  then `npm run support -- grant-entitlement --tenant <id> --until <date>` per pilot
-  (at most 90 days, renewable before the end date; every run is visible to the owner).
+  get Pro from a support operator. **Production: the operator login `gm_support_lead` is
+  provisioned** (`npm run support:provision`, kept on the operator's computer, never on
+  Railway). On the day the owner signs up, run
+  `npm run support -- grant-entitlement --tenant <id> --until <date>` for the pilot (at
+  most 90 days, renewable before the end date; every run is visible to the owner).
   Runbook: [OPERATIONS.md](OPERATIONS.md) ("Support").
 
 ### 1.13 An accountant's confirmation of IVA, CFDI and RESICO behaviour
@@ -456,9 +513,19 @@ keep where noted.
   acceptance in live mode, credit notes and substitution, the RESICO monthly close, real
   email delivery, receptor-name validation (1.13) and Base vs Importe rounding (1.13).
   See [CFDI.md](CFDI.md) "Open items".
-- **Production: yours** (worker variables; a deployed web refuses all of them,
-  `forbidden_credential_in_process`; [CFDI.md, "Environment matrix"](CFDI.md#environment-matrix)
-  and ["Onboarding runbook"](CFDI.md#onboarding-runbook)):
+- **Production: User key done, test mode (2026-10-08, LD-68, LD-69).** Your Facturapi
+  User key is `FACTURAPI_API_KEY` on the production worker, with
+  `CREDENTIAL_ENCRYPTION_KEY` (1.10), so the `organizations` provider is active.
+  `CFDI_LIVE_ENABLED` stays unset until the accountant signs off (1.13). Juanberto's gets
+  its own new Facturapi organization when the owner activates CFDI in the POS and uploads
+  its CSD. The organization live key you sent first was neither stored nor used (this
+  provider needs the User key): renew it, since it passed through the chat. Rotate the
+  User key at cutover for the same reason; the operator then updates the worker variable
+  (section 4).
+- **The production rules, for reference** (worker variables; a deployed web refuses all
+  of them, `forbidden_credential_in_process`;
+  [CFDI.md, "Environment matrix"](CFDI.md#environment-matrix) and
+  ["Onboarding runbook"](CFDI.md#onboarding-runbook)):
   - Your Facturapi account and its **User key** (`sk_user_…`) as `FACTURAPI_API_KEY`
     on the production worker, with `CREDENTIAL_ENCRYPTION_KEY` (1.10): the
     `organizations` provider, one Facturapi organization per restaurant, each starting
@@ -503,11 +570,21 @@ keep where noted.
   ([OFFLINE_RECOVERY.md, "Verification"](OFFLINE_RECOVERY.md#verification);
   [SERVICE.md](SERVICE.md)).
 - **Where it goes.** You buy or choose the devices with the restaurant; the installer
-  follows [PILOT_SOP.md §1–§2](PILOT_SOP.md#1-impresión-y-equipo) (OS driver: paper
-  width, no margins, 100 % scale, auto-cut and cash-drawer kick are driver features;
+  follows [PILOT_SOP.md §1–§2](PILOT_SOP.md#1-impresión-y-equipo) (paper width, no
+  margins, 100 % scale; cutting and the cash-drawer kick belong to the OS print queue;
   silent printing is unconfirmed).
-- **How to verify.** The full test print in [PILOT_SOP.md §1.2](PILOT_SOP.md#12-configurar-la-impresora-térmica-58-u-80-mm-en-el-sistema-operativo)
-  step 10 passes on each device, and one deliberate outage (router unplugged) is sold
+- **Juanberto's (LD-70 B1, LD-71).** A GHIA GTP801 (80 mm, USB) on the store Mac. The
+  vendor's Gainscha macOS driver does not work with it (it sends Star raster), so the Mac
+  keeps pos-lite's `ghia-web` CUPS queue (installed by pos-lite's
+  `print-bridge/install-ghia-web.sh`) as the system default, and pos-lite's macOS print
+  pieces are not uninstalled at cutover. Every document opens the print dialog; there is
+  no silent printing in the pilot. `ghia-web` cuts after every Chrome page, so each
+  station's comanda gets its own cut, and a document longer than the chosen page is cut
+  mid-document; it never opens the drawer. An iPad cannot print to it (no AirPrint), and
+  KDS sound, off by default, is switched on on the kitchen device
+  ([PILOT_SOP.md §1.2](PILOT_SOP.md#12-configurar-la-impresora-del-piloto-ghia-gtp801-usb-mac-de-la-caja)).
+- **How to verify.** The full test print in [PILOT_SOP.md §1.2](PILOT_SOP.md#12-configurar-la-impresora-del-piloto-ghia-gtp801-usb-mac-de-la-caja)
+  step 10 passes on each device that prints (at Juanberto's, the store Mac), and one deliberate outage (router unplugged) is sold
   through and synced, as [PILOT_SOP.md §3](PILOT_SOP.md#3-conexión-y-venta-sin-conexión)
   describes. If the pilot uses QR or kiosk ordering, also run the field checks in
   [PUBLIC_ORDERING.md](PUBLIC_ORDERING.md#field-checks-before-printing-at-scale): a
@@ -533,9 +610,10 @@ keep where noted.
   console (the branch's Roles page), with the API, or with `ALTER ROLE … WITH PASSWORD`;
   the new password applies to the next connection. If you do, give the operator the
   new value only when an owner step needs it.
-- **Production: yours.** Reset it right after provisioning (1.3) and keep it in your
-  password manager; hand it to the operator for each owner step and reset it afterwards
-  if you prefer.
+- **Production: yours.** The owner connection from provisioning (1.3) is held by the
+  operator outside the repository and was never displayed (LD-69). Reset the password and
+  keep it in your password manager; hand it to the operator for each owner step and reset
+  it afterwards if you prefer.
 
 ### 1.19 The older staging Neon branch
 
@@ -549,6 +627,24 @@ keep where noted.
 Production repeats what staging needed, in the same order. Each step names the runbook
 section that holds the commands and the staging step it mirrors; do not start a step
 before the previous one is verified.
+
+**Production status (October 9, 2026).** Steps 0–9 are done; 10–12 remain.
+
+| Step | Status |
+| --- | --- |
+| 0 | Opened on your decision to launch (LD-68). Still open then, and now gating step 12: staging step 15 (load test), 1.7, 1.11, 1.12, 1.16 and 1.17 |
+| 1 | Done 2026-10-08 (1.3) |
+| 2 | Done 2026-10-08 (1.1) |
+| 3 | Done 2026-10-08: a plan that only creates `web` and `worker`, applied; the re-plan was up to date |
+| 4 | Done 2026-10-08: `web` has `DATABASE_URL`, `PG_APP_USER`, `SIGNING_KEYS`, `JWT_SECRET`, `APP_URL` and Google (1.5); `worker` has `WORKER_DATABASE_URL`, `APP_URL`, `CREDENTIAL_ENCRYPTION_KEY` and the Facturapi User key (1.14). Billing off; no legal values (1.11); no `ALERT_WEBHOOK_URL` (1.7) |
+| 5 | Done 2026-10-08 (1.6) |
+| 6 | Not recorded as run: production held no data before the first deploy, so there was nothing to check (see the step) |
+| 7 | Done 2026-10-09: the first dispatch (2026-10-08) stopped in the deploy guard before changing anything (git authentication on a private repository; fixed in PR #11). Run 37937786778 deployed `739131a` outside service hours on the empty database and applied migrations 001–036 as `gm_migrator`, with grants |
+| 8 | Done 2026-10-09: all six smoke checks green on the custom domain; by hand, `/api/health` ok, web and worker on `739131a`, ops status not degraded (database ok, schema ready, worker jobs on). The ntfy test waits for 1.7 |
+| 9 | Done 2026-10-08, before step 7: the domain was wired first, so the first deploy and its smoke already ran on `https://app.greenmonkey.online`; DNS-only checked by hand on 2026-10-09 (1.2) |
+| 10 | Open: needs `gm-backups-production` and its token (1.8) |
+| 11 | Open: after step 10 |
+| 12 | Open: the pilot, with [the cutover checklist for Juanberto's](#4-cutover-checklist-for-juanbertos) |
 
 0. **Preconditions.**
    - The release pull request (`release/v1` → `main`) merged and its automatic staging
@@ -633,10 +729,11 @@ before the previous one is verified.
     own drill passed), which turns on the nightly backup, the hourly uptime check and
     the daily retention run at 05:15 Mexico City
     ([PROVISIONING.md §7](PROVISIONING.md#7-github)).
-12. **Pilot.** The restaurant owner signs up with Google on their own phone (currency
-    MXN, time zone, business cutoff); support grants Pro (1.12); staff and PINs in
-    Equipo; devices paired and printers configured
-    ([PILOT_SOP.md §1–§2](PILOT_SOP.md#1-impresión-y-equipo), 1.16); fiscal profile and
+12. **Pilot.** For Juanberto's, follow [the cutover checklist](#4-cutover-checklist-for-juanbertos)
+    alongside this step. The legal values are published (1.11, 1.12); the restaurant owner
+    signs up with Google on their own phone (currency MXN, time zone, business cutoff);
+    support grants Pro (1.12); staff and PINs in Equipo; devices paired and printers
+    configured ([PILOT_SOP.md §1–§2](PILOT_SOP.md#1-impresión-y-equipo), 1.16); fiscal profile and
     CFDI activation in test mode with the restaurant's CSD (1.14); the accountant reviews
     test documents (1.13). Live CFDI (`CFDI_LIVE_ENABLED=true` on the production worker,
     then the restaurant's own "Pasar a modo real") only when the accountant agrees. Run
@@ -660,40 +757,178 @@ the restaurant waits, it sells offline or on paper
 you did not expect; the DB-9 check returns rows; a migration or the smoke fails; the
 restore drill does not reproduce the control totals; the domain is proxied; the
 accountant has not signed off (no live CFDI); the pilot devices have not passed the
-PILOT_SOP test print and outage drill.
+PILOT_SOP test print and outage drill; any stop condition of
+[the cutover checklist](#4-cutover-checklist-for-juanbertos) is not met.
 
 ## 3. Not merged or not verified
 
-As of October 8, 2026:
+As of October 9, 2026:
 
-- **Production:** not launched; nothing has run against it. The `production` GitHub
-  environment has no secrets or variables, and section 2 has not started.
-- **Release pull request:** `integration/v1` carries what `main` does not yet: migration
-  036 (CFDI rehearsal fixes), the restaurant-day gate and its workflow, and the
-  formatting-only commit. `main` (and therefore staging) is at migration 035; staging
-  applies 036 when the release merges.
-- **Restaurant-day gate (LD-57, LD-59, LD-60):** passes locally (branch N twice in a row,
-  branch K against the Facturapi fake;
-  [ACCEPTANCE_STATUS.md](ACCEPTANCE_STATUS.md#restaurant-day-go-live-gate-specsacceptancemd-v11)).
-  Still open: the lead applies the `restaurant-day` and `restaurant-day-cfdi` required
-  checks right after the release pull request merges; two consecutive green CI runs;
-  `RD_NIGHTLY_REF` for the nightly run; `deploy.yml` does not yet require the gate
-  before a production dispatch (ops follow-up). The `RD_*` repository variables hold a
-  fictional set. `FACTURAPI_TEST_KEY` is not a GitHub secret, so `restaurant-day-cfdi`
-  reports skipped in CI.
-- **Staging, still pending:** the first backup and the restore drill, then the first
-  Retention dispatch and `OPS_LIVE_ENVIRONMENTS=staging` (cutover step 14; needs 1.8);
-  the load test `target` and `stress` and the pool decision, including public ordering's
-  polls (step 15, PUBLIC-OPS-7); the alert webhook and the Railway deploy webhook
-  (step 10; needs 1.7); the older Neon branch (1.19); the CFDI organizations-provider
-  rehearsal (1.14).
+- **Production:** live since October 9 (section 2, steps 0–9). Steps 10–12 remain: no
+  production backup or restore drill yet, the scheduled production jobs are off
+  (`OPS_LIVE_ENVIRONMENTS` is `staging`), no restaurant is onboarded and owner signup is
+  paused until the legal values are published.
+- **Restaurant-day gate (LD-57, LD-59, LD-60, LD-64):** required on `main` since the
+  release merged (pull request #8; the ruleset requires `qualify`, `security`,
+  `restaurant-day` and `restaurant-day-cfdi`), with `RD_NIGHTLY_REF=main`. `deploy.yml`
+  does not yet require the gate before a production dispatch (ops follow-up). The `RD_*`
+  repository variables hold a fictional set. `FACTURAPI_TEST_KEY` is not a GitHub secret,
+  so `restaurant-day-cfdi` reports skipped in CI.
+- **Staging, still pending:** the load test `target` and `stress` and the pool decision,
+  including public ordering's polls (step 15, PUBLIC-OPS-7); the alert webhook and the
+  Railway deploy webhook (step 10; needs 1.7); the R2 lifecycle rules and the token
+  renewal before 2026-11-07 (1.8); the CFDI organizations-provider rehearsal (1.14).
 - **CFDI against the real sandbox:** the shared-sandbox flows passed locally on
-  2026-10-07 (LD-51); staging runs `sandbox_shared` with your test key. Not rehearsed:
-  the organizations provider (User key, CSD, going live), live cancellation acceptance,
-  credit notes and substitution, the RESICO monthly close, real email, receptor-name
-  validation, Base vs Importe rounding (1.13, 1.14).
+  2026-10-07 (LD-51); staging runs `sandbox_shared` with your test key, and production
+  runs the `organizations` provider in test mode with no restaurant activated yet. Not
+  rehearsed: the organizations provider (a restaurant's organization, CSD, going live),
+  live cancellation acceptance, credit notes and substitution, the RESICO monthly close,
+  real email, receptor-name validation, Base vs Importe rounding (1.13, 1.14).
+- **Wave 4 (LD-71, LD-72):** payments (migration 037: a "paid by platform" tender with
+  per-platform prices and named terminals, then integrated Clip and Mercado Pago Point),
+  loyalty (038) and the kiosk (039) are being built. None of it is merged or live; it
+  comes before the pilot.
 - **Owner inputs not yet given:** legal values and counsel review (1.11, 1.12),
-  accountant sign-off (1.13), Facturapi User key (1.14), Sentry decision (1.9),
-  contacts (1.17).
-- **Hardware:** physical printers, tablets, silent printing and a real outage: not
+  accountant sign-off (1.13), the production R2 bucket and token (1.8), the alert topic
+  (1.7), the Sentry decision (1.9), contacts (1.17). Housekeeping: revoke the temporary
+  Neon API key and Cloudflare DNS token (1.2, 1.3), take the offline copy of
+  `CREDENTIAL_ENCRYPTION_KEY` (1.10), and rotate at cutover every credential that passed
+  through a chat (1.5, 1.14).
+- **Hardware:** the GTP801 prints from Chrome through `ghia-web` for pos-lite, but no
+  Green Monkey document has been printed on it yet; tablets and a real outage are not
   checked (1.16). QR scanners and printed cards are field checks.
+
+## 4. Cutover checklist for Juanberto's
+
+Juanberto's moves from pos-lite (`juanbertos.desktop.kitchen`) to Green Monkey for the
+pilot. This list comes from the parity review (LD-70) and your decisions (LD-71, LD-72).
+It goes with section 2 step 12; it does not replace it. The restaurant-side procedures
+are in [PILOT_SOP.md](PILOT_SOP.md) (Spanish).
+
+**Wave 4 comes before the pilot.** Payments (migration 037: a "paid by platform" tender
+with per-platform prices and named terminals, then integrated Clip and Mercado Pago
+Point), loyalty (038) and the kiosk (039) are being built and are not live. Nothing below
+depends on them; this list is updated when they reach production.
+
+### 4.1 Before day one
+
+1. **Menu, re-keyed by hand.** pos-lite's catalog has about 52 products, 17 modifier
+   groups and 71 options. Green Monkey has no pos-lite importer: its JSON import takes only
+   name, price, category and availability and puts every product on the kitchen station
+   ([MIGRATION.md](MIGRATION.md), [MENU.md](MENU.md)). In the menu editor:
+   - check every price line by line against pos-lite, products and options alike;
+   - set every bar item's station to the bar (a line, combos included, belongs to one
+     station);
+   - create a "Varios" open-price product with its ceiling, for anything not on the menu.
+     QR and kiosk catalogs never show open-price products
+     ([MENU.md, "Selling with choices, combos and open price"](MENU.md#selling-with-choices-combos-and-open-price));
+   - map pos-lite's free-text recipe units to g, kg, ml, l or piezas as you create each
+     stock item. The unit locks once the item has a movement or is used in a recipe
+     ([MENU.md, "Ingredients and the stock engine"](MENU.md#ingredients-and-the-stock-engine)).
+2. **Staff and PINs.** Every employee is enrolled again with a new PIN (there is no
+   employee import); only the owner adds staff or resets PINs.
+3. **Devices, links and cards on the new domain.** Nothing carries over from
+   `juanbertos.desktop.kitchen`. On `https://app.greenmonkey.online`, re-issue:
+   - every device pairing ([PILOT_SOP.md §2](PILOT_SOP.md#2-tablets-y-vinculación)), then
+     each device's print settings and, on the kitchen device, KDS sound (both are kept per
+     device and browser);
+   - every bookmark and home-screen icon;
+   - every printed QR table card and every kiosk link, generated again in Green Monkey.
+     Juanberto's publishes its own privacy-notice URL before any card is printed
+     ([PUBLIC_ORDERING.md](PUBLIC_ORDERING.md#field-checks-before-printing-at-scale)).
+4. **Printer on the store Mac.** pos-lite's `ghia-web` queue stays and is the system
+   default; none of pos-lite's macOS print pieces is uninstalled
+   ([PILOT_SOP.md §1.2](PILOT_SOP.md#12-configurar-la-impresora-del-piloto-ghia-gtp801-usb-mac-de-la-caja)).
+5. **Money defaults, set with the owner** (LD-70, parity review §4 item 14;
+   [DISCOUNTS.md](DISCOUNTS.md), "Controls"). Write down the owner's choice for each:
+
+   | Setting (as the app shows it) | Where | Factory default | What the default means |
+   | --- | --- | --- | --- |
+   | Cajero and Mesero: "Hasta (% por cuenta)" and "Y hasta (importe por cuenta)" | Configuración → "Descuentos y corte de caja" | 0 % / $0 | Every discount by a cashier or server needs a manager's PIN |
+   | "Corte ciego: el conteo se captura sin ver el efectivo esperado" | Same panel | On | The person counting does not see the expected cash |
+   | "Pueden ver el efectivo esperado durante el turno" | Same panel | Gerente (the owner always) | Cashiers and servers do not see it |
+   | "Pueden cerrar caja (además de gerentes)" | Same panel | None | A manager closes every drawer, on that device |
+   | "Bloqueo automático" | Configuración → Dispositivos → Editar, per device | 3 minutes; kitchen never | A register locks after 180 s without use |
+
+6. **CFDI and the global invoice.**
+   - Day one does not need CFDI: once "Datos fiscales" is complete, every sale gets its
+     fiscal ticket with a folio. Until live CFDI, a customer's invoice goes through the
+     accountant's existing process ([PILOT_SOP.md §6](PILOT_SOP.md#6-lo-que-todavía-no-está-en-esta-versión)).
+   - The owner activates CFDI in test mode and uploads the CSD (1.14); the accountant
+     reviews test documents (1.13); live mode only after the sign-off.
+   - **Who issues the global invoice: the accountant**, for every range Green Monkey's
+     live globals do not cover. pos-lite has no periodic global invoice (it stamps a
+     "Público en general" CFDI per order on request); Green Monkey issues globals
+     automatically, but only in live mode and only for tickets from the date chosen at
+     "Pasar a modo real" in **"Incluir en las facturas globales los tickets desde"**.
+   - **Set that date to the cutover date.** The app accepts a date from the start of the
+     current global period to today (`cfdi_live_from_invalid`). If live mode comes in a
+     later period, the cutover date is no longer accepted: choose that period's start,
+     and the accountant covers Green Monkey's tickets from the cutover to that date.
+   - Before day one, write down with the accountant who issues the global for each range,
+     so no income is declared twice or left out: pos-lite's sales before the cutover;
+     Green Monkey's tickets from the cutover to the live date; Green Monkey's tickets
+     after it.
+   - The printer test and the outage drill are real sales with real folios. Run them
+     before the cutover date and give their folios to the accountant.
+7. **Mercado Pago Point mode for manual-terminal periods.** Until integrated charging is
+   live in Green Monkey, card sales use "Terminal externa": the cashier keys the amount on
+   the terminal, then records its reference.
+   - pos-lite switched Juanberto's Point to PDV (integrated) mode, in which the terminal
+     takes charges pushed by the point-of-sale integration. Mercado Pago's documentation
+     says a terminal can be switched to STANDALONE to keep charging when the integration
+     is interrupted, and must be returned to PDV afterwards. Every mode change takes
+     effect only after the terminal restarts.
+   - pos-lite's account screen lists the account's devices as "Integrada (lista para el
+     POS)" or "Independiente — no visible para el POS". Its only button, "Activar para el
+     POS", switches to PDV.
+   - STANDALONE goes through pos-lite's `POST /api/payments/mp/devices/operating-mode`
+     with `operating_mode: "STANDALONE"` and the `device_id`
+     (`server/routes/payments.js`, about lines 1483–1505). It needs a pos-lite session with
+     POS access on a Pro tenant and pos-lite's Mercado Pago connection. Per Mercado
+     Pago's documentation, the terminal's own settings or the Mercado Pago panel can
+     also switch the mode.
+   - Before the cutover, put the Point in STANDALONE, restart it and test a keyed
+     charge; test a keyed charge on the Clip terminal too. When Green Monkey's integrated
+     Point charging is live, its documentation will say when to return to PDV (Mercado
+     Pago allows one PDV terminal per point of sale).
+8. **Credentials.** Rotate at cutover every credential that passed through a chat: the
+   Google client secret (1.5) and the Facturapi keys (1.14).
+
+### 4.2 pos-lite after the cutover: running, read-only
+
+No one sells in pos-lite after the cutover, and its kiosk stays off: two order systems
+would mean two kitchen queues. pos-lite stays up for:
+
+- **history:** sales and reports before the cutover (Green Monkey's reports start empty);
+- **old CFDIs and their invoice links:** the CFDIs stamped by pos-lite and its unexpired
+  `/invoice/:token` links (72 h by default), handled in pos-lite or the Facturapi
+  dashboard;
+- **wallet passes and `/gr` review links**, which pos-lite serves;
+- **loyalty, until Wave 4's import of pos-lite members:** stamp cards in pos-lite with
+  its manual stamp. Recommended (LD-70 B6): honor a completed card in Green Monkey as an
+  audited discount with the reason "Cliente frecuente" or "Promoción";
+- **the Mercado Pago Point mode switch** (4.1 item 7), which needs its Mercado Pago
+  connection;
+- **the store Mac's print pieces:** `ghia-web` and its filter, `termica` and the print
+  bridge.
+
+### 4.3 Stop conditions
+
+Do not cut over, and do not start the pilot, until each of these passes on the
+production devices:
+
+- **The test prints** on the store Mac through `ghia-web`, as
+  [PILOT_SOP.md §1.2](PILOT_SOP.md#12-configurar-la-impresora-del-piloto-ghia-gtp801-usb-mac-de-la-caja)
+  step 10 lists them:
+  - a receipt;
+  - a pre-bill ("Cuenta");
+  - a comanda with kitchen and bar, each station cut apart;
+  - a reprint;
+  - an offline comanda;
+  - the longest realistic document, in one piece.
+- **The outage drill:** with the router unplugged, sell offline and print the offline
+  comanda. Once the connection is back, every sale syncs, as
+  [PILOT_SOP.md §3](PILOT_SOP.md#3-conexión-y-venta-sin-conexión) describes (1.16).
+- **KDS sound** works on the kitchen device.
+- **The menu price check** (4.1 item 1) is complete and the owner has signed it off.

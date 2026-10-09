@@ -84,6 +84,7 @@ export const privacyContent: LegalDocumentContent = {
         paragraphs: [
           "Para prestar el servicio usamos proveedores que tratan datos por nuestra cuenta como personas encargadas, sin que ello sea una transferencia: Google (inicio de sesión), Stripe (pagos de la suscripción), Neon (base de datos), Railway (hospedaje), Cloudflare (almacenamiento cifrado de los respaldos), GitHub (ejecución automatizada de los respaldos) y, solo cuando un restaurante activa la facturación electrónica, Facturapi (timbrado de CFDI a través de un proveedor autorizado de certificación y envío del CFDI por correo). Algunos pueden ubicarse fuera de México.",
           "Solo transferimos datos en los supuestos del artículo 36, como una orden de autoridad competente o un requerimiento legal; esas transferencias no requieren tu consentimiento (artículos 35 y 36).",
+          "Los datos de los socios del club de lealtad de un restaurante se guardan con los mismos proveedores de base de datos, hospedaje y respaldos (Neon, Railway, Cloudflare y GitHub); el club no agrega proveedores ni transferencias.",
         ],
       },
       {
@@ -93,6 +94,7 @@ export const privacyContent: LegalDocumentContent = {
           "Cuando un restaurante registra en Green Monkey datos de sus empleados o comensales, el restaurante es el responsable de esos datos y Green Monkey actúa como persona encargada conforme al contrato de encargo de datos (artículo 2, fracción XII).",
           "Esto incluye los datos fiscales que un comensal captura para pedir su factura (RFC, nombre o razón social, régimen fiscal, código postal y correo), que Green Monkey envía a Facturapi para timbrar y entregar el CFDI por cuenta del restaurante.",
           "Cuando un restaurante conecta su cuenta de Mercado Pago o de Clip, incluye también la marca, el tipo y los últimos 4 dígitos de la tarjeta de cada cobro con terminal integrada que reporta ese proveedor (nunca el número completo ni el nombre del titular), y las credenciales del restaurante con el proveedor, que Green Monkey guarda cifradas por cuenta del restaurante para enviar y consultar sus cobros, y borra al desconectarla.",
+          "También incluye a los socios del club de lealtad de un restaurante, cuando el restaurante lo activa: nombre o apodo, teléfono, historial de compras en el club y el registro de su consentimiento. El aviso de privacidad del restaurante informa el club. Green Monkey solo lleva los sellos y premios por cuenta del restaurante, no envía mensajes a los socios ni transfiere sus datos, y borra el nombre y el teléfono cuando el restaurante lo pide o tras 24 meses sin actividad.",
           "Si eres comensal o empleado, dirige tus solicitudes de derechos ARCO al restaurante. Si recibimos una, la reenviaremos al restaurante correspondiente.",
         ],
       },
@@ -202,6 +204,7 @@ export const privacyContent: LegalDocumentContent = {
         paragraphs: [
           "To provide the service we use providers that process data on our behalf as processors, which is not a transfer: Google (sign-in), Stripe (subscription payments), Neon (database), Railway (hosting), Cloudflare (encrypted backup storage), GitHub (automated backup runs) and, only when a restaurant enables electronic invoicing, Facturapi (CFDI stamping through an authorized certification provider and CFDI delivery by email). Some may be located outside Mexico.",
           "We transfer data only in the cases of article 36, such as an order from a competent authority or a legal requirement; those transfers do not require your consent (articles 35 and 36).",
+          "A restaurant's loyalty club members' data is kept with the same database, hosting and backup providers (Neon, Railway, Cloudflare and GitHub); the club adds no providers and no transfers.",
         ],
       },
       {
@@ -211,6 +214,7 @@ export const privacyContent: LegalDocumentContent = {
           "When a restaurant records data about its employees or guests in Green Monkey, the restaurant is the controller of that data and Green Monkey acts as a processor under the data processing agreement (article 2, section XII).",
           "This includes the tax details a guest enters to request an invoice (RFC, name or legal name, tax regime, postal code and email), which Green Monkey sends to Facturapi to stamp and deliver the CFDI on the restaurant's behalf.",
           "When a restaurant connects its Mercado Pago or Clip account, it also includes the card brand, type and last 4 digits of each integrated terminal charge that provider reports (never the full number or the cardholder's name), and the restaurant's credentials with the provider, which Green Monkey keeps encrypted on the restaurant's behalf to send and check its charges, and deletes when it disconnects.",
+          "It also includes a restaurant's loyalty club members, when the restaurant enables the club: name or nickname, phone, purchase history in the club and the record of their consent. The restaurant's privacy notice covers the club. Green Monkey only keeps the stamps and rewards on the restaurant's behalf, sends members no messages, does not transfer their data, and erases the name and phone when the restaurant asks or after 24 months without activity.",
           "If you are a guest or an employee, send your ARCO requests to the restaurant. If we receive one, we will forward it to the restaurant concerned.",
         ],
       },

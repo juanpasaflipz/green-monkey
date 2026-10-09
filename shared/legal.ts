@@ -107,17 +107,23 @@ const FIRST_VERSION = {
 } as const;
 
 /**
- * The integrated card payments version of the terms, the privacy notice and the DPA (037 P2,
- * critic R40, P2-SECURITY-2): terms §5 describes integrated charging and the custody of the
- * restaurant's provider credentials; the DPA adds the card brand/type/last-4 category (§2) and
- * the transmission to the restaurant's own Mercado Pago or Clip (§11); the privacy notice adds
- * the encargado line (§6). Counsel reviews the text before the legal set is published (LD-3).
- * Not a material change, for the reason loyalty's club version gives (no account had accepted a
- * published version: production signup stays paused until the set is published, LD-72/LD-74).
- * The loyalty track ships its club lines as the same version string: at the merge the two are
- * one version whose text is the union (the pinned hashes and change lines are recomputed then).
+ * The Wave 4 version of the terms, the privacy notice and the DPA, one version for two tracks
+ * (critic R40). Counsel reviews the text before the legal set is published (LD-3).
+ * - Loyalty club (038, LD-74): club members' data categories, the processor line and the
+ *   no-transfer line (privacy §5 and §6; DPA §2, §6 and §11).
+ * - Integrated card payments (037 P2, P2-SECURITY-2): terms §5 describes integrated charging and
+ *   the custody of the restaurant's provider credentials; the DPA adds the card brand/type/last-4
+ *   category (§2) and the transmission to the restaurant's own Mercado Pago or Clip (§11); the
+ *   privacy notice adds the encargado line (§6).
+ * Both tracks shipped their lines as the unpublished 2026-10-09; at the P2 merge they became this
+ * one version whose text is the union (change lines and pinned hashes recomputed, LD-79/LD-81).
+ * Not a material change: no account had accepted a published version when it shipped (production
+ * signup stays paused until the set is published, LD-72/LD-74), so it takes effect on
+ * announcement. Were acceptances of a published 2026-10-06 to exist by the release, set
+ * requiresAcceptanceSince to this version and effectiveFrom 15 days after announcedAt instead: the
+ * club then waits for effectiveFrom (clubLegalCovered).
  */
-const PAYMENTS_VERSION = {
+const WAVE4_VERSION = {
   version: "2026-10-09",
   requiresAcceptanceSince: FIRST_VERSION.requiresAcceptanceSince,
   previousVersion: FIRST_VERSION.version,
@@ -128,12 +134,14 @@ const PAYMENTS_VERSION = {
 
 export const LEGAL_DOCUMENTS: Record<LegalDocumentKey, LegalDocumentMeta> = {
   privacy: {
-    ...PAYMENTS_VERSION,
+    ...WAVE4_VERSION,
     changes: {
       es: [
+        "Socios del club de lealtad de los restaurantes: datos, proveedores y que no se transfieren (§5 y §6).",
         "Cobros con terminal integrada (Mercado Pago, Clip): datos de tarjeta y credenciales del restaurante (§6).",
       ],
       en: [
+        "Restaurants' loyalty club members: data, providers and no transfers (§5 and §6).",
         "Integrated terminal payments (Mercado Pago, Clip): card data and the restaurant's credentials (§6).",
       ],
     },
@@ -141,7 +149,7 @@ export const LEGAL_DOCUMENTS: Record<LegalDocumentKey, LegalDocumentMeta> = {
     enPath: "/legal/privacy",
   },
   terms: {
-    ...PAYMENTS_VERSION,
+    ...WAVE4_VERSION,
     changes: {
       es: [
         "Cobros con terminal integrada con tu cuenta de Mercado Pago o de Clip (§5).",
@@ -154,12 +162,14 @@ export const LEGAL_DOCUMENTS: Record<LegalDocumentKey, LegalDocumentMeta> = {
     enPath: "/legal/terms",
   },
   dpa: {
-    ...PAYMENTS_VERSION,
+    ...WAVE4_VERSION,
     changes: {
       es: [
+        "Socios del club de lealtad: categorías de datos (§2), subencargados (§6) y sin transferencias (§11).",
         "Cobros con terminal integrada: datos de tarjeta y credenciales (§2) y envío a Mercado Pago o Clip por instrucción del restaurante (§11).",
       ],
       en: [
+        "Loyalty club members: data categories (§2), sub-processors (§6) and no transfers (§11).",
         "Integrated terminal payments: card data and credentials (§2) and sending to Mercado Pago or Clip on the restaurant's instructions (§11).",
       ],
     },
@@ -167,6 +177,26 @@ export const LEGAL_DOCUMENTS: Record<LegalDocumentKey, LegalDocumentMeta> = {
     enPath: "/legal/data-processing",
   },
 };
+
+/** The first privacy notice and DPA version whose text covers the loyalty club (LOYALTY-PRIVACY-4). */
+export const CLUB_LEGAL_VERSION = WAVE4_VERSION.version;
+/**
+ * Whether the platform documents in force cover the loyalty club: published, and the privacy
+ * notice and DPA at CLUB_LEGAL_VERSION or later, in effect. Enabling the club waits for it.
+ */
+export function clubLegalCovered(
+  status: LegalStatus,
+  now: number = Date.now(),
+): boolean {
+  if (status !== "published") return false;
+  return (["privacy", "dpa"] as const).every((d) => {
+    const m = LEGAL_DOCUMENTS[d];
+    const order = compareLegalVersions(m.version, CLUB_LEGAL_VERSION);
+    if (order < 0) return false;
+    // A later version replaced the club's one, which was in effect before it was announced.
+    return order > 0 || now >= legalInstant(m.effectiveFrom);
+  });
+}
 /** Generated change entry when only the responsable's data changed (LEGAL-3). */
 export const ENTITY_UPDATED_CHANGE: Record<LegalLocale, string> = {
   es: "Datos del responsable actualizados (nombre, domicilio, RFC, contacto o jurisdicción). El resto del texto no cambió.",

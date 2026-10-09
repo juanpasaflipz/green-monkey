@@ -119,6 +119,7 @@ const GROUP_KEYS: Record<AuditGroup, Key> = {
   settings: "reportsAuditGroupSettings",
   fiscal: "reportsAuditGroupFiscal",
   reports: "reportsAuditGroupReports",
+  loyalty: "loyaltyAuditGroup",
 };
 export function auditGroupLabel(group: AuditGroup, locale: Locale) {
   return strings[locale][GROUP_KEYS[group]];

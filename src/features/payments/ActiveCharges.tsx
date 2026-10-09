@@ -9,6 +9,7 @@ import { usePoll } from "../../serviceHooks";
 import { errorNotice } from "../../i18n";
 import { STATE_KEYS, canRetrySettle } from "./attempt-text";
 import { saveActiveCharges } from "./charge-state";
+import { readsTerminalCharges } from "./options";
 import { ResolveDialog } from "./ResolveDialog";
 
 /**
@@ -48,8 +49,8 @@ export function ActiveCharges({
       saveActiveCharges(session.tenantId, list);
       setRows(list);
     },
-    { intervalMs: 10_000, enabled: online },
-    [session.id, online],
+    { intervalMs: 10_000, enabled: online && readsTerminalCharges(session.role) },
+    [session.id, session.role, online],
   );
   async function cancel(a: AttemptView) {
     setCancelling(a.id);

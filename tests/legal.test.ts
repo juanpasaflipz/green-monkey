@@ -11,6 +11,8 @@ import {
 import { setLogSink } from "../server/logging";
 import {
   BILLING_CONSENT,
+  CLUB_LEGAL_VERSION,
+  clubLegalCovered,
   LEGAL_CONTENT,
   LEGAL_DOCUMENTS,
   MATERIAL_NOTICE_DAYS,
@@ -465,6 +467,49 @@ describe("legal documents", () => {
     );
   });
 
+  it("the privacy notice and the DPA cover the loyalty club: data categories, processors, no transfers (critic R40, LOYALTY-PRIVACY-4)", () => {
+    const text = (doc: LegalDocumentKey, id: string, locale: "es" | "en") =>
+      LEGAL_CONTENT[doc][locale].sections
+        .find((x) => x.id === id)!
+        .paragraphs.join(" ")
+        .toLowerCase();
+    for (const [locale, club, phone, history, noTransfer] of [
+      ["es", "club de lealtad", "teléfono", "historial de compras", "no se transfieren"],
+      ["en", "loyalty club", "phone", "purchase history", "neither transferred"],
+    ] as const) {
+      expect(text("dpa", "objeto", locale)).toContain(club);
+      expect(text("dpa", "objeto", locale)).toContain(phone);
+      expect(text("dpa", "objeto", locale)).toContain(history);
+      expect(text("dpa", "subencargados", locale)).toContain(club);
+      expect(text("dpa", "transferencias", locale)).toContain(club);
+      expect(text("dpa", "transferencias", locale)).toContain(noTransfer);
+      expect(text("privacy", "encargados-transferencias", locale)).toContain(club);
+      expect(text("privacy", "restaurantes", locale)).toContain(club);
+      expect(text("privacy", "restaurantes", locale)).toContain(history);
+    }
+    for (const d of ["privacy", "dpa"] as const)
+      expect(compareLegalVersions(LEGAL_DOCUMENTS[d].version, CLUB_LEGAL_VERSION), d).toBeGreaterThanOrEqual(0);
+  });
+
+  it("enabling the club waits for the published documents that cover it, in effect (LOYALTY-PRIVACY-4)", () => {
+    const effective = legalInstant(LEGAL_DOCUMENTS.dpa.effectiveFrom);
+    expect(clubLegalCovered("unpublished", effective + 1)).toBe(false);
+    expect(clubLegalCovered("published", effective + 1)).toBe(true);
+    expect(clubLegalCovered("published", effective - 1)).toBe(false);
+    // A DPA older than the club's version never covers it.
+    const meta = LEGAL_DOCUMENTS.dpa;
+    const original = { ...meta };
+    try {
+      Object.assign(meta, { version: "2026-10-06", effectiveFrom: "2026-10-06" });
+      expect(clubLegalCovered("published", effective + 864e5)).toBe(false);
+      // A later version keeps covering it from the day it is announced.
+      Object.assign(meta, { version: "2026-11-01", announcedAt: "2026-11-01", effectiveFrom: "2026-11-16" });
+      expect(clubLegalCovered("published", legalInstant("2026-11-02"))).toBe(true);
+    } finally {
+      Object.assign(meta, original);
+    }
+  });
+
   it("the processor lists name every provider server/cfdi/config.ts configures (account 031 phase 2: Facturapi)", () => {
     // Each external CFDI provider the worker can be configured for appears in config.ts as a
     // <PROVIDER>_API_KEY / _TEST_KEY / _BASE_URL variable. A new one is a material DPA change
@@ -671,7 +716,7 @@ describe("legal documents", () => {
         "2026-10-06":
           "30c412cea63b811aca906f95f7f7964b6ba69580e4d6a14e2d07d5caeac27e85",
         "2026-10-09":
-          "41c8fa8e220bbaa6e81f89c1a9f61ad991d14cc54f0f6f198cc84c45f2e41f05",
+          "13ea7d6762f2121760d6829bf190eb629d842993600f8740dcb06d0e7726cd18",
       },
       terms: {
         "2026-10-06":
@@ -683,7 +728,7 @@ describe("legal documents", () => {
         "2026-10-06":
           "e27b6ca16653d26a9a31627f7837a96e5c341a4ddf75daa78efc322dc4cc23bb",
         "2026-10-09":
-          "36be309554fd8733c9b6d2786a9fade700f69519ed7c2a6d45fb47617374887b",
+          "a285ce7f6c9bd79b2036d3d9575f9ebd171b9a2a5a114dd0d4146733d148a7b1",
       },
       billing_consent: {
         "2026-10-06":

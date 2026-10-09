@@ -294,11 +294,19 @@ try {
         (
           await admin`select id, state, error_code, lease_until from jobs where kind=${kind} and dedupe_key=${key}`
         )[0];
-      const [running, done] = await claim(app, owner, 2);
-      assert.deepEqual(
-        [running.dedupeKey, done.dedupeKey],
-        ["cancel-running", "cancel-done"],
-      );
+      // Both jobs are claimed; the claim's RETURNING order is not guaranteed, so pick by key.
+      const claimed = await claim(app, owner, 2);
+      assert.deepEqual(claimed.map((j) => j.dedupeKey).sort(), [
+        "cancel-done",
+        "cancel-running",
+      ]);
+      const pick = (key: string) => {
+        const job = claimed.find((j) => j.dedupeKey === key);
+        assert.ok(job, key);
+        return job;
+      };
+      const running = pick("cancel-running");
+      const done = pick("cancel-done");
       assert.equal(await completeJob(app, done), true);
       await enqueue(owner, "cancel-queued");
       await enqueue(owner, "cancel-blocked", "blocked");

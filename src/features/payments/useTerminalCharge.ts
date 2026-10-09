@@ -14,6 +14,7 @@ import {
 } from "../../../shared/payments";
 import { api } from "../../api";
 import type { TerminalChargeValues } from "../PaymentDialog";
+import { readsTerminalCharges } from "./options";
 import {
   definiteAnswer,
   loadLiveCharge,
@@ -35,6 +36,8 @@ export function useTerminalCharge({
   onSettled: (order: Order, attempt: AttemptView) => void;
 }) {
   const { tenantId, deviceId } = session;
+  // A kitchen display never reads charges (the routes answer 403 there: restaurant-day G4).
+  const reads = readsTerminalCharges(session.role);
   const [attempt, setAttempt] = useState<AttemptView | null>(() =>
     loadLiveCharge(tenantId, deviceId),
   );
@@ -67,7 +70,7 @@ export function useTerminalCharge({
   // the remembered view alone keeps the order blocked; online, the server's answer replaces it.
   useEffect(() => {
     const remembered = loadLiveCharge(tenantId, deviceId);
-    if (!remembered) return;
+    if (!remembered || !reads) return;
     if (!online) {
       setAttempt((a) => a ?? remembered);
       return;
@@ -82,11 +85,11 @@ export function useTerminalCharge({
     return () => {
       alive = false;
     };
-  }, [tenantId, deviceId, online]);
+  }, [tenantId, deviceId, online, reads]);
 
   // Sync while the charge is in flight.
   useEffect(() => {
-    if (!attempt || !online) return;
+    if (!attempt || !online || !reads) return;
     if (!isLiveForOrder(attempt.state) || attempt.state === "review") return;
     const delay =
       attempt.state === "unknown" ? 5000 : PAYMENTS_LIMITS.dialogSyncMs;
@@ -100,7 +103,7 @@ export function useTerminalCharge({
       alive = false;
       clearTimeout(timer);
     };
-  }, [attempt, online, tick]);
+  }, [attempt, online, tick, reads]);
 
   /**
    * The order's live charge started elsewhere (another device, a lost reply, a relaunch): show its

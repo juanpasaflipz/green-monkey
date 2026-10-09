@@ -8,6 +8,7 @@ import { bumpKitchenFeed } from "./kitchen.js";
 import { issueDueTicket } from "./fiscal.js";
 import { assertNoLiveAttempt } from "./payments/guards.js";
 import { publicOrderingEnabled } from "./account-settings.js";
+import { loyaltyOrderSettled, loyaltyOrderVoided } from "./loyalty/hooks.js";
 import {
   DomainError,
   businessDate,
@@ -71,7 +72,7 @@ export async function refreshCheckState(
   orderId: string,
 ): Promise<CheckState> {
   const [o] =
-    await tx`select o.mode,o.table_id,o.channel,o.total,o.state,o.check_state,
+    await tx`select o.mode,o.table_id,o.channel,o.total,o.state,o.check_state,o.version,
       coalesce((select sum(t.amount) from tenders t where t.tenant_id=o.tenant_id and t.order_id=o.id),0)::int as paid,
       (select count(*) from order_lines l where l.tenant_id=o.tenant_id and l.order_id=o.id)::int as lines,
       (select count(*) from order_lines l where l.tenant_id=o.tenant_id and l.order_id=o.id
@@ -83,6 +84,8 @@ export async function refreshCheckState(
     return "closed";
   const money = { total: o.total as number, paid: o.paid as number };
   if (o.lines > 0 && o.voided_lines === o.lines && o.paid === 0) {
+    // loyalty (038): a reward on a voided check is restored (one link read, at most one job).
+    await loyaltyOrderVoided(tx, s, orderId);
     await close(tx, s, orderId, "voided", money);
     return "closed";
   }
@@ -95,10 +98,13 @@ export async function refreshCheckState(
       if (o.check_state !== "paid") {
         await tx`update orders set check_state='paid' where id=${orderId}`;
         await issueDueTicket(tx, s, orderId); // fiscal 027: open → paid issues the ticket
+        // loyalty (038, R16): the only coupling between payments and stamps (LO-R10).
+        await loyaltyOrderSettled(tx, s, orderId, o.paid, o.version);
       }
       return "paid";
     }
     await issueDueTicket(tx, s, orderId); // fiscal 027: before close, so the ticket audit precedes check.closed
+    await loyaltyOrderSettled(tx, s, orderId, o.paid, o.version); // loyalty (038, R16)
     await close(tx, s, orderId, "settled", money);
     return "closed";
   }
