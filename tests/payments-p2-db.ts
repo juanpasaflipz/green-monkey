@@ -47,7 +47,7 @@ import { saveFiscalProfile } from "../server/fiscal.js";
 import { newTender } from "../server/offline-sync.js";
 import { acceptHold } from "../server/public-holds.js";
 import { discountExpectation, planDiscount } from "../shared/discounts.js";
-import { saveTerminal } from "../server/payments/settings.js";
+import { archiveTerminal, saveTerminal } from "../server/payments/settings.js";
 import {
   disableProvider,
   providerCapabilities,
@@ -3215,6 +3215,205 @@ try {
     const c = await pending(o2, terminals.clip);
     fake.approve(c.ref, { ...TEST_CARD });
     assert.equal(await drive(c.id, ["settled"]), "settled");
+  });
+
+  await test("archive or deactivation vs start (P2-CONCURRENCY-7): an archive holding the terminal row first makes a start on it wait and then refuse (payments_terminal_inactive), a deactivation too; a start first makes the archive wait and then refuse (payments_terminal_busy); never a created attempt on an archived terminal, no retries", async () => {
+    const mgr = fresh(A, ids.manager, "manager");
+    const device = "NEWLAND_N950__FAKE0003";
+    const terminal = await integrated(
+      "MP Carrera",
+      "mercadopago_point",
+      device,
+      350,
+    );
+    const version = async (terminalId: string) =>
+      Number(
+        (
+          await asOwner(
+            A,
+            (tx) =>
+              tx`select version from payment_terminals where id=${terminalId}`,
+          )
+        )[0].version,
+      );
+    const attemptsOn = (terminalId: string) =>
+      count(
+        A,
+        (tx) =>
+          tx`select count(*) as n from payment_attempts where terminal_id=${terminalId}`,
+      );
+    /** Until a backend of this database waits on a lock (true) or `done` settles first (false). */
+    const waiter = async (done: Promise<unknown>) => {
+      let settled = false;
+      void done.then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+      for (let i = 0; i < 400 && !settled; i++) {
+        const [w] = await admin`select count(*)::int as n from pg_stat_activity
+          where datname=current_database() and wait_event_type='Lock'`;
+        if (w.n > 0) return true;
+        await sleep(10);
+      }
+      return false;
+    };
+    /** One transaction that runs `fn`, then holds its locks until released. */
+    const held = <T>(s: Session, fn: (tx: Tx) => Promise<T>) => {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let ready!: () => void;
+      const done = new Promise<void>((r) => (ready = r));
+      const result = write(s, async (tx) => {
+        const value = await fn(tx);
+        ready();
+        await gate;
+        return value;
+      });
+      // A failure before `ready` must not leave the caller waiting on it.
+      void result.catch(() => ready());
+      return { result, done, release };
+    };
+    const startOn = (o: Order) =>
+      write(cashier, (tx) =>
+        startTerminalCharge(tx, cashier, {
+          operationId: randomUUID(),
+          orderId: o.id,
+          terminalId: terminal,
+          amount: o.total,
+          tip: 0,
+        }),
+      );
+
+    // (a) The archive holds the row (FOR UPDATE, archived, not committed); a start arrives.
+    const o1 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const archiveFrom = await version(terminal);
+    const archive = held(mgr, (tx) =>
+      archiveTerminal(tx, mgr, terminal, {
+        operationId: randomUUID(),
+        expectedVersion: archiveFrom,
+      }),
+    );
+    await archive.done;
+    const a = await noRetries("archive first", async () => {
+      const starting = startOn(o1);
+      const waited = await waiter(starting);
+      archive.release();
+      const [archived, started] = await Promise.allSettled([
+        archive.result,
+        starting,
+      ]);
+      return { waited, archived, started };
+    });
+    assert.equal(a.archived.status, "fulfilled");
+    assert.equal(a.waited, true, "the start waits for the archive's row lock");
+    assert.equal(a.started.status, "rejected");
+    assert.equal(
+      (a.started as PromiseRejectedResult).reason?.code,
+      "payments_terminal_inactive",
+    );
+    assert.equal(
+      await attemptsOn(terminal),
+      0,
+      "no attempt on the archived terminal",
+    );
+
+    // (b) A start holds the row (FOR SHARE, its created attempt not committed); an archive arrives.
+    const second = await integrated(
+      "MP Carrera 2",
+      "mercadopago_point",
+      device,
+      350,
+    );
+    const o2 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const starting = held(cashier, (tx) =>
+      startTerminalCharge(tx, cashier, {
+        operationId: randomUUID(),
+        orderId: o2.id,
+        terminalId: second,
+        amount: o2.total,
+        tip: 0,
+      }),
+    );
+    await starting.done;
+    const secondFrom = await version(second);
+    const b = await noRetries("start first", async () => {
+      const archiving = write(mgr, (tx) =>
+        archiveTerminal(tx, mgr, second, {
+          operationId: randomUUID(),
+          expectedVersion: secondFrom,
+        }),
+      );
+      const waited = await waiter(archiving);
+      starting.release();
+      const [started, archived] = await Promise.allSettled([
+        starting.result,
+        archiving,
+      ]);
+      return { waited, started, archived };
+    });
+    assert.equal(b.started.status, "fulfilled");
+    assert.equal(b.waited, true, "the archive waits for the start's row lock");
+    assert.equal(b.archived.status, "rejected");
+    assert.equal(
+      (b.archived as PromiseRejectedResult).reason?.code,
+      "payments_terminal_busy",
+    );
+    const live = (b.started as PromiseFulfilledResult<AttemptView>).value;
+    assert.equal(await stateOf(live.id), "created");
+    await write(cashier, (tx) =>
+      requestCancel(tx, cashier, live.id, { operationId: randomUUID() }),
+    );
+    assert.equal(await stateOf(live.id), "cancelled");
+
+    // (c) A deactivation (Guardar with «Activa» off) holding the row first: the start refuses too.
+    const o3 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const deactivateFrom = await version(second);
+    const deactivate = held(mgr, (tx) =>
+      saveTerminal(tx, mgr, {
+        operationId: randomUUID(),
+        terminalId: second,
+        name: "MP Carrera 2",
+        kind: "mercadopago_point",
+        providerDeviceId: device,
+        feeBp: 350,
+        active: false,
+        expectedVersion: deactivateFrom,
+      }),
+    );
+    await deactivate.done;
+    const c = await noRetries("deactivation first", async () => {
+      const started = write(cashier, (tx) =>
+        startTerminalCharge(tx, cashier, {
+          operationId: randomUUID(),
+          orderId: o3.id,
+          terminalId: second,
+          amount: o3.total,
+          tip: 0,
+        }),
+      );
+      const waited = await waiter(started);
+      deactivate.release();
+      await deactivate.result;
+      return { waited, started: await Promise.allSettled([started]) };
+    });
+    assert.equal(
+      c.waited,
+      true,
+      "the start waits for the deactivation's row lock",
+    );
+    assert.equal(c.started[0].status, "rejected");
+    assert.equal(
+      (c.started[0] as PromiseRejectedResult).reason?.code,
+      "payments_terminal_inactive",
+    );
+    assert.equal(await attemptsOn(second), 1, "only (b)'s cancelled attempt");
+    const lastFrom = await version(second);
+    await write(mgr, (tx) =>
+      archiveTerminal(tx, mgr, second, {
+        operationId: randomUUID(),
+        expectedVersion: lastFrom,
+      }),
+    );
   });
 
   await test("re-seal race (P2-CONCURRENCY-2): two worker steps that open one restaurant's credentials under an older kid at the same time both succeed; one re-seals, the other's compare-and-set touches nothing", async () => {

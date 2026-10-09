@@ -21,7 +21,11 @@ import { assertCheckWritable, refreshCheckState } from "../checks.js";
 import { requirePro } from "../entitlements.js";
 import { enqueueJob } from "../jobs.js";
 import { assertNoLiveAttempt } from "./guards.js";
-import { insertTender, tenderTerminal } from "./tenders.js";
+import {
+  insertTender,
+  tenderTerminal,
+  type TenderTerminal,
+} from "./tenders.js";
 import { wakeWorker, wakeWorkerFor } from "./wake.js";
 import { allocatePayment } from "../../shared/settlement.js";
 import {
@@ -232,7 +236,15 @@ export async function startCharge(
 ): Promise<AttemptRow> {
   // LO-3: one start per terminal at a time (class 933, critic R3).
   await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + ":terminal:" + input.terminalId},933))`;
-  const terminal = await tenderTerminal(tx, input.terminalId);
+  // The terminal row FOR SHARE, an LO-3 row after the LO-3 key (P2-CONCURRENCY-7). An archive or a
+  // deactivation (934, then this row FOR UPDATE) that got here first makes this read wait and then
+  // see it; one that comes later waits for this start's commit and then sees its live attempt
+  // (payments_terminal_busy). A plain read would not wait: the attempt insert's foreign key takes
+  // only FOR KEY SHARE, which an archive's update does not block.
+  const [terminal] = await tx<
+    (TenderTerminal & { provider_device_id: string | null })[]
+  >`select id,name,kind,fee_bp,active,archived_at,provider_device_id
+    from payment_terminals where id=${input.terminalId} for share`;
   if (!terminal) throw new DomainError("payments_terminal_not_found", 404);
   if (!terminal.active || terminal.archived_at)
     throw new DomainError("payments_terminal_inactive", 409);
@@ -246,8 +258,6 @@ export async function startCharge(
     await tx`select state from payment_provider_accounts where provider=${provider}`;
   if (account?.state !== "active")
     throw new DomainError("payments_provider_not_configured", 409);
-  const [device] =
-    await tx`select provider_device_id from payment_terminals where id=${terminal.id}`;
   // Q5: integrated charging is a Pro feature (manual terminals and platforms are on every plan).
   await requirePro(tx);
   if (s.restaurant.currency !== "MXN")
@@ -286,7 +296,7 @@ export async function startCharge(
       session_id,cash_session_id)
     values(${s.tenantId},${attemptId},${input.operationId},${randomUUID()},${input.target.kind},${input.origin},
       ${orderId},${input.target.kind === "kiosk_hold" ? input.target.holdId : null},${terminal.id},${provider},
-      ${device.provider_device_id},${terminal.name.trim()},${input.amount},${input.tip},'MXN',
+      ${terminal.provider_device_id},${terminal.name.trim()},${input.amount},${input.tip},'MXN',
       ${input.items ?? null},${s.employeeId},${s.deviceId},${input.origin === "pos" ? s.id : null},${d.id})
     returning *`;
   await event(
