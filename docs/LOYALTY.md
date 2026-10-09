@@ -143,7 +143,9 @@ disabled with "El club requiere conexión." and the sale proceeds.
 - Retention: the daily pass redacts members with no activity for 24 months
   (`server/ops/retention.ts`); no loyalty row is ever deleted.
 - Personal data never goes into logs (route templates only; lookups are POST bodies), audit details
-  (ids, counts and field names), job payloads (`{orderId}`) or sealed tokens (uuids).
+  (ids, counts and field names), job payloads (`{orderId}`), sealed tokens (uuids) or the idempotency
+  log: once() saves ids only for every club command, and a replay re-reads the member as it is now, so
+  a deletion or the retention pass leaves no name or phone in `operations` (LOYALTY-PRIVACY-1).
 
 ## Payments P1 stub
 

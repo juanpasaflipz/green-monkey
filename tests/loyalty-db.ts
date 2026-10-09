@@ -1083,6 +1083,59 @@ try {
     assert.deepEqual(audit[0].detail, { memberId: ana.id, reason: "arco" });
   });
 
+  await test("L22. ARCO reaches the operation log (LOYALTY-PRIVACY-1): after enroll, update, adjust, link, change and redeem, then delete, no operations.result holds the member's name or phone digits; replays re-read the redacted member", async () => {
+    const f = await clubTenant("arco-ops");
+    const phone = newPhone(),
+      phone2 = newPhone();
+    const ops: string[] = [];
+    const op = () => {
+      const k = randomUUID();
+      ops.push(k);
+      return k;
+    };
+    const enrollBody = { operationId: op(), phone, country: "MX", name: "Zoila Quintanar", consent: true, marketingOptIn: false };
+    const ana = (await run(f.s.cashier, (tx) => enrollMember(tx, f.s.cashier, enrollBody))).member;
+    const updateBody = { operationId: op(), expectedVersion: 1, name: "Zoila Quintanar Ruiz", phone: phone2, country: "MX" };
+    await run(f.s.manager, (tx) => updateMember(tx, f.s.manager, ana.id, updateBody));
+    const adjustBody = { operationId: op(), stamps: 10, rewards: 0, reason: "pos_lite_balance", note: "Saldo de POS Lite" };
+    await run(f.s.manager, (tx) => adjustMember(tx, f.s.manager, ana.id, adjustBody));
+    const o = await newOrder(f, [{ product: f.p.taco, quantity: 2 }]);
+    const linkBody = { operationId: op(), memberId: ana.id };
+    await run(f.s.cashier, (tx) => linkOrderMember(tx, f.s.cashier, o.id, linkBody));
+    await run(f.s.cashier, (tx) => changeOrderMember(tx, f.s.cashier, o.id, { operationId: op(), memberId: null, expectedMemberId: ana.id }));
+    await run(f.s.cashier, (tx) => changeOrderMember(tx, f.s.cashier, o.id, { operationId: op(), memberId: ana.id, expectedMemberId: null }));
+    const order = await run(f.s.cashier, (tx) => getOrder(tx, o.id));
+    const program = (await run(f.s.owner, (tx) => getLoyaltySettings(tx, f.s.owner))) as LoyaltySettingsView;
+    const plan = planDiscount(order, rewardDiscountRequest(program, order, lineOf(order, f.p.taco)));
+    const redeemBody = {
+      operationId: op(),
+      memberId: ana.id,
+      expectedVersion: order.version,
+      lineId: lineOf(order, f.p.taco),
+      ...discountExpectation(order, plan),
+    };
+    const r = await run(f.s.cashier, (tx) => redeemReward(tx, f.s.cashier, o.id, redeemBody));
+    assert.equal(r.loyalty.member?.id, ana.id);
+    const v = (await member(f, ana.id)).version;
+    const del = await run(f.s.owner, (tx) => deleteMember(tx, f.s.owner, ana.id, { operationId: op(), expectedVersion: v, confirm: "ELIMINAR" }));
+    assert.equal(del.deleted, true);
+    const saved = await asAdmin(f.tenantId, (tx) => tx`select id,kind,result::text as result from operations where id=any(${tx.array(ops)}::uuid[])`);
+    assert.equal(saved.length, ops.length, "every command saved its operation");
+    const pii = new RegExp(["Zoila", "Quintanar", phone, phone2, phone.slice(-4), phone2.slice(-4)].join("|"));
+    for (const row of saved as any[]) assert.doesNotMatch(row.result, pii, `${row.kind} keeps no name or phone digits`);
+    // A replay re-reads the member as it is now: deleted, no name, no phone.
+    const replayEnroll = await run(f.s.cashier, (tx) => enrollMember(tx, f.s.cashier, enrollBody));
+    assert.deepEqual([replayEnroll.created, replayEnroll.member.deleted, replayEnroll.member.firstName, replayEnroll.member.maskedPhone], [true, true, "", ""]);
+    const replayUpdate = await run(f.s.manager, (tx) => updateMember(tx, f.s.manager, ana.id, updateBody));
+    assert.deepEqual([replayUpdate.name, replayUpdate.phone, replayUpdate.deleted], ["", null, true]);
+    const replayAdjust = await run(f.s.manager, (tx) => adjustMember(tx, f.s.manager, ana.id, adjustBody));
+    assert.deepEqual([replayAdjust.name, replayAdjust.phone], ["", null]);
+    const replayLink = await run(f.s.cashier, (tx) => linkOrderMember(tx, f.s.cashier, o.id, linkBody));
+    assert.deepEqual([replayLink.member?.id, replayLink.member?.firstName, replayLink.member?.maskedPhone], [ana.id, "", ""]);
+    const replayRedeem = await run(f.s.cashier, (tx) => redeemReward(tx, f.s.cashier, o.id, redeemBody));
+    assert.deepEqual([replayRedeem.order.id, replayRedeem.loyalty.member?.firstName], [o.id, ""]);
+  });
+
   await test("L15. retention: a member inactive 25 months is redacted, one at 23 months is not; an imported member whose last pos-lite visit is old is redacted on the next pass; nothing is deleted; it runs as the schema owner under the NO FORCE pattern", async () => {
     const f = await clubTenant("retencion");
     const ids = { old: randomUUID(), recent: randomUUID(), imported: randomUUID() };

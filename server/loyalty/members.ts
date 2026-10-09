@@ -132,8 +132,10 @@ export async function enrollMember(
   if (issue) throw new DomainError(issue, 400);
   const phone = parsePhone(p.phone, p.country)!;
   const name = cleanName(p.name);
-  return once(tx, s, p.operationId, "loyalty.member.enroll", p, async () => {
-    const program = await requireClub(tx);
+  // The saved result holds ids only (LOYALTY-PRIVACY-1): a replay re-reads the member as it is
+  // now, so an ARCO deletion or the retention pass leaves no name or phone in operations.
+  const done = await once(tx, s, p.operationId, "loyalty.member.enroll", p, async () => {
+    await requireClub(tx);
     const notice = await restaurantPrivacyUrl(tx);
     if (!notice) throw new DomainError("loyalty_privacy_notice_required", 409);
     const memberId = randomUUID();
@@ -149,19 +151,26 @@ export async function enrollMember(
         via: "pos",
         marketingOptIn: p.marketingOptIn,
       });
-      return {
-        member: summaryOf(inserted, program.stampsRequired),
-        created: true,
-      };
+      return { memberId: inserted.id as string, created: true };
     }
     const [existing] =
-      await tx`select id,name,phone_e164,stamps,rewards,redacted_at from loyalty_members where phone_e164=${phone}`;
+      await tx`select id from loyalty_members where phone_e164=${phone}`;
     if (!existing) throw new DomainError("loyalty_retry", 409);
-    return {
-      member: summaryOf(existing, program.stampsRequired),
-      created: false,
-    };
+    return { memberId: existing.id as string, created: false };
   });
+  return { member: await currentSummary(tx, done.memberId), created: done.created };
+}
+
+/** What once() saves for a member command: ids only, never a name or phone (LOYALTY-PRIVACY-1). */
+type MemberRef = { memberId: string };
+
+/** The member as staff lists show it, read now (a replay sees a deletion). */
+async function currentSummary(tx: Tx, memberId: string): Promise<MemberSummary> {
+  const program = await loadProgram(tx);
+  const [m] =
+    await tx`select id,name,phone_e164,stamps,rewards,redacted_at from loyalty_members where id=${memberId}`;
+  if (!m) throw new DomainError("loyalty_member_not_found", 404);
+  return summaryOf(m, program.stampsRequired);
 }
 
 /** PATCH /members/:id (row 50): Editar datos and the marketing toggle (rectification, opposition). */
@@ -184,7 +193,7 @@ export async function updateMember(
     phone = parsePhone(p.phone, p.country ?? "MX") ?? undefined;
     if (!phone) throw new DomainError("loyalty_invalid_phone", 400);
   }
-  return once(
+  await once<MemberRef>(
     tx,
     s,
     p.operationId,
@@ -225,9 +234,10 @@ export async function updateMember(
           fields,
         });
       }
-      return memberDetail(tx, s, memberId);
+      return { memberId };
     },
   );
+  return memberDetail(tx, s, memberId);
 }
 
 /** Members can be rectified, adjusted or deleted (ARCO) whether or not the club is on; Pro is required. */
@@ -250,7 +260,7 @@ export async function deleteMember(
   const parsed = memberDeleteInput.safeParse(raw);
   if (!parsed.success) throw new DomainError("invalid_input", 400);
   const p = parsed.data;
-  return once(
+  await once<MemberRef>(
     tx,
     s,
     p.operationId,
@@ -270,9 +280,10 @@ export async function deleteMember(
         memberId,
         reason: "arco",
       });
-      return memberDetail(tx, s, memberId);
+      return { memberId };
     },
   );
+  return memberDetail(tx, s, memberId);
 }
 
 /**
@@ -291,7 +302,7 @@ export async function adjustMember(
   const parsed = memberAdjustInput.safeParse(raw);
   if (!parsed.success) throw new DomainError("invalid_input", 400);
   const p = parsed.data;
-  return once(
+  await once<MemberRef>(
     tx,
     s,
     p.operationId,
@@ -330,9 +341,10 @@ export async function adjustMember(
         rewards: p.rewards,
         reason: p.reason,
       });
-      return memberDetail(tx, s, memberId);
+      return { memberId };
     },
   );
+  return memberDetail(tx, s, memberId);
 }
 
 /** Ledger rows of a member, newest first, with the order they belong to and who posted them. */

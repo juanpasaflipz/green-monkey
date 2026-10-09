@@ -36,7 +36,10 @@ export async function redeemReward(
   const parsed = redeemInput.safeParse(raw);
   if (!parsed.success) throw new DomainError("invalid_input", 400);
   const p = parsed.data;
-  return once(
+  // once() saves ids only (LOYALTY-PRIVACY-1): a replay re-reads the order and its loyalty view
+  // (whose member summary is the member as it is now).
+  let fresh: Order | null = null;
+  await once<{ orderId: string; discountId: string }>(
     tx,
     s,
     p.operationId,
@@ -113,7 +116,12 @@ export async function redeemReward(
         discountId,
         amount,
       });
-      return { order, loyalty: await orderLoyaltyView(tx, orderId, program) };
+      fresh = order;
+      return { orderId, discountId };
     },
   );
+  return {
+    order: fresh ?? (await getOrder(tx, orderId)),
+    loyalty: await orderLoyaltyView(tx, orderId),
+  };
 }

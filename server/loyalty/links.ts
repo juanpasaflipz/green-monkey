@@ -107,7 +107,9 @@ export async function linkOrderMember(
   const parsed = orderLinkInput.safeParse(raw);
   if (!parsed.success) throw new DomainError("invalid_input", 400);
   const p = parsed.data;
-  return once(
+  // once() saves ids only (LOYALTY-PRIVACY-1); the view is read after it, so a replay shows the
+  // member as it is now (a deleted member has no name or phone).
+  await once<{ orderId: string }>(
     tx,
     s,
     p.operationId,
@@ -124,8 +126,7 @@ export async function linkOrderMember(
       const o = await shareOrder(tx, orderId);
       assertEligible(o);
       const link = await assertHeld(tx, orderId, ids);
-      if (link?.member_id === p.memberId)
-        return orderLoyaltyView(tx, orderId, program);
+      if (link?.member_id === p.memberId) return { orderId };
       if (link?.member_id) throw new DomainError("loyalty_order_linked", 409);
       if (windowClosed(o, program))
         throw new DomainError("loyalty_link_window_closed", 409);
@@ -144,9 +145,11 @@ export async function linkOrderMember(
         memberId: p.memberId,
         via: "pos",
       });
-      return reconcileOrderHeld(tx, s.tenantId, orderId, ids);
+      await reconcileOrderHeld(tx, s.tenantId, orderId, ids);
+      return { orderId };
     },
   );
+  return orderLoyaltyView(tx, orderId);
 }
 
 /**
@@ -164,7 +167,9 @@ export async function changeOrderMember(
   const parsed = orderChangeInput.safeParse(raw);
   if (!parsed.success) throw new DomainError("invalid_input", 400);
   const p = parsed.data;
-  return once(
+  // once() saves ids only (LOYALTY-PRIVACY-1); the view is read after it, so a replay shows the
+  // member as it is now (a deleted member has no name or phone).
+  await once<{ orderId: string }>(
     tx,
     s,
     p.operationId,
@@ -186,7 +191,7 @@ export async function changeOrderMember(
       const current = link?.member_id ?? null;
       if (current !== p.expectedMemberId)
         throw new DomainError("loyalty_order_linked", 409);
-      if (current === p.memberId) return orderLoyaltyView(tx, orderId, program);
+      if (current === p.memberId) return { orderId };
       const [posted] =
         await tx`select count(*)::int as n from loyalty_ledger where order_id=${orderId}
           and kind in ('earn','earn_reversal')`;
@@ -212,9 +217,11 @@ export async function changeOrderMember(
         from: current,
         to: p.memberId,
       });
-      return reconcileOrderHeld(tx, s.tenantId, orderId, ids);
+      await reconcileOrderHeld(tx, s.tenantId, orderId, ids);
+      return { orderId };
     },
   );
+  return orderLoyaltyView(tx, orderId);
 }
 
 /**
