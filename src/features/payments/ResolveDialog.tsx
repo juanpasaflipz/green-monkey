@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import type { Locale, Order } from "../../../shared/domain";
 import type { AttemptView } from "../../../shared/payments";
+import { parseMoneyInput } from "../../../shared/service";
 import { api } from "../../api";
 import { Button, Field, Modal } from "../../components/ui";
 import { strings, errorNotice, type Key } from "../../i18n";
@@ -42,6 +43,7 @@ export function ResolveDialog({
   const options = manager ? resolveOptions(attempt) : [];
   const [outcome, setOutcome] = useState<Outcome | null>(options[0] ?? null);
   const [reference, setReference] = useState("");
+  const [charged, setCharged] = useState("");
   const [note, setNote] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -50,8 +52,24 @@ export function ResolveDialog({
   const needsReference = outcome === "record" && !attempt.providerReference;
   const referenceOk =
     !needsReference || /^[A-Za-z0-9_-]{1,100}$/.test(reference.trim());
+  // No amount from the provider: the manager types the one its history shows (spec §4.3; the
+  // server checks it equals the amount + tip sent to the terminal).
+  const needsCharged = outcome === "record" && attempt.paidAmount === null;
+  let chargedMinor: number | null = null;
+  try {
+    chargedMinor = charged.trim() ? parseMoneyInput(charged, 2) : null;
+  } catch {
+    chargedMinor = null;
+  }
+  const chargedOk =
+    !needsCharged || (chargedMinor !== null && chargedMinor > 0);
   const canSubmit =
-    !!outcome && note.trim().length >= 10 && confirmed && referenceOk && !busy;
+    !!outcome &&
+    note.trim().length >= 10 &&
+    confirmed &&
+    referenceOk &&
+    chargedOk &&
+    !busy;
   const order =
     attempt.orderNumber !== null
       ? `#${attempt.orderNumber}`
@@ -91,6 +109,7 @@ export function ResolveDialog({
                 note: note.trim(),
                 confirmed: true,
                 ...(needsReference ? { reference: reference.trim() } : {}),
+                ...(needsCharged ? { charged: chargedMinor } : {}),
               })
             }
           >
@@ -167,6 +186,18 @@ export function ResolveDialog({
                 disabled={busy}
                 aria-invalid={(!!reference && !referenceOk) || undefined}
                 onChange={(e) => setReference(e.target.value)}
+              />
+            </Field>
+          )}
+          {needsCharged && (
+            <Field label={t("payResolveCharged")}>
+              <input
+                value={charged}
+                inputMode="decimal"
+                autoComplete="off"
+                disabled={busy}
+                aria-invalid={(!!charged && !chargedOk) || undefined}
+                onChange={(e) => setCharged(e.target.value)}
               />
             </Field>
           )}

@@ -531,6 +531,12 @@ test("integrated charging: the owner connects Mercado Pago and Clip (the URL sho
   await resolve
     .getByLabel("Referencia del proveedor")
     .fill(`AUT${Date.now().toString(36).toUpperCase()}`);
+  // No amount from Clip: the manager types what the provider's history shows (the amount sent).
+  const sent = /\$([\d,]+\.\d{2})/.exec(
+    (await resolve.locator("p strong").first().textContent()) ?? "",
+  )?.[1];
+  expect(sent).toBeTruthy();
+  await resolve.getByLabel("Importe cobrado (según el proveedor)").fill(sent!);
   await resolve
     .getByLabel("Motivo (mínimo 10 caracteres)")
     .fill("Aprobado en la pantalla del lector (prueba)");

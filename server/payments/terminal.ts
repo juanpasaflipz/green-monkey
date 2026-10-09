@@ -629,7 +629,12 @@ export async function applyApprovedAttempt(
   const [row] =
     await tx`select id,state,check_state from orders where id=${orderId} for update`;
   if (!row) throw new DomainError("not_found", 404);
-  const charged = manager ? a.amount + a.tip : (a.paid_amount ?? 0);
+  // A manager records what the provider reported when it reported an amount (a review: a tip
+  // added on the terminal stays the tip), else the attested amount + tip (resolveAttempt checked
+  // the typed amount). P2-MONEY-5.
+  const charged = manager
+    ? (a.paid_amount ?? a.amount + a.tip)
+    : (a.paid_amount ?? 0);
   let failure: string | null = null;
   if (!manager && a.error_code && FLAGGED.has(a.error_code))
     failure = a.error_code;
@@ -643,6 +648,8 @@ export async function applyApprovedAttempt(
   if (!failure && o && a.amount > o.total - o.paid)
     failure = "payments_settle_order_changed";
   if (!failure && !manager && charged < a.amount + a.tip)
+    failure = "payments_paid_short";
+  if (!failure && manager && charged < a.amount)
     failure = "payments_paid_short";
   let allocations: ReturnType<typeof allocatePayment> = [];
   if (!failure && o) {
@@ -665,7 +672,8 @@ export async function applyApprovedAttempt(
       // keeps its state (nothing to persist).
       throw new DomainError(
         failure === "payments_provider_mismatch" ||
-          failure === "payments_refunded_before_settle"
+          failure === "payments_refunded_before_settle" ||
+          failure === "payments_paid_short"
           ? failure
           : "payments_settle_order_changed",
         409,
@@ -698,15 +706,17 @@ export async function applyApprovedAttempt(
     received: charged,
     reference: (a.provider_payment_id ?? reference).slice(0, 100),
     terminal: terminal ? { ...terminal, name: a.terminal_label } : null,
+    // The provider's card and fee whenever it reported them (also on a manager's record of a
+    // review); none from an unknown outcome, whose fee the terminal rate estimates.
     integrated: {
       attemptId: a.id,
       provider: a.provider,
       providerReference: reference,
-      cardType: manager ? null : a.card_type,
-      cardBrand: manager ? null : a.card_brand,
-      cardLast4: manager ? null : a.card_last4,
-      fee: manager ? null : a.fee,
-      feeSource: manager ? null : a.fee_source,
+      cardType: a.card_type,
+      cardBrand: a.card_brand,
+      cardLast4: a.card_last4,
+      fee: a.fee,
+      feeSource: a.fee_source,
     },
   });
   for (const allocation of allocations)
@@ -837,8 +847,19 @@ export async function resolveAttempt(
     } else {
       if (a.state !== "unknown" && a.state !== "review")
         throw new DomainError("payments_not_approved", 409);
+      // Refunded at the provider before it was recorded: only «se reembolsó» applies (P2-MONEY-5).
+      if (a.error_code === "payments_refunded_before_settle")
+        throw new DomainError("payments_refunded_before_settle", 409);
       if (!a.provider_reference && !p.reference)
         throw new DomainError("payments_reference_required");
+      // No amount from the provider: the manager types what its history shows, and it must be
+      // the amount + tip pushed to the terminal (spec §4.3 step 3).
+      if (a.paid_amount === null) {
+        if (p.charged === undefined)
+          throw new DomainError("payments_charged_required");
+        if (p.charged !== a.amount + a.tip)
+          throw new DomainError("payments_charged_mismatch", 409);
+      }
       // A typed reference already on another charge is refused, never a 500 (unique index
       // payment_attempts_reference).
       if (!a.provider_reference && p.reference) {

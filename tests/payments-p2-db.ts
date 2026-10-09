@@ -1445,6 +1445,34 @@ try {
       confirmed: true,
     });
     assert.equal(await stateOf(b.id), "dismissed");
+    // A flagged approval the manager records keeps what MP reported (P2-MONEY-5): the $40 tip
+    // added on the terminal is the tender's tip, with MP's card and fee (before: amount + the POS
+    // tip, no card, the $40 lost).
+    const o3 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const c = await pending(o3, terminals.mp);
+    fake.approve(c.ref, {
+      ...TEST_CARD,
+      paid: o3.total + 4000,
+      tip: 4000,
+      fee: 250,
+      terminalId: "NEWLAND_N950__FAKE9999",
+    });
+    await round(A);
+    assert.deepEqual(
+      [(await attemptRow(c.id)).state, (await attemptRow(c.id)).error_code],
+      ["review", "payments_provider_mismatch"],
+    );
+    const recorded = await resolve(fresh(A, ids.manager, "manager"), c.id, {
+      outcome: "record",
+      note: NOTE,
+      confirmed: true,
+    });
+    assert.equal(recorded.attempt.state, "settled");
+    const [t3] = await tenderOf(c.id);
+    assert.deepEqual(
+      [t3.amount, t3.tip, t3.received, t3.card_brand, t3.card_last4, t3.fee],
+      [o3.total, 4000, o3.total + 4000, "visa", "4242", 250],
+    );
   });
 
   await test("13. Clip: a notification is only a hint (it triggers a re-read and nothing else); an approval with a tip read back from Clip settles with the estimated fee", async () => {
@@ -1559,9 +1587,31 @@ try {
       }),
       "forbidden",
     );
+    // No amount from Clip: the manager types the one its history shows, and it must be the amount
+    // sent to the reader (spec §4.3 step 3; P2-MONEY-5).
+    await rejects(
+      resolve(mgr, view.id, {
+        outcome: "record",
+        reference: "AUT123456",
+        note: NOTE,
+        confirmed: true,
+      }),
+      "payments_charged_required",
+    );
+    await rejects(
+      resolve(mgr, view.id, {
+        outcome: "record",
+        reference: "AUT123456",
+        charged: o.total + 100,
+        note: NOTE,
+        confirmed: true,
+      }),
+      "payments_charged_mismatch",
+    );
     const recorded = await resolve(mgr, view.id, {
       outcome: "record",
       reference: "AUT123456",
+      charged: o.total,
       note: NOTE,
       confirmed: true,
     });
@@ -1591,6 +1641,7 @@ try {
       resolve(mgr, v2.id, {
         outcome: "record",
         reference: "aut123456",
+        charged: o2.total,
         note: NOTE,
         confirmed: true,
       }),
@@ -1599,6 +1650,7 @@ try {
     const own = await resolve(mgr, v2.id, {
       outcome: "record",
       reference: "AUT654321",
+      charged: o2.total,
       note: NOTE,
       confirmed: true,
     });
@@ -2337,6 +2389,15 @@ try {
     const refunded = await attemptRow(m.id);
     assert.equal(refunded.error_code, "payments_refunded_before_settle");
     assert.equal((await tenderOf(m.id)).length, 0);
+    // Refunded at the provider: «Sí se cobró: registrar» is refused (P2-MONEY-5).
+    await rejects(
+      resolve(fresh(A, ids.manager, "manager"), m.id, {
+        outcome: "record",
+        note: NOTE,
+        confirmed: true,
+      }),
+      "payments_refunded_before_settle",
+    );
     await rejects(
       resolve(fresh(A, ids.manager, "manager"), m.id, {
         outcome: "not_charged",

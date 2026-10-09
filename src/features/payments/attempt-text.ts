@@ -178,9 +178,12 @@ export function resolveOptions(
 ): ("record" | "not_charged" | "refunded_at_provider")[] {
   if (a.state === "unknown") return ["record", "not_charged"];
   if (a.state === "review")
-    return a.errorCode !== null && FLAGGED.has(a.errorCode)
-      ? ["refunded_at_provider", "record"]
-      : ["record", "refunded_at_provider"];
+    // Refunded at the provider before it was recorded: nothing to record (P2-MONEY-5).
+    return a.errorCode === "payments_refunded_before_settle"
+      ? ["refunded_at_provider"]
+      : a.errorCode !== null && FLAGGED.has(a.errorCode)
+        ? ["refunded_at_provider", "record"]
+        : ["record", "refunded_at_provider"];
   return [];
 }
 

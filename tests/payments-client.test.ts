@@ -648,6 +648,10 @@ describe("integrated charges (P2): what the waiting panel says and offers", () =
       "not_charged",
     ]);
     expect(resolveOptions(attempt({ state: "settled" }))).toEqual([]);
+    // Refunded at the provider before it was recorded: only «se reembolsó» (P2-MONEY-5).
+    expect(
+      resolveOptions({ ...fits, errorCode: "payments_refunded_before_settle" }),
+    ).toEqual(["refunded_at_provider"]);
   });
   it("offline, a live charge only waits (recording it another way could charge twice)", () => {
     expect(

@@ -305,6 +305,9 @@ export const resolveAttemptInput = z
       .optional(),
     note: z.string().trim().min(10).max(500).optional(),
     confirmed: z.literal(true).optional(),
+    /** record from unknown: the amount the provider's history shows (minor units, tip included);
+     *  it must equal the attempt's amount + tip (spec §4.3 step 3). */
+    charged: z.number().int().min(1).max(100_000_000).optional(),
   })
   .strict();
 

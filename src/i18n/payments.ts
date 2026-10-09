@@ -226,6 +226,7 @@ export default defineArea({
     payResolveNotCharged: "No se cobró",
     payResolveRefunded: "Se cobró y se reembolsó en la terminal",
     payResolveReference: "Referencia del proveedor",
+    payResolveCharged: "Importe cobrado (según el proveedor)",
     payResolveNote: "Motivo (mínimo 10 caracteres)",
     payResolveRefundNote:
       "Motivo con la referencia del reembolso en el proveedor (mínimo 10 caracteres)",
@@ -526,6 +527,7 @@ export default defineArea({
     payResolveNotCharged: "It was not charged",
     payResolveRefunded: "Charged and refunded on the terminal",
     payResolveReference: "Provider reference",
+    payResolveCharged: "Amount charged (per the provider)",
     payResolveNote: "Reason (at least 10 characters)",
     payResolveRefundNote:
       "Reason with the provider's refund reference (at least 10 characters)",
@@ -800,6 +802,14 @@ export default defineArea({
     payments_reference_taken: [
       "Esa referencia ya está registrada en otro cobro. Revisa el historial del proveedor.",
       "That reference is already recorded on another charge. Check the provider's history.",
+    ],
+    payments_charged_required: [
+      "Escribe el importe cobrado que muestra el historial del proveedor.",
+      "Type the amount charged that the provider's history shows.",
+    ],
+    payments_charged_mismatch: [
+      "El importe cobrado no coincide con el que se envió a la terminal. Revisa el historial del proveedor.",
+      "The amount charged does not match what was sent to the terminal. Check the provider's history.",
     ],
     payments_cancel_sent: [
       "La cancelación se envió a la terminal; esperando que la confirme.",
