@@ -50,13 +50,13 @@ describe("createPinPadPayment: request shape", () => {
       pinpad_request_id: "pinpad-6a405173-c661-414a-9a8f-ecc77a9afe3f",
       reference: "ten-42-1",
       amount: "200.50",
-      serial_number_pos: "P8220724000042",
+      serial_number_pos: "P8220724FAKE42",
     });
     const out = await createPinPadPayment(client, {
       amount: 20050,
       tip: 2000,
       reference: "ten-42-1",
-      serial: "P8220724000042",
+      serial: "P8220724FAKE42",
       webhookUrl: "https://app.example.com/api/payments/webhooks/clip/tok",
     });
     expect(out.pinpadRequestId).toBe(
@@ -69,7 +69,7 @@ describe("createPinPadPayment: request shape", () => {
     const body = JSON.parse(String(init.body));
     expect(body.amount).toBe(200.5);
     expect(body.tip_amount).toBe(20);
-    expect(body.serial_number_pos).toBe("P8220724000042");
+    expect(body.serial_number_pos).toBe("P8220724FAKE42");
     expect(body.reference).toBe("ten-42-1");
     expect(body.webhook_url).toBe(
       "https://app.example.com/api/payments/webhooks/clip/tok",
@@ -223,11 +223,11 @@ describe("cancelPinPadPayment: never claims success Clip did not give", () => {
 
   it("delete by serial number uses /payment/serial-number/{serial} (documented for an unknown create)", async () => {
     const fetchMock = mockFetch(200, { pinpad_request_id: "pinpad-9" });
-    expect(await cancelBySerial(client, "P8220724000042")).toEqual({
+    expect(await cancelBySerial(client, "P8220724FAKE42")).toEqual({
       cancelled: true,
     });
     const [url, init] = call(fetchMock);
-    expect(url).toBe(`${BASE}/payment/serial-number/P8220724000042`);
+    expect(url).toBe(`${BASE}/payment/serial-number/P8220724FAKE42`);
     expect(init.method).toBe("DELETE");
   });
 });

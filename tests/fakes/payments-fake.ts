@@ -16,12 +16,20 @@
  *   fake.violations                     contract breaches seen (missing or reused idempotency keys
  *                                       with a different body, bad auth headers): must stay empty
  *
+ * Over HTTP for the browser suite (`npm run dev:payments-fake`, 127.0.0.1, PAYMENTS_FAKE_PORT or
+ * --port): the same scripting through POST /__fake/{next,approve,decline,expire,cancelOnTerminal,
+ * atTerminalUncancellable} with a JSON body ({provider, behaviour} for next; {ref} or {device}
+ * — the newest charge waiting on that device — plus the approval fields for the others) and
+ * GET /__fake/charges. Every default credential is obviously fictional ("...-not-real").
+ *
  * It never answers like a real provider beyond what the adapters read (server/payments/worker/
  * {mercadopago,clip}.ts), and it never leaves loopback.
  */
 import http from "node:http";
 import { createHmac, randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
 import type { AddressInfo } from "node:net";
+import { pathToFileURL } from "node:url";
 
 export type Behaviour =
   | "ok"
@@ -69,11 +77,15 @@ export async function startPaymentsFake(
     mpSiteId?: string;
     clipKey?: string;
     clipSecret?: string;
+    /** 0 (default) picks a free port. */
+    port?: number;
+    /** Serve the /__fake scripting routes (the browser suite's standalone fake). */
+    control?: boolean;
   } = {},
 ) {
   const mp = {
-    accessToken: o.mpToken ?? "APP_USR-fake-token-0000000000000000",
-    webhookSecret: o.mpSecret ?? "fakeWebhookSecret0000000000000000",
+    accessToken: o.mpToken ?? "TEST-mp-access-token-not-real-0000",
+    webhookSecret: o.mpSecret ?? "testWebhookSecretNotReal0000",
     userId: o.mpUserId ?? "1000001",
     siteId: o.mpSiteId ?? "MLM",
     nickname: "RESTAURANTE_FICTICIO",
@@ -93,8 +105,8 @@ export async function startPaymentsFake(
     ],
   };
   const clip = {
-    apiKey: o.clipKey ?? "fake-clip-api-key",
-    secretKey: o.clipSecret ?? "fake-clip-secret-key",
+    apiKey: o.clipKey ?? "test-clip-api-key-not-real",
+    secretKey: o.clipSecret ?? "test-clip-secret-key-not-real",
     readers: [
       {
         serial_number: "P8220724FAKE01",
@@ -196,7 +208,7 @@ export async function startPaymentsFake(
                     id: approved.brand ?? "master",
                     type: approved.type ?? "debit_card",
                     card: {
-                      last_digits: approved.last4 ?? "4444",
+                      last_digits: approved.last4 ?? "4242",
                       name: "\u0000".repeat(12),
                     },
                   },
@@ -226,6 +238,50 @@ export async function startPaymentsFake(
       path: url.pathname,
       idempotencyKey: key,
     });
+
+    // ---- Scripting over HTTP (the standalone fake only)
+    if (o.control && url.pathname.startsWith("/__fake/")) {
+      const action = url.pathname.slice("/__fake/".length);
+      if (req.method === "GET" && action === "charges")
+        return send(
+          res,
+          200,
+          [...charges.values()].map((c) => ({
+            provider: c.provider,
+            id: c.id,
+            reference: c.reference,
+            device: c.device,
+            amount: c.amount,
+            status: c.status,
+          })),
+        );
+      if (req.method !== "POST") return send(res, 405, {});
+      if (action === "next") {
+        const provider = body.provider === "clip" ? "clip" : "mercadopago";
+        fake.next(provider, String(body.behaviour ?? "ok") as Behaviour);
+        return send(res, 200, { ok: true });
+      }
+      const target =
+        typeof body.ref === "string"
+          ? byRef(body.ref)
+          : [...charges.values()]
+              .filter(
+                (c) =>
+                  c.device === body.device &&
+                  ["created", "at_terminal"].includes(c.status),
+              )
+              .at(-1);
+      if (!target) return send(res, 404, { error: "no_charge" });
+      const approval = (body.approval ?? {}) as Approval;
+      if (action === "approve") fake.approve(target.id, approval);
+      else if (action === "decline") fake.decline(target.id);
+      else if (action === "expire") fake.expire(target.id);
+      else if (action === "cancelOnTerminal") fake.cancelOnTerminal(target.id);
+      else if (action === "atTerminalUncancellable")
+        fake.atTerminalUncancellable(target.id);
+      else return send(res, 404, { error: "unknown_action" });
+      return send(res, 200, { id: target.id, reference: target.reference });
+    }
 
     // ---- Mercado Pago
     if (url.pathname.startsWith("/mp/")) {
@@ -503,7 +559,7 @@ export async function startPaymentsFake(
       if (!res.headersSent) send(res, 500, {});
     });
   });
-  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  await new Promise<void>((r) => server.listen(o.port ?? 0, "127.0.0.1", r));
   const port = (server.address() as AddressInfo).port;
   const base = `http://127.0.0.1:${port}`;
 
@@ -594,4 +650,40 @@ export async function startPaymentsFake(
     },
   };
   return fake;
+}
+
+function invokedDirectly() {
+  try {
+    return (
+      Boolean(process.argv[1]) &&
+      import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
+    );
+  } catch {
+    return false;
+  }
+}
+
+if (invokedDirectly()) {
+  const flag = process.argv.indexOf("--port");
+  const raw =
+    flag !== -1 ? process.argv[flag + 1] : process.env.PAYMENTS_FAKE_PORT;
+  const port = Number(raw ?? 4899);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    console.error(
+      JSON.stringify({ level: "error", message: "payments_fake_invalid_port" }),
+    );
+    process.exit(2);
+  }
+  const fake = await startPaymentsFake({ port, control: true });
+  console.log(
+    JSON.stringify({
+      level: "info",
+      message: "payments_fake_listening",
+      mercadopago: fake.mpBase,
+      clip: fake.clipBase,
+    }),
+  );
+  const stop = () => void fake.close().then(() => process.exit(0));
+  process.once("SIGTERM", stop);
+  process.once("SIGINT", stop);
 }

@@ -21,11 +21,11 @@ import {
 import { ProviderError } from "../server/payments/worker/http";
 
 const BASE = "https://api.mercadopago.com";
-const c: MpClient = { baseUrl: BASE, accessToken: "APP_USR-token" };
+const c: MpClient = { baseUrl: BASE, accessToken: "TEST-mp-access-token-not-real" };
 const attemptId = "6f1c1a52-8d0e-4c1e-9b0a-3a3c1d2e4f50";
 const expected = {
   attemptId,
-  deviceId: "NEWLAND_N950__N950NCB801293324",
+  deviceId: "NEWLAND_N950__FAKE0001",
   accountId: "1000001",
   amount: 20000,
   tip: 3600,
@@ -92,7 +92,7 @@ describe("createPointOrder: request shape", () => {
     const [url, init] = call(fetchMock);
     expect(url).toBe(`${BASE}/v1/orders`);
     expect(init.method).toBe("POST");
-    expect(headers(init).Authorization).toBe("Bearer APP_USR-token");
+    expect(headers(init).Authorization).toBe("Bearer TEST-mp-access-token-not-real");
     expect(headers(init)["X-Idempotency-Key"]).toBe(attemptId);
     const body = JSON.parse(String(init.body));
     expect(body).toEqual({
@@ -418,7 +418,7 @@ describe("cancel, fee, account, terminals", () => {
 });
 
 describe("webhook signature (§9.2)", () => {
-  const secret = "s3cr3tNotificationKey123";
+  const secret = "testWebhookSecretNotReal0000";
   const sign = (manifest: string) =>
     createHmac("sha256", secret).update(manifest).digest("hex");
 
