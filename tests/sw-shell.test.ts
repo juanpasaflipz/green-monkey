@@ -221,6 +221,25 @@ describe("service worker shell", () => {
     expect(worker.request("https://cdn.example/x.js")).toBeNull();
   });
 
+  it("R32 (Wave 4): navigations to the diner and customer pages (/kiosk, /qr, /f, /factura, /club) go to the network, never the cached staff shell", async () => {
+    const worker = loadWorker();
+    await worker.install();
+    for (const p of ["/club", "/club/", "/kiosk", "/qr/", "/f", "/factura/abc"]) {
+      worker.network.length = 0;
+      const r = worker.request(p, { mode: "navigate" });
+      expect(r, p).not.toBeNull();
+      await (await r!).text();
+      expect(worker.network, p).toEqual([p]);
+    }
+    // The staff app and look-alike paths still get the cached shell.
+    for (const p of ["/app", "/clubhouse", "/qrcode"]) {
+      worker.network.length = 0;
+      const page = await worker.request(p, { mode: "navigate" })!;
+      expect(await page.text()).toContain('content="build-new"');
+      expect(worker.network, p).toEqual([]);
+    }
+  });
+
   it("activation removes other shell revisions only", async () => {
     const worker = loadWorker();
     await worker.install();

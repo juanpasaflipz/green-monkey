@@ -1,0 +1,177 @@
+/* Loyalty club (038). Uses the app's tokens; counts are always text, never color alone. */
+.loyalty-lookup {
+  display: grid;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+.loyalty-country {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+.loyalty-country legend {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.loyalty-country label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-height: 44px;
+}
+.loyalty-results {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
+  display: grid;
+  gap: 0.5rem;
+}
+.loyalty-member-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line, #d9dfd6);
+  border-radius: 10px;
+}
+.loyalty-member-row > div {
+  display: grid;
+  gap: 0.15rem;
+}
+.loyalty-enroll {
+  display: grid;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+.loyalty-script {
+  padding: 0.6rem 0.75rem;
+  border-left: 4px solid var(--accent, #2f7d32);
+  background: var(--surface-2, #f4f7f2);
+}
+.loyalty-notice-qr {
+  margin: 0;
+  display: grid;
+  justify-items: start;
+  gap: 0.25rem;
+}
+.loyalty-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  background: var(--surface-2, #eef4ea);
+  font-size: 0.9rem;
+}
+.loyalty-chip button {
+  min-width: 32px;
+  min-height: 32px;
+}
+.loyalty-order h3 {
+  margin-top: 0;
+}
+.loyalty-preview {
+  font-weight: 600;
+}
+.loyalty-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.75rem;
+}
+.loyalty-settings form {
+  display: grid;
+  gap: 0.75rem;
+}
+.loyalty-import {
+  margin-top: 1.5rem;
+  display: grid;
+  gap: 0.75rem;
+}
+.loyalty-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.loyalty-table th,
+.loyalty-table td {
+  text-align: left;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--line, #d9dfd6);
+}
+.loyalty-negative {
+  color: var(--danger, #b3261e);
+}
+.loyalty-card {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid var(--line, #d9dfd6);
+  border-radius: 12px;
+}
+.loyalty-dots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.5rem 0;
+}
+.loyalty-dots span {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--accent, #2f7d32);
+}
+.loyalty-dots span.on {
+  background: var(--accent, #2f7d32);
+}
+.loyalty-history {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+.loyalty-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0;
+}
+.loyalty-tile {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.75rem;
+  border: 1px solid var(--line, #d9dfd6);
+  border-radius: 10px;
+}
+.loyalty-receipt-block {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed currentColor;
+  font-size: 0.85em;
+}
+.loyalty-receipt-block p {
+  margin: 0.1rem 0;
+}
+.loyalty-join-form {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 32rem;
+}
+.loyalty-join .check {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+.loyalty-join-done {
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+.loyalty-sheet dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+}

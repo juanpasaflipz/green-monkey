@@ -27,6 +27,8 @@ import {
 import { KitchenTicketDocument, ticketsForOpenRounds } from "./KitchenTicket";
 import { DiscountDialog } from "./discounts/DiscountDialog";
 import { OrderAdjustments } from "./discounts/OrderAdjustments";
+import { OrderLoyaltyPanel } from "./loyalty/OrderLoyaltyPanel";
+import { useLoyaltyClub } from "./loyalty/loyaltyApi";
 import {
   LineDiscountRows,
   OrderDiscountRows,
@@ -63,6 +65,7 @@ export function OrderDetail({
   online?: boolean;
 }) {
   const t = (k: Key) => strings[locale][k];
+  const club = useLoyaltyClub(session, online);
   const [order, setOrder] = useState<Order | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -425,6 +428,21 @@ export function OrderDetail({
             online={online}
             changed={saved}
           />
+          {/* loyalty (038 §2.5): the order's club member, from its own endpoint (C-14). */}
+          {!order.recovery && (
+            <OrderLoyaltyPanel
+              session={session}
+              order={order}
+              locale={locale}
+              online={online}
+              club={club}
+              money={money}
+              onOrderChanged={(o) => {
+                setOrder(o);
+                changed();
+              }}
+            />
+          )}
           <div className="row wrap">
             {!closed && !order.recovery && (
               <Button

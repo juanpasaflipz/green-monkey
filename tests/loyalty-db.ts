@@ -65,7 +65,7 @@ import {
 } from "../server/loyalty/import.js";
 import { loyaltyReport } from "../server/loyalty/reports.js";
 import { clubRouter, register as registerLoyalty } from "../server/routes/loyalty.js";
-import { DomainError, type Order, type Session } from "../shared/domain.js";
+import { type Order, type Session } from "../shared/domain.js";
 import { discountExpectation, planDiscount } from "../shared/discounts.js";
 import {
   JOIN_HEADER,
@@ -446,6 +446,7 @@ try {
     assert.deepEqual(Object.keys(cashierView).sort(), [
       "enabled",
       "maxRewardsPerOrder",
+      "privacyUrl",
       "programName",
       "promptAtCheckout",
       "rewardAmount",
@@ -788,7 +789,7 @@ try {
     let v = await change(f, o.id, beto.id, ana.id);
     assert.equal(v.member?.id, beto.id);
     await rejects(change(f, o.id, ana.id, ana.id), "loyalty_order_linked");
-    v = await change(f, o.id, ana.id, beto.id);
+    await change(f, o.id, ana.id, beto.id);
     await pay(f, o.id, 90000);
     await runJobs(f, o.id);
     await rejects(change(f, o.id, beto.id, ana.id), "forbidden");
@@ -1030,6 +1031,15 @@ try {
     for (const a of audits) {
       assert.doesNotMatch(a.detail, /Ana|Zúñiga|María|Beto|5544332211|5544332299|4433/, a.operation);
     }
+    // Staff search by name: ≥ 3 letters, accents folded, masked phones only.
+    const found = await run(f.s.cashier, (tx) => searchByName(tx, f.s.cashier, { q: "maria" }));
+    assert.deepEqual(found.map((x) => [x.id, x.maskedPhone]), [[ana.id, "···· 2211"]]);
+    assert.deepEqual(await run(f.s.cashier, (tx) => searchByName(tx, f.s.cashier, { q: "an" })), []);
+    // Detail for managers only; the printable ARCO sheet needs step-up.
+    await rejects(run(f.s.cashier, (tx) => memberDetail(tx, f.s.cashier, ana.id)), "forbidden");
+    await rejects(run(stale(f.s.manager), (tx) => memberDataSheet(tx, stale(f.s.manager), ana.id)), "step_up_required");
+    const sheet = await run(f.s.manager, (tx) => memberDataSheet(tx, f.s.manager, ana.id));
+    assert.deepEqual([sheet.phone, sheet.consentChannel, sheet.history.length >= 3], ["+525544332211", "staff_attested", true]);
     const updated = audits.find((a: any) => a.operation === "loyalty.member.updated");
     assert.deepEqual(JSON.parse(updated.detail), { memberId: ana.id, fields: ["name", "marketingOptIn"] });
     assert(beto.id);

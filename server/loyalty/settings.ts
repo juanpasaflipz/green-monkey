@@ -69,7 +69,10 @@ export async function requireClub(tx: Tx): Promise<Program> {
   return p;
 }
 
-export const clubView = (p: Program): LoyaltyClubView => ({
+export const clubView = (
+  p: Program,
+  privacyUrl: string | null,
+): LoyaltyClubView => ({
   enabled: p.enabled,
   promptAtCheckout: p.promptAtCheckout,
   programName: p.programName,
@@ -79,6 +82,7 @@ export const clubView = (p: Program): LoyaltyClubView => ({
   rewardAmount: p.rewardAmount,
   rewardMaxAmount: p.rewardMaxAmount,
   maxRewardsPerOrder: p.maxRewardsPerOrder,
+  privacyUrl,
 });
 
 /**
@@ -93,7 +97,10 @@ export async function getLoyaltySettings(
   const p = await loadProgram(tx);
   const plan = (await entitlement(tx)).plan === "pro" ? "pro" : "free";
   if (!managers.includes(s.role))
-    return clubView({ ...p, enabled: p.enabled && plan === "pro" });
+    return clubView(
+      { ...p, enabled: p.enabled && plan === "pro" },
+      await restaurantPrivacyUrl(tx),
+    );
   const [who] = p.privacyAttestedBy
     ? await tx`select name from employees where id=${p.privacyAttestedBy}`
     : [];

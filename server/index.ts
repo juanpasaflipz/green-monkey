@@ -496,7 +496,7 @@ if (process.env.NODE_ENV === "production") {
   // Diner pages (public ordering 032) stay out of search indexes; helmet
   // already sends Referrer-Policy: no-referrer on every response.
   app.use((req, res, next) => {
-    if (/^\/(qr|kiosk)(\/|$)/.test(req.path))
+    if (/^\/(qr|kiosk|club)(\/|$)/.test(req.path))
       res.set("X-Robots-Tag", "noindex");
     next();
   });

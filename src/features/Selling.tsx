@@ -64,6 +64,13 @@ import {
   type ParkedOrderTarget,
 } from "../offline-records";
 import { DiscountButton } from "./discounts/DiscountButton";
+// payments P1 stub (shared/payments.ts): Selling's single "payment settled" exit, R18.
+import { paymentSettledNoop, type OnPaymentSettled } from "../../shared/payments";
+import { useLoyaltyCheckout } from "./loyalty/useLoyaltyCheckout";
+import { LoyaltyLookupDialog } from "./loyalty/LoyaltyLookupDialog";
+import { RedeemRewardButton } from "./loyalty/RedeemReward";
+import { fill as fillText } from "./loyalty/format";
+import "./loyalty/loyalty.css";
 import { CheckDiscountSummary } from "./discounts/OrderAdjustments";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 import { useMediaQuery } from "../serviceHooks";
@@ -128,6 +135,7 @@ export function Selling({
   online,
   active,
   navigate,
+  onPaymentSettled = paymentSettledNoop,
 }: {
   session: Session;
   catalog: Product[];
@@ -135,6 +143,8 @@ export function Selling({
   online: boolean;
   active: boolean;
   navigate: (s: string) => void;
+  /** R18 (payments P1): called once a payment settled online, for every method. */
+  onPaymentSettled?: OnPaymentSettled;
 }) {
   const t = (k: Key) => strings[locale][k];
   const exponent = currencyExponent(session.restaurant.currency);
@@ -220,6 +230,28 @@ export function Selling({
   const nameCache = useRef(new Map<string, Label>());
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  // loyalty (038 §2.5): the cart's club member; never on the money path.
+  const loyalty = useLoyaltyCheckout({
+    session,
+    locale,
+    online,
+    lines: draft.lines.length,
+    current,
+  });
+  /**
+   * R18: the single "payment settled" exit payments P1 introduces (stubbed until it merges). The
+   * club's link, reconcile and toast hang on it; their failure is a notice, never an error.
+   */
+  function paymentSettled(order: Order) {
+    onPaymentSettled(order);
+    void loyalty.afterPayment(order).then((text) => {
+      if (
+        text &&
+        (currentRef.current?.id === order.id || receiptRef.current?.id === order.id)
+      )
+        setNotice(text);
+    });
+  }
   const currentRef = useRef(current);
   currentRef.current = current;
   /** ACC-PR-2: the payment dialog and the receipt, as a late answer sees them. */
@@ -948,6 +980,7 @@ export function Selling({
       setCurrent(o);
       setDraft((x) => reconcileLostSend(x, o, operationId, ids()).draft);
       if (next.changed) setNotice(t("serviceSendChanged"));
+      loyalty.afterOrderExists(o); // loyalty (038): link the cart's member, fire-and-forget
       await db.cache.put({ id: contextId, value: o.id });
       if (readPrintSettings().kitchenOnSend) printNewRound(o);
       return o;
@@ -1207,6 +1240,7 @@ export function Selling({
       }
       setCurrent(result);
       setReceipt(result);
+      paymentSettled(result);
     };
     try {
       const hadAttempt = !!(await db.cache.get(attemptId));
@@ -1423,6 +1457,60 @@ export function Selling({
           </button>
         ))}
       </div>
+      {loyalty.club && (
+        <div className="loyalty-cart">
+          {loyalty.member ? (
+            <span className="loyalty-chip">
+              {fillText(t("loyaltyChip"), {
+                name: loyalty.member.firstName,
+                stamps: loyalty.member.stamps,
+                required: loyalty.member.required,
+              })}
+              <button
+                type="button"
+                className="text-button"
+                aria-label={t("loyaltyRemove")}
+                disabled={!online}
+                onClick={loyalty.remove}
+              >
+                ✕
+              </button>
+            </span>
+          ) : (
+            <Button
+              disabled={!online}
+              aria-describedby={online ? undefined : "loyalty-offline-hint"}
+              onClick={loyalty.openPrompt}
+            >
+              {t("loyaltyClubButton")}
+            </Button>
+          )}
+          {!online && (
+            <small id="loyalty-offline-hint" className="tiny muted">
+              {t("loyaltyOfflineHint")}
+            </small>
+          )}
+          {loyalty.notice && (
+            <p role="status" className="tiny">
+              {loyalty.notice}
+            </p>
+          )}
+        </div>
+      )}
+      {loyalty.prompt && loyalty.club && (
+        <LoyaltyLookupDialog
+          locale={locale}
+          club={loyalty.club}
+          online={online}
+          onUse={(m) => {
+            loyalty.use(m);
+            // The kitchen and the counter call the order by the member's first name.
+            if (!current && !draftRef.current.name.trim())
+              setDraft((d) => ({ ...d, name: m.firstName }));
+          }}
+          onClose={loyalty.closePrompt}
+        />
+      )}
       {compact ? (
         <button
           type="button"
@@ -1684,6 +1772,31 @@ export function Selling({
               // SVC-R10: only the order still on screen is replaced. A check
               // the discount closed (takeaway or tableless) is final: its
               // receipt opens, as after a payment (LD-15 discounts Q7).
+              if (currentRef.current?.id !== o.id) return;
+              setCurrent(o);
+              if (o.checkState === "closed") setReceipt(o);
+            }}
+          />
+          <RedeemRewardButton
+            order={current && isServerOrder(current) ? current : null}
+            hasDraftLines={
+              draft.lines.length > 0 && (!current || isServerOrder(current))
+            }
+            send={async () => {
+              try {
+                const o = await send();
+                return isServerOrder(o) ? o : null;
+              } catch (e) {
+                if (!(e instanceof HandledError)) throw e;
+                return null;
+              }
+            }}
+            member={loyalty.member}
+            club={loyalty.club}
+            locale={locale}
+            online={online}
+            money={money}
+            onApplied={(o) => {
               if (currentRef.current?.id !== o.id) return;
               setCurrent(o);
               if (o.checkState === "closed") setReceipt(o);

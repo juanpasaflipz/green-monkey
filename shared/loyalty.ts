@@ -336,6 +336,8 @@ export type LoyaltyClubView = {
   rewardAmount: number | null;
   rewardMaxAmount: number | null;
   maxRewardsPerOrder: number;
+  /** The restaurant's privacy notice (031), shown as a QR when staff enroll a member. */
+  privacyUrl: string | null;
 };
 export const programTitle = (programName: string, restaurant: string) =>
   programName.trim() || `Club ${restaurant}`.slice(0, 40);

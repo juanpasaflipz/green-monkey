@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { lineRemaining } from "../../shared/settlement";
 import { changeDue, orderNoteEditable, roundNotes } from "../../shared/service";
 import {
@@ -77,6 +77,15 @@ export type ReceiptSlot = (p: {
   locale: Locale;
 }) => ReactNode;
 const receiptSlots: { header?: ReceiptSlot; footer?: ReceiptSlot } = {};
+/**
+ * Blocks other areas print after the footer (loyalty 038's club block). Kept apart from fiscal's
+ * footer `extra`, which replaces fiscal's invoicing line and prints only with a ticket.
+ */
+const receiptExtras = new Map<string, ReceiptSlot>();
+export function setReceiptExtra(area: string, slot: ReceiptSlot | null) {
+  if (slot) receiptExtras.set(area, slot);
+  else receiptExtras.delete(area);
+}
 /**
  * Registers receipt header/footer content once, at startup. Every
  * ReceiptDocument then shows it: the receipt modal and its print, and the
@@ -362,6 +371,9 @@ export function ReceiptDocument({
         </>
       )}
       {bottom}
+      {[...receiptExtras].map(([area, extra]) => (
+        <Fragment key={area}>{extra(slot)}</Fragment>
+      ))}
     </div>
   );
 }
