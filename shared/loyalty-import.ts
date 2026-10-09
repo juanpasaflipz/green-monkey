@@ -208,6 +208,7 @@ export function previewLoyaltyImport(
       const last = completed.at(-1);
       if (
         last?.completed_at &&
+        !last.redeemed &&
         Date.parse(last.completed_at) >= recentFrom &&
         (m.next_card_stamps ?? 0) === 0
       )

@@ -9,7 +9,8 @@
  *
  * Authenticated (register): /api/loyalty/*, each through route() (one tenant transaction). Every
  * command runs permit first (kitchen: forbidden before any work), then Pro and the club check.
- * Writes are POST (route() registers GET and POST; the spec's PUT and PATCH are POST paths here).
+ * Writes are POST (route() registers GET and POST; the spec's PUT and PATCH are POST paths here),
+ * and so are the lookups by phone or name (members/lookup, members/search, members/list).
  * The report reads one REPEATABLE READ snapshot (reports' snapshotTenant).
  */
 import { createHash } from "node:crypto";
@@ -137,15 +138,16 @@ export function register({ app, sql, route }: RouteContext) {
   route("post", "/loyalty/settings", (tx, s, req) =>
     saveLoyaltySettings(tx, s, req.body),
   );
-  // Before /loyalty/members/:id, so "lookup" and "search" are never read as ids.
-  route("get", "/loyalty/members/lookup", (tx, s, req) =>
-    lookupByPhone(tx, s, req.query),
+  // Lookups carry a phone or a name: always in a POST body, never in a URL, so no edge or
+  // access log ever holds one (LFPDPPP, §2.11). They write nothing.
+  route("post", "/loyalty/members/lookup", (tx, s, req) =>
+    lookupByPhone(tx, s, req.body),
   );
-  route("get", "/loyalty/members/search", (tx, s, req) =>
-    searchByName(tx, s, req.query),
+  route("post", "/loyalty/members/search", (tx, s, req) =>
+    searchByName(tx, s, req.body),
   );
-  route("get", "/loyalty/members", (tx, s, req) =>
-    listMembers(tx, s, req.query),
+  route("post", "/loyalty/members/list", (tx, s, req) =>
+    listMembers(tx, s, req.body),
   );
   route("post", "/loyalty/members", (tx, s, req) =>
     enrollMember(tx, s, req.body),

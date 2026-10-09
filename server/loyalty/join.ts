@@ -76,7 +76,8 @@ export async function joinView(
         exists (select 1 from loyalty_order_links l where l.tenant_id=o.tenant_id and l.order_id=o.id
                 and l.member_id is not null) as linked
       from orders o join restaurants r on r.id=o.tenant_id where o.id=${orderId}`;
-    if (!o) throw new DomainError("loyalty_join_unavailable", 404);
+    // A genuine token names an order of its tenant; anything else is not a receipt of ours.
+    if (!o) throw new DomainError("unauthorized", 401);
     return {
       restaurantName: o.restaurant,
       programName: programTitle(p.programName, o.restaurant),
@@ -111,6 +112,8 @@ export async function joinOrder(
   const name = cleanName(b.name);
   return tenant(sql, tenantId, async (tx) => {
     const p = await availableProgram(tx);
+    const [exists] = await tx`select id from orders where id=${orderId}`;
+    if (!exists) throw new DomainError("unauthorized", 401);
     const notice = await restaurantPrivacyUrl(tx);
     if (!notice) throw new DomainError("loyalty_privacy_notice_required", 409);
     // Member insert-or-select: an existing member's name is never overwritten from this page.
