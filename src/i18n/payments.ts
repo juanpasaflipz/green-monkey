@@ -640,8 +640,8 @@ export default defineArea({
       "That terminal is not integrated: record the charge manually.",
     ],
     payments_terminal_busy: [
-      "Terminal en uso: hay otro cobro en proceso. Inténtalo en unos segundos.",
-      "Terminal in use: another charge is in progress. Try again in a few seconds.",
+      "Terminal en uso: hay otro cobro en proceso. Búscalo en «Cobros en terminal en curso»; ahí se puede cancelar.",
+      "Terminal in use: another charge is in progress. Find it under “Terminal charges in progress”, where it can be cancelled.",
     ],
     payments_terminal_limit: [
       "Llegaste al máximo de 20 terminales activas. Archiva una antes de agregar otra.",
@@ -656,8 +656,8 @@ export default defineArea({
       "That provider device is already configured on another terminal.",
     ],
     payments_order_attempt_live: [
-      "Esta orden tiene un cobro en terminal en curso. Espera a que termine o pide a un gerente que lo resuelva.",
-      "This order has a terminal charge in progress. Wait for it to finish or ask a manager to resolve it.",
+      "Esta orden tiene un cobro en terminal en curso. Búscalo en «Cobros en terminal en curso»: ahí se cancela, o un gerente lo resuelve.",
+      "This order has a terminal charge in progress. Find it under “Terminal charges in progress”: cancel it there, or a manager resolves it.",
     ],
     payments_attempt_unresolved: [
       "Hay cobros en terminal sin resolver. Un gerente debe resolverlos antes de cerrar.",

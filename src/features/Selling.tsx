@@ -81,6 +81,7 @@ import { isLiveForOrder, type PlatformCode } from "../../shared/payments";
 import { useTerminalCharge } from "./payments/useTerminalCharge";
 import { ActiveCharges } from "./payments/ActiveCharges";
 import { ResolveDialog } from "./payments/ResolveDialog";
+import { cachedLiveOrders } from "./payments/charge-state";
 import { ReceiptModal, checkStateOf, noteEditableOf } from "./Receipt";
 import { NoteDialog } from "./OrderDetail";
 import {
@@ -1086,6 +1087,16 @@ export function Selling({
       void api("/cash")
         .then(setCashSession)
         .catch(() => {});
+    // A live charge on this order started on another device (or before a relaunch): its waiting
+    // panel opens here too, with Cancelar and Cambiar de terminal (P2-UX-2).
+    const order = currentRef.current;
+    if (
+      online &&
+      order &&
+      !offline.isLocalOrder(order) &&
+      terminalCharge.attempt?.orderId !== order.id
+    )
+      void terminalCharge.attach(order.id).catch(() => undefined);
     setPayment(true);
     setError("");
     setNotice("");
@@ -1321,12 +1332,15 @@ export function Selling({
       // leaves the flagged line out, and no record holds a line it cannot price.
       if (!online || offline.isLocalOrder(current)) {
         // payments (037, P2): money may already be on a terminal for this order.
+        // The remembered charge survives a reload or a restart while offline, and the last
+        // «Cobros en terminal» list covers a charge started on another device (P2-MONEY-6).
         const charge = terminalCharge.attempt;
         if (
-          charge &&
           current &&
-          charge.orderId === current.id &&
-          isLiveForOrder(charge.state)
+          ((charge &&
+            charge.orderId === current.id &&
+            isLiveForOrder(charge.state)) ||
+            cachedLiveOrders(session.tenantId).includes(current.id))
         )
           throw new Error("payments_order_attempt_live");
         const saved = await offline.collectOffline(

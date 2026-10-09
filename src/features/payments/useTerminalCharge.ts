@@ -1,8 +1,10 @@
 // Payments (037, P2; spec §5.1 Selling, §5.5): the integrated charge the payment dialog waits for.
 // It starts the charge (POST /payments/terminal/charges), then syncs it every dialogSyncMs while
 // it is in flight (5 s while the outcome is unknown; never offline, never while a person must
-// review it). The attempt id is kept in sessionStorage per restaurant and device, so a reload
-// resumes waiting. A settled charge reaches `onSettled` once (critic R18: Selling's one exit).
+// review it). The live attempt is kept in localStorage per restaurant and device
+// (charge-state.ts), so a reload, a PWA relaunch or a restart while offline resumes it and keeps
+// the order blocked for offline collection (spec §2.5; P2-MONEY-6). A settled charge reaches
+// `onSettled` once (critic R18: Selling's one exit).
 import { useEffect, useRef, useState } from "react";
 import type { Order, Session } from "../../../shared/domain";
 import {
@@ -12,17 +14,16 @@ import {
 } from "../../../shared/payments";
 import { api } from "../../api";
 import type { TerminalChargeValues } from "../PaymentDialog";
-import { waitingKey } from "./attempt-text";
-
-type SyncReply = { attempt: AttemptView; order?: Order };
-
-function storage(): Storage | null {
-  try {
-    return window.sessionStorage;
-  } catch {
-    return null;
-  }
-}
+import {
+  definiteAnswer,
+  loadLiveCharge,
+  nextStartKey,
+  reduceReply,
+  saveLiveCharge,
+  startSignature,
+  type StartKey,
+  type SyncReply,
+} from "./charge-state";
 
 export function useTerminalCharge({
   session,
@@ -33,66 +34,55 @@ export function useTerminalCharge({
   online: boolean;
   onSettled: (order: Order, attempt: AttemptView) => void;
 }) {
-  const key = waitingKey(session.tenantId, session.deviceId);
-  const [attempt, setAttempt] = useState<AttemptView | null>(null);
+  const { tenantId, deviceId } = session;
+  const [attempt, setAttempt] = useState<AttemptView | null>(() =>
+    loadLiveCharge(tenantId, deviceId),
+  );
   const [tick, setTick] = useState(0);
   const switching = useRef(false);
   const settled = useRef<string | null>(null);
+  const startKey = useRef<StartKey | null>(null);
   const settledCallback = useRef(onSettled);
   settledCallback.current = onSettled;
 
-  const remember = (a: AttemptView) =>
-    storage()?.setItem(key, JSON.stringify({ id: a.id, orderId: a.orderId }));
-  const forget = () => storage()?.removeItem(key);
+  const keep = (a: AttemptView | null) => {
+    saveLiveCharge(tenantId, deviceId, a);
+    setAttempt(a);
+  };
 
   function apply(r: SyncReply) {
-    const a = r.attempt;
-    if (a.state === "settled") {
-      forget();
-      setAttempt(null);
-      if (r.order && settled.current !== a.id) {
-        settled.current = a.id;
-        settledCallback.current(r.order, a);
-      }
-      return;
-    }
-    if (!isLiveForOrder(a.state)) forget();
-    if (switching.current && !isLiveForOrder(a.state)) {
-      // "Cambiar de terminal": the cancel is confirmed, so the cashier picks another terminal.
-      switching.current = false;
-      setAttempt(null);
-      return;
-    }
-    setAttempt(a);
+    const next = reduceReply(
+      { attempt, switching: switching.current, settledId: settled.current },
+      r,
+    );
+    switching.current = next.switching;
+    settled.current = next.settledId;
+    saveLiveCharge(tenantId, deviceId, next.remember ? next.attempt : null);
+    setAttempt(next.attempt);
+    if (next.settled)
+      settledCallback.current(next.settled.order, next.settled.attempt);
   }
 
-  // A reload (or another view) resumes the charge this device was waiting for.
+  // A reload, a relaunch or a restart resumes the charge this device was waiting for. Offline,
+  // the remembered view alone keeps the order blocked; online, the server's answer replaces it.
   useEffect(() => {
-    if (!online) return;
-    const raw = storage()?.getItem(key);
-    if (!raw) return;
-    let id: string | null;
-    try {
-      id = (JSON.parse(raw) as { id?: string }).id ?? null;
-    } catch {
-      id = null;
-    }
-    if (!id) {
-      forget();
+    const remembered = loadLiveCharge(tenantId, deviceId);
+    if (!remembered) return;
+    if (!online) {
+      setAttempt((a) => a ?? remembered);
       return;
     }
     let alive = true;
-    void api<AttemptView>(`/payments/terminal/charges/${id}`)
+    void api<AttemptView>(`/payments/terminal/charges/${remembered.id}`)
       .then((a) => {
         if (!alive) return;
-        if (isLiveForOrder(a.state)) setAttempt(a);
-        else forget();
+        keep(isLiveForOrder(a.state) ? a : null);
       })
       .catch(() => undefined);
     return () => {
       alive = false;
     };
-  }, [key, online]);
+  }, [tenantId, deviceId, online]);
 
   // Sync while the charge is in flight.
   useEffect(() => {
@@ -112,22 +102,53 @@ export function useTerminalCharge({
     };
   }, [attempt, online, tick]);
 
+  /**
+   * The order's live charge started elsewhere (another device, a lost reply, a relaunch): show its
+   * waiting panel here, with Cancelar and Cambiar de terminal (P2-UX-1, P2-UX-2). null if none.
+   */
+  async function attach(orderId: string): Promise<AttemptView | null> {
+    const rows = await api<AttemptView[]>("/payments/terminal/active");
+    const live =
+      rows.find((a) => a.orderId === orderId && isLiveForOrder(a.state)) ??
+      null;
+    if (live) {
+      switching.current = false;
+      keep(live);
+    }
+    return live;
+  }
+
   async function start(orderId: string, v: TerminalChargeValues) {
-    const a = await api<AttemptView>(
-      "/payments/terminal/charges",
-      {
-        operationId: crypto.randomUUID(),
-        orderId,
-        terminalId: v.terminalId,
-        amount: v.amount,
-        tip: v.tip,
-        ...(v.items?.length ? { items: v.items } : {}),
-      },
-      { idempotent: true },
+    const key = nextStartKey(startKey.current, startSignature(orderId, v), () =>
+      crypto.randomUUID(),
     );
+    startKey.current = key;
+    let a: AttemptView;
+    try {
+      a = await api<AttemptView>(
+        "/payments/terminal/charges",
+        {
+          operationId: key.id,
+          orderId,
+          terminalId: v.terminalId,
+          amount: v.amount,
+          tip: v.tip,
+          ...(v.items?.length ? { items: v.items } : {}),
+        },
+        { idempotent: true },
+      );
+    } catch (e) {
+      // A lost reply keeps the key, so the next tap replays this same operation.
+      if (definiteAnswer(e)) startKey.current = null;
+      if ((e as Error).message === "payments_order_attempt_live") {
+        const live = await attach(orderId).catch(() => null);
+        if (live) return live;
+      }
+      throw e;
+    }
+    startKey.current = null;
     switching.current = false;
-    remember(a);
-    setAttempt(a);
+    keep(a);
     return a;
   }
   async function cancel(switchTerminal = false) {
@@ -160,8 +181,16 @@ export function useTerminalCharge({
   /** Back to the form (after a final outcome): Reintentar, Otra forma de pago. */
   function dismiss() {
     if (attempt && isLiveForOrder(attempt.state)) return;
-    forget();
-    setAttempt(null);
+    keep(null);
   }
-  return { attempt, start, cancel, recheck, retrySettle, dismiss, apply };
+  return {
+    attempt,
+    start,
+    attach,
+    cancel,
+    recheck,
+    retrySettle,
+    dismiss,
+    apply,
+  };
 }

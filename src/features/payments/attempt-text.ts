@@ -187,6 +187,3 @@ export function resolveOptions(
   return [];
 }
 
-/** sessionStorage key of the attempt this device is waiting for (a reload resumes it). */
-export const waitingKey = (tenantId: string, deviceId: string) =>
-  `gm-terminal-attempt:${tenantId}:${deviceId}`;

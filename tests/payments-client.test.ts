@@ -16,6 +16,18 @@ import {
 } from "../src/features/payments/attempt-text";
 import { referenceFromName, type AttemptView } from "../shared/payments";
 import {
+  cachedLiveOrders,
+  definiteAnswer,
+  loadLiveCharge,
+  nextStartKey,
+  reduceReply,
+  saveActiveCharges,
+  saveLiveCharge,
+  startSignature,
+} from "../src/features/payments/charge-state";
+import { ApiError } from "../src/api";
+import type { Order } from "../shared/domain";
+import {
   dayColumns,
   drawerColumns,
   tenderColumns,
@@ -621,6 +633,10 @@ describe("integrated charges (P2): what the waiting panel says and offers", () =
       cashier,
     );
     expect(refused.message).toMatch(/^La terminal rechazó el cobro \(/);
+    // The whole sentence, translated (a raw code would pass the prefix check; P2-UX-15).
+    expect(refused.message).toBe(
+      "La terminal rechazó el cobro (El proveedor rechazó la solicitud.)",
+    );
     expect(refused.actions).toEqual(["retry", "otherMethod"]);
     expect(
       attemptStatus(
@@ -652,6 +668,92 @@ describe("integrated charges (P2): what the waiting panel says and offers", () =
     expect(
       resolveOptions({ ...fits, errorCode: "payments_refunded_before_settle" }),
     ).toEqual(["refunded_at_provider"]);
+  });
+  it("P2-UX-1: a re-tap replays the same start operation until a definite answer; new values are a new operation", () => {
+    let n = 0;
+    const fresh = () => `op-${++n}`;
+    const values = { terminalId: "t1", amount: 9000, tip: 500 };
+    const first = nextStartKey(null, startSignature("o1", values), fresh);
+    expect(nextStartKey(first, startSignature("o1", values), fresh)).toBe(
+      first,
+    );
+    expect(
+      nextStartKey(first, startSignature("o1", { ...values, tip: 0 }), fresh)
+        .id,
+    ).toBe("op-2");
+    expect(startSignature("o1", { ...values, items: ["b", "a"] })).toBe(
+      startSignature("o1", { ...values, items: ["a", "b"] }),
+    );
+    expect(definiteAnswer(new ApiError("payments_terminal_busy", 409))).toBe(
+      true,
+    );
+    expect(definiteAnswer(new ApiError("network", 0, "network"))).toBe(false);
+    expect(definiteAnswer(new ApiError("timeout", 0, "timeout"))).toBe(false);
+    expect(definiteAnswer(new ApiError("server_error", 503, "server"))).toBe(
+      false,
+    );
+  });
+  it("P2-UX-15: a settle is announced once; a confirmed cancel while switching returns to the picker; a decline stays on screen but is no longer remembered", () => {
+    const order = { id: "o1" } as Order;
+    const base = { attempt: null, switching: false, settledId: null };
+    const settled = reduceReply(base, {
+      attempt: attempt({ state: "settled" }),
+      order,
+    });
+    expect([settled.attempt, settled.settled?.order, settled.remember]).toEqual(
+      [null, order, false],
+    );
+    const again = reduceReply(settled, {
+      attempt: attempt({ state: "settled" }),
+      order,
+    });
+    expect(again.settled).toBeNull();
+    const switched = reduceReply(
+      { ...base, switching: true },
+      { attempt: attempt({ state: "cancelled" }) },
+    );
+    expect([switched.attempt, switched.switching]).toEqual([null, false]);
+    const stillLive = reduceReply(
+      { ...base, switching: true },
+      { attempt: attempt({ state: "pending", cancelRequested: true }) },
+    );
+    expect([
+      stillLive.attempt?.state,
+      stillLive.switching,
+      stillLive.remember,
+    ]).toEqual(["pending", true, true]);
+    const declined = reduceReply(base, {
+      attempt: attempt({ state: "declined" }),
+    });
+    expect([declined.attempt?.state, declined.remember]).toEqual([
+      "declined",
+      false,
+    ]);
+  });
+  it("P2-MONEY-6: the live charge and the last «Cobros en terminal» list survive a relaunch (localStorage), per restaurant and device", () => {
+    const map = new Map<string, string>();
+    const store = {
+      getItem: (k: string) => map.get(k) ?? null,
+      setItem: (k: string, v: string) => void map.set(k, v),
+      removeItem: (k: string) => void map.delete(k),
+    } as unknown as Storage;
+    saveLiveCharge("r1", "d1", attempt(), store);
+    expect(loadLiveCharge("r1", "d1", store)?.id).toBe("a1");
+    expect(loadLiveCharge("r1", "d2", store)).toBeNull();
+    saveLiveCharge("r1", "d1", attempt({ state: "declined" }), store);
+    expect(loadLiveCharge("r1", "d1", store)).toBeNull();
+    expect([...map.keys()], "a final charge is forgotten").toEqual([]);
+    saveActiveCharges(
+      "r1",
+      [
+        attempt(),
+        attempt({ id: "a2", orderId: "o2", state: "unknown" }),
+        attempt({ id: "a3", orderId: "o3", state: "cancelled" }),
+      ],
+      store,
+    );
+    expect(cachedLiveOrders("r1", store)).toEqual(["o1", "o2"]);
+    expect(cachedLiveOrders("r2", store)).toEqual([]);
   });
   it("offline, a live charge only waits (recording it another way could charge twice)", () => {
     expect(

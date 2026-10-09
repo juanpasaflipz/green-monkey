@@ -508,8 +508,10 @@ test("integrated charging: the owner connects Mercado Pago and Clip (the URL sho
     .getByRole("button", { name: "Siguiente venta", exact: true })
     .click();
 
-  // Clip loses the create's answer: unknown, never a blind retry; the manager records it.
-  await fake("next", { provider: "clip", behaviour: "timeout" });
+  // Clip loses the create's answer and the reader has already taken the request: unknown, never a
+  // blind retry; the manager records it. (A request the reader had not taken is withdrawn by
+  // serial number and cancelled: P2 DB suite.)
+  await fake("next", { provider: "clip", behaviour: "timeoutTaken" });
   await sendOn(names.clip);
   await expect(dialog).toContainText("No sabemos si el cobro se completó", {
     timeout: 30_000,
@@ -552,6 +554,83 @@ test("integrated charging: the owner connects Mercado Pago and Clip (the URL sho
   await page
     .getByRole("button", { name: "Siguiente venta", exact: true })
     .click();
+  // The reader completes the payment the manager recorded (the fake's reader is free again).
+  await fake("approve", { device: "P8220724FAKE01", approval: {} });
+
+  // P2-UX-15. «Cancelar cobro» while the order is still on the device (MP cancels an order it has
+  // not handed over); the waiting panel passes axe at the tablet and phone widths.
+  await sendOn(names.mp);
+  await expect(dialog).toContainText(`Esperando el pago en ${names.mp}…`);
+  for (const width of [1024, 390]) {
+    await page.setViewportSize({ width, height: 900 });
+    await axe(page, "dialog[open]");
+  }
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await dialog
+    .getByRole("button", { name: "Cancelar cobro", exact: true })
+    .click();
+  await expect(dialog).toContainText("Cobro cancelado", { timeout: 20_000 });
+  // «Cambiar de terminal»: the MP charge is cancelled first (confirmed), then the same order goes
+  // to Clip, where it is paid.
+  await dialog.getByRole("button", { name: "Reintentar", exact: true }).click();
+  await dialog
+    .getByRole("button", { name: `Enviar a ${names.mp}`, exact: true })
+    .click();
+  await expect(dialog).toContainText(`Esperando el pago en ${names.mp}…`);
+  await dialog
+    .getByRole("button", { name: "Cambiar de terminal", exact: true })
+    .click();
+  await dialog
+    .getByRole("button", { name: new RegExp(`^${names.clip}`) })
+    .click({ timeout: 20_000 });
+  await dialog
+    .getByRole("button", { name: `Enviar a ${names.clip}`, exact: true })
+    .click();
+  await expect(dialog).toContainText(`Esperando el pago en ${names.clip}…`);
+  // The reader took it: Clip refuses the cancel («Cancélalo en la terminal»); the cashier cancels
+  // on the reader and «Volver a consultar» confirms it.
+  await fake("atTerminalUncancellable", { device: "P8220724FAKE01" });
+  await dialog
+    .getByRole("button", { name: "Cancelar cobro", exact: true })
+    .click();
+  await expect(dialog).toContainText(
+    "La terminal ya tomó el cobro. Cancélalo en la terminal.",
+    { timeout: 20_000 },
+  );
+  await fake("cancelOnTerminal", { device: "P8220724FAKE01" });
+  await dialog
+    .getByRole("button", { name: "Volver a consultar", exact: true })
+    .click();
+  await expect(dialog).toContainText("Cobro cancelado", { timeout: 20_000 });
+  await dialog.getByRole("button", { name: "Reintentar", exact: true }).click();
+  await dialog
+    .getByRole("button", { name: `Enviar a ${names.clip}`, exact: true })
+    .click();
+  await fake("approve", {
+    device: "P8220724FAKE01",
+    approval: { brand: "visa", type: "debit_card", last4: "4444" },
+  });
+  await expect(page.locator(".receipt")).toContainText(
+    `Tarjeta · ${names.clip}`,
+    { timeout: 20_000 },
+  );
+  await page
+    .getByRole("button", { name: "Siguiente venta", exact: true })
+    .click();
+  // A reload mid-charge (P2-MONEY-6, P2-UX-2): the charge goes on, «Cobros en terminal en curso»
+  // lists it after the reload, and any operator cancels it there.
+  await sendOn(names.mp);
+  await expect(dialog).toContainText(`Esperando el pago en ${names.mp}…`);
+  await page.reload();
+  await go(page, "Vender");
+  const banner = page.locator("section.active-charges");
+  await expect(banner).toContainText("Cobros en terminal en curso (1)", {
+    timeout: 20_000,
+  });
+  await banner.getByRole("button", { name: "Ver", exact: true }).click();
+  await axe(page, "section.active-charges");
+  await banner.getByRole("button", { name: /^Cancelar cobro #/ }).click();
+  await expect(banner).toHaveCount(0, { timeout: 30_000 });
 
   // Undo: archive both terminals and disconnect both accounts (the worker wipes the keys).
   const view = await call(page, "/payments/settings");
