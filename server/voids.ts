@@ -12,6 +12,7 @@ import { recipeStockIds } from "../shared/menu.js";
 import { DomainError, id, type Session } from "../shared/domain.js";
 import { assertCheckWritable, refreshCheckState } from "./checks.js";
 import { bumpKitchenFeed } from "./kitchen.js";
+import { assertNoLiveAttempt } from "./payments/guards.js";
 import { voidCandidates } from "../shared/discounts.js";
 
 /** First-stage throttle values (see shared/access.ts ACCESS.pin). */
@@ -278,6 +279,9 @@ export async function voidLines(
       throw new DomainError("stale_order", 409);
     // Served (completed) orders stay voidable while the check is open.
     assertCheckWritable(locked as { check_state: string; state: string });
+    // payments (037): a void lowers what the order can take; refused while
+    // money may be in flight at a terminal (a plain read under the order lock).
+    await assertNoLiveAttempt(tx, orderId);
     if (approverId !== s.employeeId) {
       const [approver] =
         await tx`select id from employees where id=${approverId} and active and role in ('owner','manager') for share`;

@@ -23,8 +23,11 @@ import {
   type RestockDayAggregate,
   type SalesDayAggregate,
   type SalesSummary,
-  type TenderMethod,
+  methodOf,
+  type PlatformAggregate,
+  type TerminalAggregate,
 } from "../../shared/reports.js";
+import type { PlatformCode } from "../../shared/payments.js";
 import { businessDayCte, windowOf } from "./days.js";
 import { fiscalCurrency, type ReportsPorts } from "./ports.js";
 import { restaurantOf, type ReportRestaurant } from "./restaurant.js";
@@ -32,8 +35,8 @@ import { drawerList } from "./drawers.js";
 
 type Row = Record<string, unknown>;
 const n = aggregateInt;
-const method = (value: unknown): TenderMethod =>
-  value === "external" ? "external" : "cash";
+// payments (037): by value, never defaulting to cash (an unknown value throws).
+const method = methodOf;
 
 /** S1: the sales lens per order business date (orders, their tenders, their fiscal ticket). */
 export async function salesDays(
@@ -194,7 +197,8 @@ export function collectionCtes(
     ),
     x as (
       select t.id, t.tenant_id, t.created_at, t.method, t.amount, t.tip, t.external_reference, t.session_id,
-        t.source, o.id as order_id, o.number as order_number, o.business_date as order_date,
+        t.source, t.terminal_id, t.terminal_label, t.provider, t.provider_reference, t.card_brand, t.card_last4,
+        t.platform, t.platform_label, t.fee, t.fee_source, o.id as order_id, o.number as order_number, o.business_date as order_date,
         ((t.created_at at time zone c.timezone) - make_interval(mins => c.cutoff))::date as recorded_day,
         coalesce(r.business_date,
                  case when o.state like 'recovery%' then o.business_date end,
@@ -234,6 +238,86 @@ export async function collectionDays(
     lateCount: n(r.late_count),
     lateAmount: n(r.late_amount),
   }));
+}
+
+/**
+ * S6 and S7 (payments 037): card money by terminal and platform money by platform over the range,
+ * in one grouped statement: tenders by the collection lens of S3 and refunds by the refund lens of
+ * S4, so Σ terminals = the external method and Σ platforms = the platform method (methods_sum).
+ */
+export async function paymentSplits(
+  tx: Tx,
+  s: Session,
+  range: DateRange,
+  w: { ws: string; we: string },
+): Promise<{
+  terminals: TerminalAggregate[];
+  platforms: PlatformAggregate[];
+}> {
+  const rows = await tx<Row[]>`
+    with cfg as (${businessDayCte(tx, s.tenantId)}), ${collectionCtes(tx, range, w)},
+    rf as (
+      select t.method, t.terminal_id, t.platform, t.terminal_label, t.platform_label, r.created_at, r.amount
+        from refunds r
+        join tenders t on t.tenant_id = r.tenant_id and t.id = r.tender_id
+        left join refund_batches b on b.tenant_id = r.tenant_id and b.id = r.batch_id
+        join cfg c on r.created_at >= c.valid_from and r.created_at < c.valid_until
+       where r.created_at >= ${w.ws} and r.created_at < ${w.we} and r.method <> 'cash'
+         and coalesce(b.business_date,
+                      ((r.created_at at time zone c.timezone) - make_interval(mins => c.cutoff))::date)
+             between ${range.from}::date and ${range.to}::date
+    ),
+    u as (
+      select method, terminal_id, platform, terminal_label, platform_label, created_at,
+        amount, tip, 0 as refund, fee, fee_source, 1 as n
+        from x where day between ${range.from}::date and ${range.to}::date and method <> 'cash'
+      union all
+      select method, terminal_id, platform, terminal_label, platform_label, created_at,
+        0, 0, amount, null, null, 0 from rf
+    )
+    select u.method, u.terminal_id, u.platform,
+      coalesce(max(pt.name), (array_agg(u.terminal_label order by u.created_at desc)
+        filter (where u.terminal_label is not null))[1]) as label,
+      max(pt.kind) as kind,
+      (array_agg(u.platform_label order by u.created_at desc) filter (where u.platform_label is not null))[1]
+        as platform_label,
+      sum(u.n)::int as count, coalesce(sum(u.amount), 0)::int8 as amount, coalesce(sum(u.tip), 0)::int8 as tips,
+      coalesce(sum(u.refund), 0)::int8 as refunds,
+      coalesce(sum(u.fee) filter (where u.fee_source = 'provider'), 0)::int8 as fee_provider,
+      coalesce(sum(u.fee) filter (where u.fee_source = 'estimated'), 0)::int8 as fee_estimated
+    from u left join payment_terminals pt on pt.id = u.terminal_id
+    -- LD-75 / PAYMENTS-MONEY-8: each «Otra» name is its own row (case and spaces ignored).
+    group by u.method, u.terminal_id, u.platform, lower(btrim(u.platform_label))
+    order by u.method, max(pt.name) nulls last, u.terminal_id nulls last, u.platform,
+      lower(btrim(u.platform_label)) nulls first`;
+  const terminals: TerminalAggregate[] = [];
+  const platforms: PlatformAggregate[] = [];
+  for (const r of rows) {
+    const m = method(r.method);
+    if (m === "external")
+      terminals.push({
+        terminalId: (r.terminal_id as string | null) ?? null,
+        label: (r.label as string | null) ?? null,
+        kind: (r.kind as string | null) ?? null,
+        count: n(r.count),
+        amount: n(r.amount),
+        tips: n(r.tips),
+        refunds: n(r.refunds),
+        feeProvider: n(r.fee_provider),
+        feeEstimated: n(r.fee_estimated),
+      });
+    else if (m === "platform")
+      platforms.push({
+        platform: r.platform as PlatformCode,
+        label: (r.platform_label as string | null) ?? null,
+        count: n(r.count),
+        amount: n(r.amount),
+        refunds: n(r.refunds),
+        commission: n(r.fee_provider) + n(r.fee_estimated),
+      });
+    else throw new RangeError("report_method_unknown");
+  }
+  return { terminals, platforms };
 }
 
 /**
@@ -349,7 +433,7 @@ export async function summaryWithDrawers(
   permit(s, managers);
   const restaurant = await restaurantOf(tx, s);
   const w = windowOf(range, restaurant);
-  const [sales, lines, collections, refunds, restocks, paidOuts] =
+  const [sales, lines, collections, refunds, restocks, paidOuts, splits] =
     await Promise.all([
       salesDays(tx, range),
       lineDays(tx, range),
@@ -357,6 +441,7 @@ export async function summaryWithDrawers(
       refundDays(tx, s, range, w),
       restockDays(tx, range),
       paidOutDays(tx, s, range, w),
+      paymentSplits(tx, s, range, w),
     ]);
   const drawers = await drawerList(tx, s, range, ports, restaurant);
   const tax = await fiscalForRange(tx, s, range, ports, restaurant);
@@ -373,6 +458,8 @@ export async function summaryWithDrawers(
     restocks,
     paidOuts,
     drawers,
+    terminals: splits.terminals,
+    platforms: splits.platforms,
     tax,
   });
   const codes = failedCheckCodes(summary.checks);

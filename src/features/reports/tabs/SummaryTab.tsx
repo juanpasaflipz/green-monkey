@@ -355,6 +355,13 @@ function SummaryView({
                 numeric: true,
                 render: (r) => m(r.external),
               },
+              // PAYMENTS-MONEY-5: platform money, so the day's collections add up.
+              {
+                key: "platform",
+                header: t.payReportsPlatformSales,
+                numeric: true,
+                render: (r) => m(r.platform),
+              },
               {
                 key: "tips",
                 header: t.reportsColTips,
@@ -377,6 +384,7 @@ function SummaryView({
               m(s.refunds.total),
               m(s.days.reduce((a, r) => a + r.cash, 0)),
               m(s.days.reduce((a, r) => a + r.external, 0)),
+              m(s.days.reduce((a, r) => a + r.platform, 0)),
               m(c.tips),
               m(c.paidOuts),
             ]}

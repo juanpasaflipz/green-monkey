@@ -23,7 +23,12 @@ type Row = {
   series: string;
   number: string | number;
   gross: number;
-  payments: { method: string; amount: number; at?: string }[];
+  payments: {
+    method: string;
+    amount: number;
+    at?: string;
+    cardType?: string;
+  }[];
   groups: { category: TaxCategory; gross: number; tax: number }[];
   adjustments: {
     refundId: string;
@@ -79,7 +84,12 @@ export async function loadTickets(
                 ? 1
                 : 0,
           )
-          .map((p) => ({ method: p.method, amount: p.amount }));
+          .map((p) => ({
+            method: p.method,
+            amount: p.amount,
+            // payments (037): the card type decides 04/28 when an integrated terminal knew it.
+            ...(p.cardType ? { cardType: p.cardType } : {}),
+          }));
         tickets.push({
           id: r.id,
           orderId: r.order_id,

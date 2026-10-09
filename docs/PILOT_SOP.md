@@ -505,8 +505,8 @@ cómo conservar la bitácora.
 | Reportes y cortes por forma de pago | Disponible (reportes, migración 029) | «Hoy» y «Finanzas» (propietario y gerentes); corte X, corte Z y corte del día impresos desde «Caja» o «Finanzas → Cortes». | [Reports](REPORTS.md#cortes) |
 | Cerrar una caja desde otro dispositivo | Disponible (reportes, migración 029) | «Finanzas → Cortes → Cerrar caja desde aquí» (gerente, con PIN) para una caja de un dispositivo desvinculado o que quedó abierta de un día anterior; si su tablet funciona, ciérrala ahí. | [Reports](REPORTS.md#cortes) |
 | Acceso Pro del piloto otorgado por soporte, aviso de privacidad, contacto de soporte dentro de la app | Disponible (cuenta, migración 031). La cuenta de operador de soporte ya existe en producción; los datos legales y de soporte aún no se publican | Soporte activa Pro para el piloto el día del alta (hasta 90 días, renovable antes de que termine); el propietario lo ve como «Pro otorgado por soporte» con su fecha de término, y la app avisa 7, 3 y 1 días antes. Antes de eso, en Free, un solo dispositivo vende (sección 2). | [Cuenta y aspectos legales](ACCOUNT_AND_LEGAL.md); [Operations, "Support"](OPERATIONS.md) |
-| Cobro con tarjeta integrado (Clip, Mercado Pago Point) y terminales con nombre | Llega antes del piloto (ola 4); no está en producción | «Terminal externa»: cobras en la terminal y registras su referencia. Para cobrar a mano en Mercado Pago Point, la terminal debe estar en modo independiente ([lista de cambio](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos)). | [Service](SERVICE.md#payment-dialog) |
-| Pedidos de plataformas (Uber Eats, Rappi, DiDi): cobro pagado por plataforma y precios por plataforma | Llega antes del piloto (ola 4); no está en producción | Todavía no hay forma correcta de registrarlos: ni «Efectivo» ni «Terminal externa» (inflaría el total de la terminal y la factura los trataría como pago con tarjeta). El contador decide su tratamiento fiscal. | Esta guía, cuando llegue |
+| Cobro con tarjeta integrado (Clip, Mercado Pago Point) | Llega antes del piloto (ola 4, fase 2 de pagos); no está en producción | «Terminal externa»: cobras en la terminal (banco, o Clip / MP en modo independiente), eliges la terminal por su nombre y registras su referencia (sección 8). Para cobrar a mano en Mercado Pago Point, la terminal debe estar en modo independiente ([lista de cambio](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos)). | [Payments](PAYMENTS.md) |
+| Pedidos de plataformas (Uber Eats, Rappi, DiDi): cobro pagado por plataforma y precios por plataforma | Disponible (pagos, migración 037) | «Plataforma» al cobrar; no cuenta como efectivo ni tarjeta (sección 8). Las plataformas vienen apagadas: el propietario las enciende y captura sus precios antes del piloto. El contador decide su tratamiento fiscal. | [Payments](PAYMENTS.md) |
 | Lealtad (sellos, miembros, recompensas) | Llega antes del piloto (ola 4), con la importación de los miembros de pos-lite; no está en producción | El programa de sellos sigue en pos-lite ([lista de cambio](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos)). | Esta guía, cuando llegue |
 | Kiosco con cobro con tarjeta, fotos y sugerencias | Llega antes del piloto (ola 4); no está en producción | No uses el kiosco de pos-lite junto con Green Monkey: serían dos sistemas de órdenes y dos colas de cocina. | [Public ordering](PUBLIC_ORDERING.md) |
 | Impresión directa, corte de papel y apertura del cajón desde la app | No incluido | La cola `ghia-web` corta al final de cada página; el cajón no se abre al imprimir (sección 1.2). | [Service](SERVICE.md#printing-browseros) |
@@ -544,3 +544,55 @@ sola a venta sin conexión (sección 3). Si no se puede vender en la app, vende 
 y captura después. No borres datos del navegador, no desvincules la tablet y no
 reinstales la app sin hablar antes con soporte: las ventas sin sincronizar viven en esa
 tablet.
+
+## 8. Terminales y plataformas
+
+**Configurar (propietario o gerente, una vez).** En «Configuración → Pagos con tarjeta y
+plataformas»:
+
+1. Agrega cada terminal por su nombre («BBVA», «Clip Mostrador», «MP Caja») con su
+   comisión con IVA (por ejemplo 3.6 % + IVA se escribe 4.18). Una terminal Clip o
+   Mercado Pago se registra por ahora como manual: cobras en ella en modo independiente.
+2. En cada tablet de caja, elige su «Terminal predeterminada de este dispositivo». Sin
+   predeterminada y con varias terminales, el cobro con tarjeta pide «Elige la terminal».
+3. Las plataformas vienen **desactivadas**: activa solo las que usa el restaurante (para
+   Juanberto's: Uber Eats, Rappi y DiDi Food) y escribe su comisión estimada. Deja «Otra»
+   desactivada salvo que de verdad recibas pedidos de otra plataforma: cada cobro con «Otra»
+   aparece en «Finanzas → Excepciones» para revisarlo.
+4. Si los precios en la plataforma son distintos a los del mostrador, escríbelos en
+   «Precios por plataforma». Vacío: se usa el precio del mostrador. Los extras y
+   modificadores siempre usan el precio del mostrador: deja los extras de la plataforma al
+   mismo precio que en el mostrador o cobra la diferencia como una línea de precio abierto
+   (si no, el ticket y la factura declaran menos de lo que cobró la plataforma). Cuando una
+   plataforma tiene precios propios, solo acepta pedidos registrados con «Precios: esa
+   plataforma».
+5. Con tu contador, revisa «Forma de pago SAT para pedidos pagados por plataforma» en
+   la configuración de facturación (31 Intermediario pagos, recomendado).
+
+**Cobrar con tarjeta.** «Cobrar» → «Terminal externa» → elige la terminal → cobra en la
+terminal → escribe la referencia de aprobación → marca la confirmación → «Confirmar
+cobro». El recibo dice «Tarjeta · {terminal}».
+
+**Pedido de plataforma.** Al recibir el pedido en la tablet de la plataforma:
+
+1. En «Vender», con «Para llevar» o «A domicilio» (nunca mesa ni «Comer aquí»), si hay
+   precios por plataforma, elige «Precios: Uber Eats» (o la que corresponda) **antes de
+   enviar**. La orden muestra «Pedido con precios de …». Si la enviaste con precios de
+   mostrador y la plataforma tiene precios propios, la plataforma no podrá cobrarla: pide a
+   un gerente cancelarla y regístrala otra vez con sus precios.
+2. Escribe en «Nombre» el código del pedido (por ejemplo «DiDi 4F2A») y envíalo.
+3. «Cobrar» → «Plataforma» → la plataforma → número de pedido (obligatorio para Uber Eats,
+   Rappi y DiDi; se llena solo con el código del nombre, revísalo) → marca «La plataforma
+   ya cobró este pedido» → «Confirmar cobro». Cubre todo el saldo, sin propina. No entra al
+   efectivo esperado ni a la tarjeta del corte.
+
+**Cerrar caja.** El corte muestra la tarjeta por terminal y «Pagado por plataformas»
+aparte («Total plataformas»; cada nombre de «Otra» en su propia línea). Si usas terminales
+con nombre, escribe el «Total del lote» de **cada** terminal que cobró (o de ninguna): el
+cierre no acepta solo algunas. Las diferencias aparecen en «Finanzas → Excepciones».
+
+**Revisar (gerente, cada día).** En «Finanzas → Excepciones», «Pago por plataforma a revisar»
+lista los cobros con «Otra», los de una orden sin la lista de precios de esa plataforma y los
+registrados sin conexión fuera de las reglas, con quién los cobró y en qué caja. Compáralos
+con el pago de la plataforma: un pago en efectivo registrado como plataforma aparece aquí.
+

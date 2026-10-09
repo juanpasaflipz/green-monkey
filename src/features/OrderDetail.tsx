@@ -10,7 +10,7 @@ import {
   channelLabel,
   currentBusinessDate,
   orderNumberText,
-  tenderMethodLabel,
+  tenderLabel,
 } from "../labels";
 import { Badge, Button, Field, Modal } from "../components/ui";
 import { printDocument, usePrintSettings } from "../print";
@@ -377,8 +377,7 @@ export function OrderDetail({
               <div className="detail-line" key={x.id}>
                 <div className="row between">
                   <span>
-                    {tenderMethodLabel(x.method, x.source, locale)} ·{" "}
-                    {time(x.created_at)}
+                    {tenderLabel(x, locale)} · {time(x.created_at)}
                   </span>
                   <strong>{money(x.amount)}</strong>
                 </div>

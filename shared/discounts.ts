@@ -16,6 +16,7 @@ import {
 } from "./domain.js";
 import type { PayableUnit } from "./settlement.js";
 import type { RefundTaxScope } from "./fiscal.js";
+import type { TenderMethod } from "./payments.js";
 import { holdsTable } from "./service.js";
 
 export const DISCOUNT_REASONS = [
@@ -228,6 +229,12 @@ export const cashCloseInput = z
     // .optional() without a default: a legacy body parses to the same object,
     // so its once() fingerprint is unchanged (old bundles during a deploy).
     externalReported: money.nullable().optional(),
+    // payments (037): "Total del lote" per terminal; null terminalId = tenders
+    // recorded without a named terminal ("Otra terminal"). Optional, no default.
+    terminalReports: z
+      .array(z.object({ terminalId: id.nullable(), reported: money }).strict())
+      .max(40)
+      .optional(),
   })
   .strict();
 export const cashReviewInput = z
@@ -608,7 +615,7 @@ export type RefundLineView = {
 export type RefundRowView = {
   refundId: string;
   tenderId: string;
-  method: "cash" | "external";
+  method: TenderMethod;
   amount: number;
   reference: string | null;
 };
@@ -618,6 +625,8 @@ export type RefundBatchView = {
   amount: number;
   cashAmount: number;
   externalAmount: number;
+  /** payments (037): the platform tenders' part (no drawer, no terminal). */
+  platformAmount: number;
   reasonCode: string;
   note: string;
   restock: boolean;
@@ -670,7 +679,7 @@ export type AdjustmentRow = {
     refundId: string;
     tenderId: string;
     batchId: string | null;
-    method: "cash" | "external";
+    method: TenderMethod;
     amount: number;
     reference: string | null;
     reason: string;
@@ -683,6 +692,7 @@ export type AdjustmentRow = {
     amount: number;
     cashAmount: number;
     externalAmount: number;
+    platformAmount: number;
     reasonCode: string;
     note: string;
     restock: boolean;
@@ -803,6 +813,7 @@ export function composeOrderAdjustments(
         amount: r.amount,
         cashAmount: r.method === "cash" ? r.amount : 0,
         externalAmount: r.method === "external" ? r.amount : 0,
+        platformAmount: r.method === "platform" ? r.amount : 0,
         reasonCode: "other",
         note: r.reason,
         restock: false,
@@ -840,7 +851,7 @@ export type ItemRefundPlan = {
   units: { lineId: string; unit: number; tenderId: string; amount: number }[];
   byTender: {
     tenderId: string;
-    method: "cash" | "external";
+    method: TenderMethod;
     amount: number;
     reference: string | null;
   }[];

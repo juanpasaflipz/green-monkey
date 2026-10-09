@@ -10,6 +10,7 @@ import {
   quote,
   sum,
   type LineInput,
+  type PricePlatform,
   type Order,
   type Session,
 } from "../shared/domain.js";
@@ -17,6 +18,7 @@ import {
   evaluateRecordedAt,
   evidenceKey,
   formatVersionOf,
+  offlinePaymentIssue,
   offlineRecord,
   offlineSale,
   recordAmounts,
@@ -45,6 +47,7 @@ import { assertCheckWritable, refreshCheckState } from "./checks.js";
 import { fiscalContext, issueDueTicket } from "./fiscal.js";
 import { allocatePayment } from "../shared/settlement.js";
 import { placeRoundsInOfflineReview } from "./offline-kitchen.js";
+import { evidenceExtras, insertTender } from "./payments/tenders.js";
 
 /** Legacy v1/v2 cash-sale input (unchanged). */
 export const offlineInput = offlineSale;
@@ -157,13 +160,8 @@ export async function evaluateEvidence(
     [cash] = await tx`select * from cash_sessions where id=${drawerId}`;
     if (!cash || cash.device_id !== session.device_id)
       return { authentic: false, reason: "drawer", session };
-    if (
-      payment.method === "cash"
-        ? payment.received < payment.amount + payment.tip
-        : payment.received !== payment.amount + payment.tip ||
-          !payment.externalConfirmed ||
-          !payment.reference.trim()
-    )
+    // payments (037): judged per method, platform included; nothing defaults to cash.
+    if (offlinePaymentIssue(payment))
       return { authentic: false, reason: "amounts", session };
   }
   const [clock] = await tx`select clock_timestamp() as now`;
@@ -262,6 +260,8 @@ export async function verifyLines(
   lines: LineInput[],
   snapshots: unknown[] | undefined,
   expectedTotal: number,
+  /** payments (037, LD-72): the order's platform price list (null = POS prices). */
+  priceList: PricePlatform | null = null,
 ) {
   const productIds = [...new Set(lines.map((line) => line.productId))].sort();
   // Hold the catalog revisions until commit so a concurrent edit cannot change
@@ -270,7 +270,13 @@ export async function verifyLines(
     await tx`select id,data from catalog where id=any(${tx.array(productIds)}::uuid[]) order by id for share`;
   // Staff path: open-price lines are valid evidence (contract D11). Synced
   // orders and rounds snapshot tax with the server's fiscal context (027).
-  const priced = quote(lines, await catalog(tx), true, await fiscalContext(tx));
+  const priced = quote(
+    lines,
+    await catalog(tx),
+    true,
+    await fiscalContext(tx),
+    priceList,
+  );
   const problem = linesProblem(
     lines,
     snapshots,
@@ -423,7 +429,13 @@ export async function resolveOrCreateOrder(
       );
     return { orderId: created.orderId, reused: true };
   }
-  await verifyLines(tx, p.order.lines, snapshotLines(p), p.expectedTotal);
+  await verifyLines(
+    tx,
+    p.order.lines,
+    snapshotLines(p),
+    p.expectedTotal,
+    p.order.pricePlatform ?? null,
+  );
   await assertLinesNotRecorded(tx, p.order.lines);
   // Business date from the validated sale time, never the sync time (I12).
   const order = await createOrder(
@@ -432,6 +444,11 @@ export async function resolveOrCreateOrder(
     { ...p.order, channel: "offline" },
     { businessDate: ctx.businessDate },
   );
+  // PAYMENTS-CONCURRENCY-3: createOrder quotes again from a fresh snapshot; a platform price
+  // saved between the two quotes (payment_platform_prices, not held by verifyLines) sends the
+  // record to review instead of opening an order its evidence no longer pays.
+  if (order.total !== p.expectedTotal)
+    throw new DomainError("price_conflict", 409);
   return { orderId: order.id, reused: false };
 }
 
@@ -449,6 +466,8 @@ export async function newTender(
     ),
   );
   let receipt: Order;
+  // payments (037): a terminal deleted since is dropped, never the money (OFF-8).
+  const extras = await evidenceExtras(tx, payment);
   try {
     receipt = await recordPayment(
       tx,
@@ -462,9 +481,15 @@ export async function newTender(
         received: payment.received,
         externalConfirmed: payment.externalConfirmed,
         reference: payment.reference,
+        ...(extras.terminal ? { terminalId: extras.terminal.id } : {}),
+        ...(payment.platform ? { platform: payment.platform } : {}),
+        ...(payment.platformLabel
+          ? { platformLabel: payment.platformLabel }
+          : {}),
       },
       null,
       drawerId,
+      { evidence: true, droppedTerminalId: extras.droppedTerminalId },
     );
   } catch (e) {
     // Never charge past the balance (I2): the record goes to manager review.
@@ -481,6 +506,39 @@ export async function newTender(
   if (!tender) throw Error("offline tender not recorded");
   await refreshCheckState(tx, s, orderId);
   return tender.id;
+}
+
+/**
+ * A manager-reconciled offline tender (source offline_recovery) through the one tender writer,
+ * with the record's terminal or platform (payments 037; archived terminal accepted, unknown
+ * dropped). Returns the tender id.
+ */
+async function insertRecoveredTender(
+  tx: Tx,
+  s: Session,
+  t: {
+    tenderId?: string;
+    orderId: string;
+    drawerId: string;
+    payment: OfflinePayment;
+    operationId: string;
+  },
+): Promise<string> {
+  const extras = await evidenceExtras(tx, t.payment);
+  return insertTender(tx, s, {
+    tenderId: t.tenderId,
+    orderId: t.orderId,
+    drawerId: t.drawerId,
+    method: t.payment.method,
+    amount: t.payment.amount,
+    tip: t.payment.tip,
+    received: t.payment.received,
+    reference: t.payment.reference || null,
+    source: { kind: "offline_recovery", id: t.operationId },
+    clock: true,
+    terminal: extras.terminal,
+    platform: extras.platform,
+  });
 }
 
 /** Appends the immutable ledger row for an applied record. */
@@ -872,6 +930,38 @@ async function onlineCreateTarget(
   };
 }
 
+/**
+ * payments (037, LD-72; PAYMENTS-MONEY-3): the price list a record's lines sync at: an order or
+ * sale record's own, a round's target order's (read as the round applier reads it); null = POS
+ * prices, also while a round's parent has not synced yet.
+ */
+async function reviewPriceList(
+  tx: Tx,
+  p: Record<string, unknown>,
+): Promise<PricePlatform | null> {
+  if ("order" in p)
+    return (
+      (p.order as { pricePlatform?: PricePlatform | null }).pricePlatform ??
+      null
+    );
+  const target = p.target as
+    { orderId: string } | { localOrderOperationId: string } | undefined;
+  if (!target) return null;
+  let orderId: string | null;
+  if ("orderId" in target) orderId = target.orderId;
+  else {
+    const [parent] =
+      await tx`select result from operations where id=${target.localOrderOperationId} and kind='offline_sync'`;
+    orderId = parent
+      ? (parent.result.orderId ?? parent.result.id ?? null)
+      : null;
+  }
+  if (!orderId) return null;
+  const [order] =
+    await tx`select price_platform from orders where id=${orderId}`;
+  return (order?.price_platform as PricePlatform | null) ?? null;
+}
+
 /** Manager review. Throws only invalid_input or forbidden, never for evidence. */
 export async function reviewOfflineRecord(tx: Tx, s: Session, raw: unknown) {
   permit(s, managers);
@@ -892,8 +982,15 @@ export async function reviewOfflineRecord(tx: Tx, s: Session, raw: unknown) {
   let currentTotal: number | null = null;
   if (lines)
     try {
+      // PAYMENTS-MONEY-3: priced at the list the sync would use (verifyLines).
       currentTotal = sum(
-        quote(lines, await catalog(tx), true).map((line) => line.total),
+        quote(
+          lines,
+          await catalog(tx),
+          true,
+          undefined,
+          await reviewPriceList(tx, p),
+        ).map((line) => line.total),
       );
     } catch {
       /* Unavailable/deleted menu is explicitly unknown. */
@@ -1085,7 +1182,13 @@ export async function financialRecovery(
   // order, so a concurrent drawer close waits for this tender.
   const [cash] =
     await tx`select * from cash_sessions where id=${drawerOf(p)} for update`;
-  await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,source,source_id,created_at) values(${s.tenantId},${tenderId},${orderId},${cash.id},${payment.method},${payment.amount},${payment.tip},${payment.received},${payment.reference || null},'offline_recovery',${p.operationId},clock_timestamp())`;
+  await insertRecoveredTender(tx, s, {
+    tenderId,
+    orderId,
+    drawerId: cash.id,
+    payment,
+    operationId: p.operationId,
+  });
   await tx`insert into offline_recoveries(
       tenant_id,id,operation_id,order_operation_id,original_session_id,
       original_employee_id,original_device_id,original_drawer_id,actor_id,
@@ -1161,9 +1264,12 @@ export async function reconcileIntoOrder(
   const allocations = order.itemSplitAvailable
     ? allocatePayment(order.paymentUnits!, payment.amount)
     : [];
-  const tenderId = randomUUID();
-  await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,source,source_id,created_at)
-    values(${s.tenantId},${tenderId},${orderId},${drawerId},${payment.method},${payment.amount},${payment.tip},${payment.received},${payment.reference || null},'offline_recovery',${p.operationId},clock_timestamp())`;
+  const tenderId = await insertRecoveredTender(tx, s, {
+    orderId,
+    drawerId,
+    payment,
+    operationId: p.operationId,
+  });
   for (const allocation of allocations)
     await tx`insert into tender_allocations(tenant_id,order_id,tender_id,line_id,unit_index,amount)
       values(${s.tenantId},${orderId},${tenderId},${allocation.lineId},${allocation.unit},${allocation.amount})`;

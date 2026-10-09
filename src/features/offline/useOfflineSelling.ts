@@ -14,6 +14,7 @@ import type {
   Session,
 } from "../../../shared/domain";
 import { api } from "../../api";
+import type { TenderMethod } from "../../../shared/payments";
 import { useConnectivity } from "../../connectivity";
 import { db } from "../../offline";
 import {
@@ -196,10 +197,20 @@ export function useOfflineSelling({
     /** Service's PaymentDialog `offline` slot (§3.8). */
     paymentSlot: {
       allowExternal: true,
-      confirmLabel: (method: "cash" | "external") =>
-        method === "external" ? t("offlineSaveExternal") : t("saveOffline"),
-      hint: (method: "cash" | "external") =>
-        method === "external" ? t("offlineHintExternal") : t("offlineHintCash"),
+      // payments (037): a platform tender is recorded offline like a terminal one.
+      allowPlatform: true,
+      confirmLabel: (method: TenderMethod) =>
+        method === "external"
+          ? t("offlineSaveExternal")
+          : method === "platform"
+            ? t("payOfflineSavePlatform")
+            : t("saveOffline"),
+      hint: (method: TenderMethod) =>
+        method === "external"
+          ? t("offlineHintExternal")
+          : method === "platform"
+            ? t("payOfflineHintPlatform")
+            : t("offlineHintCash"),
       blockReason: paymentBlockReason
         ? translateError(paymentBlockReason, locale)
         : null,

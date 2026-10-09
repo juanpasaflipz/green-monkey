@@ -21,6 +21,7 @@ import {
   type Session,
 } from "../shared/domain";
 import {
+  offlinePaymentIssue,
   offlineRecordV3,
   type OfflinePayment,
   type OfflineRecord,
@@ -28,6 +29,7 @@ import {
   type OrderTarget,
 } from "../shared/offline-recovery";
 import { api } from "./api";
+import type { PlatformCode, TenderMethod } from "../shared/payments";
 import { clockOffset, correctedIso, deviceIso, serverNow } from "./clock";
 import {
   clockMovedBackSinceLastContact,
@@ -69,7 +71,10 @@ export type LocalReceipt = Order & {
      * This device's payment, which has no tender until it syncs; service's
      * ReceiptDocument kind="local" prints it (LD-10 B4).
      */
-    method: "cash" | "external";
+    method: TenderMethod;
+    /** payments (037): the platform of a platform tender, for the local receipt. */
+    platform?: PlatformCode;
+    platformLabel?: string;
     reference: string;
     amount: number;
     tip: number;
@@ -224,18 +229,12 @@ export function checkLines(lines: LineInput[], priced: PricedLine[]) {
 export function checkPayment(payment: OfflinePaymentInput, due: number) {
   if (!(payment.amount > 0)) fail("offline_amount_invalid");
   if (payment.amount > due) fail("offline_amount_exceeds_due");
-  if (
-    payment.method === "cash" &&
-    payment.received < payment.amount + payment.tip
-  )
-    fail("insufficient_cash");
-  if (
-    payment.method === "external" &&
-    (!payment.externalConfirmed ||
-      !payment.reference.trim() ||
-      payment.received !== payment.amount + payment.tip)
-  )
+  // payments (037): the server's own evidence rule, per method (platform included).
+  const issue = offlinePaymentIssue(payment);
+  if (issue === "insufficient_cash") fail("insufficient_cash");
+  if (issue === "external_confirmation" || issue === "external_received")
     fail("external_confirmation");
+  if (issue) fail(issue);
 }
 
 export function recordBase(
@@ -401,6 +400,10 @@ export async function saveOfflineSale(
       provisionalNumber: record.provisionalNumber,
       soldAt: record.recordedAt,
       method: input.payment.method,
+      ...(input.payment.platform ? { platform: input.payment.platform } : {}),
+      ...(input.payment.platformLabel
+        ? { platformLabel: input.payment.platformLabel }
+        : {}),
       reference: input.payment.reference,
       amount: input.payment.amount,
       tip: input.payment.tip,
@@ -572,6 +575,11 @@ type CachedOrder = {
    */
   businessDate?: string;
   serviceVersion?: number;
+  /**
+   * payments (037, LD-72): the order's platform price list; an offline round prices at it, as the
+   * server's round does (PAYMENTS-MONEY-1). Absent in copies stored before it was kept.
+   */
+  pricePlatform?: PlatformCode | null;
   lines: {
     id: string;
     productId: string;
@@ -727,6 +735,7 @@ function cachedFrom(order: Order, receivedAt: number): CachedOrder {
     createdAt: order.createdAt,
     ...(order.businessDate ? { businessDate: order.businessDate } : {}),
     serviceVersion: order.serviceVersion,
+    pricePlatform: order.pricePlatform ?? null,
     lines: order.lines.map((line) => ({
       id: line.id,
       productId: line.productId,
@@ -942,6 +951,8 @@ async function localOrders(session: Session): Promise<LocalOrderView[]> {
       tableName: tableName(body.order.tableId),
       name: body.order.name,
       note: body.order.note,
+      // PAYMENTS-MONEY-1: the order record's price list prices its next offline rounds.
+      pricePlatform: body.order.pricePlatform ?? null,
       lines,
       total,
       paid,
@@ -1040,6 +1051,8 @@ export async function cachedServerOpenOrders(
       tableName: order.tableName,
       name: order.name,
       note: order.note ?? "",
+      // PAYMENTS-MONEY-1: a cached platform-priced order keeps its list offline.
+      pricePlatform: order.pricePlatform ?? null,
       lines,
       total,
       paid,
@@ -1530,6 +1543,10 @@ export async function saveOfflinePayment(
       ...after.offline,
       soldAt: correctedIso(),
       method: input.payment.method,
+      ...(input.payment.platform ? { platform: input.payment.platform } : {}),
+      ...(input.payment.platformLabel
+        ? { platformLabel: input.payment.platformLabel }
+        : {}),
       reference: input.payment.reference,
       amount: input.payment.amount,
       tip: input.payment.tip,
@@ -1605,6 +1622,10 @@ export async function saveOfflinePartial(
     offline: {
       ...view.offline,
       method: input.payment.method,
+      ...(input.payment.platform ? { platform: input.payment.platform } : {}),
+      ...(input.payment.platformLabel
+        ? { platformLabel: input.payment.platformLabel }
+        : {}),
       reference: input.payment.reference,
       amount: input.payment.amount,
       tip: input.payment.tip,
@@ -1618,9 +1639,13 @@ export type OfflinePaymentValues = {
   amount: number;
   tip: number;
   received: number;
-  method: "cash" | "external";
+  method: TenderMethod;
   reference: string;
   confirmed: boolean;
+  /** payments (037): optional, never defaulted (record fingerprints). */
+  terminalId?: string;
+  platform?: PlatformCode;
+  platformLabel?: string;
 };
 
 /** The order to keep selling against after a partial offline payment. */
@@ -1665,16 +1690,28 @@ export async function saveOfflineCheckout(
   view: LocalOrderView | null;
 }> {
   if (items) fail("offline_split_unavailable");
-  const payment = {
+  const payment: OfflinePayment = {
     method: values.method,
     amount: values.amount,
-    tip: values.tip,
+    tip: values.method === "platform" ? 0 : values.tip,
     received:
       values.method === "external"
         ? values.amount + values.tip
-        : values.received,
-    reference: values.method === "external" ? values.reference.trim() : "",
-    externalConfirmed: values.method === "external" && values.confirmed,
+        : values.method === "platform"
+          ? values.amount
+          : values.received,
+    reference: values.method === "cash" ? "" : values.reference.trim(),
+    externalConfirmed: values.method !== "cash" && values.confirmed,
+    // payments (037): the named terminal or the platform, only when present.
+    ...(values.method === "external" && values.terminalId
+      ? { terminalId: values.terminalId }
+      : {}),
+    ...(values.method === "platform" && values.platform
+      ? { platform: values.platform }
+      : {}),
+    ...(values.method === "platform" && values.platformLabel
+      ? { platformLabel: values.platformLabel }
+      : {}),
   };
   if (cart.current) {
     const roundId = crypto.randomUUID();

@@ -6,6 +6,7 @@ import { permit, operators } from "./auth.js";
 import { audit, getOrder, once, recordPayment } from "./orders.js";
 import { bumpKitchenFeed } from "./kitchen.js";
 import { issueDueTicket } from "./fiscal.js";
+import { assertNoLiveAttempt } from "./payments/guards.js";
 import { publicOrderingEnabled } from "./account-settings.js";
 import {
   DomainError,
@@ -130,6 +131,8 @@ export async function closeCheck(
       if (o.check_state === "closed") return getOrder(tx, orderId);
       if (String(o.state).startsWith("recovery"))
         throw new DomainError("stale_order", 409);
+      // payments (037): no release while money may be in flight at a terminal.
+      await assertNoLiveAttempt(tx, orderId);
       const [m] =
         await tx`select coalesce(sum(amount),0)::int as paid from tenders where order_id=${orderId}`;
       if (o.total - m.paid > 0) throw new DomainError("balance_due", 409);
@@ -167,6 +170,9 @@ export async function recordSettlement(tx: Tx, s: Session, raw: unknown) {
     const total = p.orders.reduce((a, o) => a + o.amount, 0);
     if (total > p.received) throw new DomainError("insufficient_cash");
     await tx`select id from orders where id = any(${tx.array(p.orders.map((o) => o.id))}::uuid[]) order by id for update`;
+    // payments (037): "Cobrar juntas" is cash-only; an order with a live
+    // terminal attempt is refused before any payment (plain reads).
+    for (const o of p.orders) await assertNoLiveAttempt(tx, o.id);
     const result = [];
     for (const o of [...p.orders].sort((a, b) => a.id.localeCompare(b.id)))
       result.push(

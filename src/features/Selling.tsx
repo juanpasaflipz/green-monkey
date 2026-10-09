@@ -13,6 +13,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import {
+  listPrice,
   type Session,
   type Product,
   type Locale,
@@ -74,6 +75,9 @@ import {
 } from "../print";
 import { CartLine } from "./CartLine";
 import { PaymentDialog } from "./PaymentDialog";
+import { usePaymentOptions } from "./payments/options";
+import { PLATFORM_KEYS } from "./payments/PlatformFields";
+import type { PlatformCode } from "../../shared/payments";
 import { ReceiptModal, checkStateOf, noteEditableOf } from "./Receipt";
 import { NoteDialog } from "./OrderDetail";
 import {
@@ -128,6 +132,7 @@ export function Selling({
   online,
   active,
   navigate,
+  onPaymentSettled: onPaymentSettledProp,
 }: {
   session: Session;
   catalog: Product[];
@@ -135,6 +140,12 @@ export function Selling({
   online: boolean;
   active: boolean;
   navigate: (s: string) => void;
+  /**
+   * payments (037, critic R18): the one exit for "a payment settled on the
+   * server", whatever the method (cash, manual terminal, platform; P2's
+   * integrated charges). Loyalty's post-payment link hangs only on this.
+   */
+  onPaymentSettled?: (order: Order) => void;
 }) {
   const t = (k: Key) => strings[locale][k];
   const exponent = currencyExponent(session.restaurant.currency);
@@ -193,6 +204,9 @@ export function Selling({
   const [noteReprint, setNoteReprint] = useState<Order | null>(null);
   /** SVC-R2: one payment request at a time, from the tap until it settles. */
   const [paying, setPaying] = useState(false);
+  // payments (037): terminals and platforms for the payment dialog and the price list.
+  const [optionsRefresh, setOptionsRefresh] = useState(0);
+  const paymentOptions = usePaymentOptions(session, online, optionsRefresh);
   /**
    * SVC-R7: ids of the cart lines in a send that has not answered yet. They
    * cannot be edited and a product tap never merges into them (the ref is
@@ -785,7 +799,11 @@ export function Selling({
     const timer = setTimeout(() => setLastAddedId(null), 600);
     return () => clearTimeout(timer);
   }, [lastAddedId]);
-  const cart = priceCart(draft.lines, catalog, true);
+  // payments (037, LD-72): the order's platform price list (set at creation), else the cart's.
+  const priceList = current
+    ? (current.pricePlatform ?? null)
+    : (draft.pricePlatform ?? null);
+  const cart = priceCart(draft.lines, catalog, true, priceList);
   const priced = cart.lines.flatMap((l) => (l.priced ? [l.priced] : []));
   const draftTotal = cart.total;
   for (const l of priced) nameCache.current.set(l.id, l.name);
@@ -1067,6 +1085,14 @@ export function Selling({
     setError("");
     setNotice("");
   }
+  /** payments (037, critic R18): every server-settled payment ends here once. */
+  function onPaymentSettled(order: Order) {
+    try {
+      onPaymentSettledProp?.(order);
+    } catch {
+      // A consumer's failure never hides the receipt of money already taken.
+    }
+  }
   /**
    * SVC-R2: the in-flight flag is set synchronously on the tap and cleared
    * only when the whole collect (send, payment, recovery) settles, so a second
@@ -1168,6 +1194,7 @@ export function Selling({
                 : null;
               await settleActiveAttempt(orderId ?? null, (result, owned) => {
                 setPayment(false);
+                onPaymentSettled(result);
                 if (owned) {
                   setCurrent(result);
                   setReceipt(result);
@@ -1199,6 +1226,7 @@ export function Selling({
     const settled = (result: Order, owned = true) => {
       setPendingPayment(false);
       setPayment(false);
+      onPaymentSettled(result);
       if (!owned || epoch !== contextEpoch.current) {
         setNotice(
           t("servicePaidAfterSwitch").replace("{n}", numberText(result)),
@@ -1230,6 +1258,11 @@ export function Selling({
             method: values.method,
             reference: values.reference,
             confirmed: values.confirmed,
+            ...(values.terminalId ? { terminalId: values.terminalId } : {}),
+            ...(values.platform ? { platform: values.platform } : {}),
+            ...(values.platformLabel
+              ? { platformLabel: values.platformLabel }
+              : {}),
           },
           {
             draft,
@@ -1266,9 +1299,15 @@ export function Selling({
         method: values.method,
         // Always present: the stored attempt (paymentAttemptV1) requires both,
         // and cash sends the server defaults, so the fingerprint is unchanged.
-        externalConfirmed: values.method === "external" && values.confirmed,
-        reference: values.method === "external" ? values.reference.trim() : "",
+        externalConfirmed: values.method !== "cash" && values.confirmed,
+        reference: values.method === "cash" ? "" : values.reference.trim(),
         ...(items ? { items } : {}),
+        // payments (037): only when present (an older payload hashes as before).
+        ...(values.terminalId ? { terminalId: values.terminalId } : {}),
+        ...(values.platform ? { platform: values.platform } : {}),
+        ...(values.platformLabel
+          ? { platformLabel: values.platformLabel }
+          : {}),
       };
       submittedAttempt = {
         formatVersion: 1,
@@ -1362,6 +1401,42 @@ export function Selling({
       />
     </Field>
   );
+  // payments (037, LD-72): ring a new order at a platform's prices.
+  // Shown once some product has a platform price; with none, every list is the POS one.
+  const priceListField =
+    !current &&
+    // LD-75: a platform list is for delivery and takeaway, never a table or dine-in order.
+    draft.mode !== "dine_in" &&
+    paymentOptions.platforms.length > 0 &&
+    catalog.some((p) => p.platformPrices) ? (
+      <Field label={t("payPriceList")}>
+        <select
+          value={draft.pricePlatform ?? ""}
+          disabled={!!sending}
+          onChange={(e) => {
+            const value = e.target.value as PlatformCode | "";
+            setDraft((d) => {
+              const { pricePlatform: _old, ...rest } = d;
+              return value ? { ...rest, pricePlatform: value } : rest;
+            });
+          }}
+        >
+          <option value="">{t("payPriceListPos")}</option>
+          {paymentOptions.platforms.map((p) => (
+            <option key={p.platform} value={p.platform}>
+              {t(PLATFORM_KEYS[p.platform])}
+            </option>
+          ))}
+        </select>
+      </Field>
+    ) : current?.pricePlatform ? (
+      <p className="muted tiny">
+        {t("payPriceListLocked").replace(
+          "{platform}",
+          t(PLATFORM_KEYS[current.pricePlatform]),
+        )}
+      </p>
+    ) : null;
   const cartPanel = (
     <>
       <div className="cart-heading">
@@ -1393,6 +1468,15 @@ export function Selling({
               </span>
             </Badge>
           )}
+          {priceList && (
+            // PAYMENTS-UX-1: the price list is visible in both layouts.
+            <Badge tone="amber">
+              {t("payPlatformPriceList").replace(
+                "{platform}",
+                t(PLATFORM_KEYS[priceList]),
+              )}
+            </Badge>
+          )}
           <Badge tone={online ? "green" : "amber"}>
             {online
               ? current
@@ -1417,7 +1501,15 @@ export function Selling({
           <button
             key={mode}
             className={draft.mode === mode ? "selected" : ""}
-            onClick={() => setDraft((d) => ({ ...d, mode }))}
+            onClick={() =>
+              setDraft((d) => {
+                // LD-75: dine-in never rings at a platform's prices.
+                if (mode !== "dine_in" || !d.pricePlatform)
+                  return { ...d, mode };
+                const { pricePlatform: _old, ...rest } = d;
+                return { ...rest, mode };
+              })
+            }
           >
             {t(mode)}
           </button>
@@ -1436,6 +1528,14 @@ export function Selling({
               t(draft.mode),
               draft.name || t("serviceUnnamed"),
               ...(draft.mode === "dine_in" ? [tableName ?? t("noTable")] : []),
+              ...(priceList
+                ? [
+                    t("payPlatformPriceList").replace(
+                      "{platform}",
+                      t(PLATFORM_KEYS[priceList]),
+                    ),
+                  ]
+                : []),
               ...(draft.note ? [draft.note] : []),
             ].join(" · ")}
           </span>
@@ -1444,6 +1544,7 @@ export function Selling({
         <div className="cart-fields">
           {nameField}
           {tableField}
+          {priceListField}
         </div>
       )}
       <div className="cart-lines">
@@ -1795,7 +1896,10 @@ export function Selling({
               <span className="product-category">{p.category[locale]}</span>
               <strong>{p.name[locale]}</strong>
               <span className="product-price">
-                {p.openAmount ? t("menuOpenPriceBadge") : money(p.price)}
+                {p.openAmount
+                  ? t("menuOpenPriceBadge")
+                  : // PAYMENTS-MONEY-7: the tile shows the cart's list price.
+                    money(listPrice(p, priceList))}
               </span>
               {p.kind === "combo" && (
                 <span className="product-tag">{t("menuKindCombo")}</span>
@@ -1840,6 +1944,7 @@ export function Selling({
           locale={locale}
           currency={session.restaurant.currency}
           canOpen
+          priceList={priceList}
           onConfirm={(selection) => {
             add(picker, selection);
             setPicker(null);
@@ -1891,6 +1996,28 @@ export function Selling({
                 )}
               </>
             ),
+          }}
+          paymentOptions={paymentOptions}
+          pricePlatform={priceList}
+          dineIn={
+            current
+              ? current.mode === "dine_in" || !!current.tableId
+              : draft.mode === "dine_in" || !!draft.tableId
+          }
+          orderName={current?.name || draft.name}
+          onSetDefaultTerminal={(terminalId) => {
+            // PAYMENTS-UX-14: the outcome is said, never swallowed.
+            void api(`/payments/devices/${session.deviceId}/terminal`, {
+              operationId: crypto.randomUUID(),
+              terminalId,
+            })
+              .then(() => {
+                setOptionsRefresh((n) => n + 1);
+                setNotice(t("payDefaultSaved"));
+              })
+              .catch((e) =>
+                setNotice(`${t("payDefaultFailed")} ${errorNotice(e, locale)}`),
+              );
           }}
           onClose={() => setPayment(false)}
           onGoToCash={() => {
@@ -2018,6 +2145,7 @@ export function Selling({
         >
           {nameField}
           {tableField}
+          {priceListField}
           {noteField}
           {!current && (
             <p className="muted tiny">{t("serviceOrderNoteHint")}</p>

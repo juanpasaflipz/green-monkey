@@ -63,7 +63,12 @@ export function taxedLine(
   return line({ total, fiscal: { taxCategory: category }, ...extra });
 }
 
-export type Payment = { method: "cash" | "external"; amount: number };
+/** payments (037): platform tenders and the card type of integrated card tenders. */
+export type Payment = {
+  method: "cash" | "external" | "platform";
+  amount: number;
+  cardType?: "credit" | "debit" | "prepaid";
+};
 
 /** The CfdiTicketPayload of a paid order (no tip), as fiscal's ticketForCfdi() returns it. */
 export function cfdiPayload(o: {

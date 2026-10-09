@@ -16,6 +16,12 @@ import { audit, once } from "./orders.js";
 import { discountsByLine } from "./discounts.js";
 import { cfdiTicketsIssued, enqueueCfdiRefund } from "./cfdi/hooks.js";
 import {
+  platformLabel,
+  type CardType,
+  type PlatformCode,
+  type TenderMethod,
+} from "../shared/payments.js";
+import {
   businessDate,
   DomainError,
   id,
@@ -377,14 +383,26 @@ async function prepareTicket(
     ctx,
   });
   const tenders =
-    await tx`select method,amount,tip,external_reference,created_at from tenders
-      where order_id=${orderId} order by created_at,id`;
+    await tx`select method,amount,tip,external_reference,created_at,
+        terminal_label,platform,platform_label,card_type,card_brand,card_last4
+      from tenders where order_id=${orderId} order by created_at,id`;
+  // Frozen at issuance (027). payments (037): the optional extras appear only when set, so a
+  // cash or plain terminal ticket keeps the pre-037 shape.
   const payments = tenders.map((t) => ({
-    method: t.method as "cash" | "external",
+    method: t.method as TenderMethod,
     amount: t.amount as number,
     tip: t.tip as number,
     reference: (t.external_reference as string | null) ?? null,
     at: (t.created_at as Date).toISOString(),
+    ...(t.platform ? { platform: t.platform as PlatformCode } : {}),
+    ...(t.platform
+      ? { label: platformLabel(t.platform, t.platform_label, "es") }
+      : t.terminal_label
+        ? { label: t.terminal_label as string }
+        : {}),
+    ...(t.card_type ? { cardType: t.card_type as CardType } : {}),
+    ...(t.card_brand ? { cardBrand: t.card_brand as string } : {}),
+    ...(t.card_last4 ? { cardLast4: t.card_last4 as string } : {}),
   }));
   return {
     due: {

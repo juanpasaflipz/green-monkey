@@ -830,6 +830,14 @@ behaviour.
   dialog shows "Esta venta ya tiene factura (CFDI)…" when `useCfdiTicketStatus` reports a valid
   covering invoice or global. It asks only once the restaurant has activated CFDI (a mode; a
   paused restaurant is still asked): before that the server answers `cfdi_disabled` (409).
+- **Payments 037.** A platform tender ("Pagado por plataforma") takes the restaurant's
+  `cfdi_settings.platform_payment_form` (31 «Intermediario pagos» by default, or 03, 04, 28;
+  never 99, since every CFDI is PUE), in individual invoices, in the global part whose largest
+  ticket is a platform ticket (the stamped body is built in `freeze.ts`) and in the credit note
+  of a platform refund. A card tender whose type an integrated terminal reported takes 04
+  (credit) or 28 (debit, prepaid) without asking. An unknown tender method is refused
+  (`cfdi_payment_method_unknown`), never stamped as 01. The accountant confirms the platform
+  form before CFDI goes live ([Payments](PAYMENTS.md#cfdi)).
 - **Reports 029.** `collectAlerts()` adds the four `cfdi_*` codes (`cfdiReportAlerts`), Hoy words
   them (`cfdiReportAlertText`) and links them to Configuración; `dayCorte()` sets `extra.cfdi`
   (`cfdiCoverage`) and the corte del día prints it as "Facturación (CFDI)". All are absent while
