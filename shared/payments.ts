@@ -70,6 +70,13 @@ export const PAYMENTS_LIMITS = {
   clipDeadlineMs: { pos: 600_000, kiosk: 300_000 },
   clipWatchMs: 60_000,
   /**
+   * A delete by serial number counts as «nothing of this attempt waits on the reader» only when
+   * sent this long after the create (P2V-FIXES-2): longer than the worker's 15 s provider timeout
+   * plus the time Clip's create may still spend reaching the reader (its create waits on the
+   * reader: 400 PINPAD_TERMINAL_TIMEOUT_EXCEPTION). An earlier one queues a second, settled one.
+   */
+  clipSerialSettleMs: 60_000,
+  /**
    * A worker that serves no provider (PAYMENTS_PROVIDERS unset while charges are live) still
    * carries each pending charge to its deadline, one poll link this often (P2V-GATE-4).
    */

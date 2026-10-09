@@ -1810,6 +1810,54 @@ try {
     }
   });
 
+  await test("a slow Clip create lands after the first delete by serial (P2V-FIXES-2): a delete sent right after the timed-out create is no evidence (serial_early) and «No se cobró» stays refused; the settled check a minute after the send finds the request on the reader and withdraws it (cancelled, with its id); one create", async () => {
+    const mgr = fresh(A, ids.manager, "manager");
+    const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    fake.next("clip", "timeoutLanding");
+    const v = await start(cashier, o.id, terminals.clip, o.total);
+    assert.equal(await drive(v.id, ["unknown", "cancelled"]), "unknown");
+    assert.equal((await attemptRow(v.id)).provider_status, "serial_early");
+    await rejects(
+      resolve(mgr, v.id, {
+        outcome: "not_charged",
+        note: NOTE,
+        confirmed: true,
+      }),
+      "payments_provider_may_charge",
+    );
+    // Clip's create reaches the reader only now: before, the manager had dismissed it, the
+    // cashier took cash and the reader still charged the next card.
+    fake.land(v.id);
+    await asOwner(
+      A,
+      (
+        tx,
+      ) => tx`update payment_attempts set sent_at = now() - interval '2 minutes'
+        where id=${v.id}`,
+    );
+    await round(A);
+    const row = await attemptRow(v.id);
+    assert.deepEqual(
+      [row.state, row.provider_status, row.provider_reference],
+      ["cancelled", "serial_withdrawn", fake.chargeFor(v.id)!.id],
+    );
+    assert.equal(fake.chargeFor(v.id)!.status, "canceled");
+    assert.equal(
+      [...fake.charges.values()].filter((c) => c.reference === v.id).length,
+      1,
+      "one create",
+    );
+    const serial = (await eventsOf(v.id)).filter(
+      (e) => e.kind === "cancel_by_serial",
+    );
+    assert.equal(serial.length, 2);
+    assert.ok(
+      serial[0].detail.askedAfterMs < 60_000 &&
+        serial[1].detail.askedAfterMs >= 60_000,
+      "the second delete is the settled one",
+    );
+  });
+
   await test("an unknown charge later read as paid with no usable amount (P2V-FIXES-5): the attempt takes the provider's status and payments_provider_mismatch, «No se cobró» is refused (payments_provider_says_paid), and a manager records it", async () => {
     const mgr = fresh(A, ids.manager, "manager");
     const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
@@ -2353,6 +2401,32 @@ try {
         confirmed: true,
       }),
       "payments_provider_may_charge",
+    );
+    await round(A);
+    // That delete went out seconds after the send: a slow create may still land on the reader,
+    // so it is no evidence yet (P2V-FIXES-2) and «No se cobró» is still refused.
+    assert.deepEqual(
+      [
+        await stateOf(clipAttempt),
+        (await attemptRow(clipAttempt)).provider_status,
+      ],
+      ["unknown", "serial_early"],
+    );
+    await rejects(
+      resolve(fresh(A, ids.manager, "manager"), clipAttempt, {
+        outcome: "not_charged",
+        note: NOTE,
+        confirmed: true,
+      }),
+      "payments_provider_may_charge",
+    );
+    // The settled check, once the send is a minute old, finds nothing either: now it counts.
+    await asOwner(
+      A,
+      (
+        tx,
+      ) => tx`update payment_attempts set sent_at = now() - interval '2 minutes'
+        where id=${clipAttempt}`,
     );
     await round(A);
     assert.deepEqual(

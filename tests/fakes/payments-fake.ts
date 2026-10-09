@@ -11,6 +11,8 @@
  *     "server5xx", "timeout" (the connection drops with no answer: a lost create),
  *     "clipCreateTimeout" (alias of timeout for Clip), "timeoutTaken" (Clip: the answer is lost and
  *     the reader has already taken the request, so a delete by serial answers 400 PAYMENT_PENDING),
+ *     "timeoutLanding" (Clip: the answer is lost and the request reaches the reader only when the
+ *     test calls fake.land(ref): a delete by serial sent before finds nothing),
  *     "belowMin", "reusedOrderId" (MP: 201 with
  *     the id of the fake's newest MP order, an answer the restaurant cannot record twice, so the
  *     push fails on every claim; the same key keeps getting that answer), "terminalNotOwned" (MP:
@@ -56,7 +58,8 @@ export type Behaviour =
   | "reusedOrderId"
   | "terminalNotOwned"
   | "idempotencyKeyUsed"
-  | "timeoutTaken";
+  | "timeoutTaken"
+  | "timeoutLanding";
 type Approval = {
   paid?: number;
   tip?: number;
@@ -516,10 +519,13 @@ export async function startPaymentsFake(
         if (
           behaviour === "timeout" ||
           behaviour === "clipCreateTimeout" ||
-          behaviour === "timeoutTaken"
+          behaviour === "timeoutTaken" ||
+          behaviour === "timeoutLanding"
         ) {
           const c = newCharge("clip", body, null);
           if (behaviour === "timeoutTaken") c.status = "at_terminal";
+          // Still on its way to the reader: a delete by serial finds nothing until fake.land().
+          if (behaviour === "timeoutLanding") c.status = "landing";
           req.socket.destroy();
           return;
         }
@@ -680,6 +686,12 @@ export async function startPaymentsFake(
       return (
         [...charges.values()].find((c) => c.reference === attemptId) ?? null
       );
+    },
+    /** A "timeoutLanding" create reaches the reader now (the slow create of P2V-FIXES-2). */
+    land(ref: string) {
+      return mutate(ref, (c) => {
+        c.status = "created";
+      });
     },
     atTerminal(ref: string) {
       return mutate(ref, (c) => {

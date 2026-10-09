@@ -114,7 +114,9 @@ const isoMinutes = (text: string) => {
  * - Clip with a request id: its requests never expire, so the reader may still take it until a
  *   read or a withdrawal says it cannot (that moves the attempt to cancelled or declined itself).
  * - Clip without an id: until the worker's delete by serial number said nothing of it waits on
- *   the reader (provider_status serial_clear).
+ *   the reader (provider_status serial_clear), and only a delete sent a minute or more after the
+ *   create counts (PAYMENTS_LIMITS.clipSerialSettleMs, P2V-FIXES-2): an earlier one is serial_early,
+ *   because a slow create can still land on the reader after it.
  */
 export function providerMayStillCharge(a: AttemptRow, now = Date.now()) {
   if (a.provider === "mercadopago")

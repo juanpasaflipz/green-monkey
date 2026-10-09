@@ -118,6 +118,7 @@ const DETAIL_KEYS = new Set([
   "seq",
   "undocumented",
   "before",
+  "askedAfterMs",
 ]);
 export async function workerEvent(
   tx: Tx,

@@ -1031,6 +1031,15 @@ export const pushDead: JobDeadHook = async (ctx) => {
 /**
  * A Clip create with an unknown outcome: withdraw whatever the reader has not picked up yet
  * (documented delete by serial number). Best effort; recorded as an event either way.
+ *
+ * A delete sent right after a timed-out create proves nothing (P2V-FIXES-2): Clip's create talks
+ * to the reader synchronously (developer.clip.mx post_payment documents 400
+ * PINPAD_TERMINAL_TIMEOUT_EXCEPTION «Unable to connect to pinpad terminal»), so a create that
+ * outlived our client timeout can still land on the reader after the delete found nothing. Only a
+ * delete sent PAYMENTS_LIMITS.clipSerialSettleMs or more after the send counts as «nothing of this
+ * attempt waits on the reader» (serial_clear); an earlier one is serial_early and queues the
+ * second, settled delete. A 200 that withdrew another reference's request says nothing about this
+ * one (serial_other).
  */
 async function withdrawBySerial(
   ctx: JobContext,
@@ -1038,6 +1047,14 @@ async function withdrawBySerial(
   a: WorkerAttempt,
   account: ActiveAccount,
 ) {
+  const tenantId = ctx.job.tenantId;
+  // The delete's age from the latest send, on the database clock (sent_at's clock).
+  const askedAfterMs = await ctx.tenant(async (tx) => {
+    const [row] = await tx`select (extract(epoch from clock_timestamp()
+        - coalesce(sent_at, created_at)) * 1000)::float8 as ms
+      from payment_attempts where id=${a.id}`;
+    return Math.max(0, Math.round(Number(row?.ms ?? 0)));
+  });
   let r: CancelResult | null = null;
   try {
     r = await cancelBySerial(
@@ -1047,18 +1064,19 @@ async function withdrawBySerial(
   } catch {
     r = null;
   }
-  const tenantId = ctx.job.tenantId;
   await ctx.tenant(async (tx) => {
     await workerEvent(tx, tenantId, a.id, "cancel_by_serial", {
       cancelled: r ? r.cancelled : null,
       providerCode: r && !r.cancelled ? r.code : null,
+      askedAfterMs,
     });
     const now = await lockAttempt(tx, a.id);
     if (!r || now?.state !== "unknown" || now.provider_reference) return;
     // The evidence «No se cobró» needs for a Clip request with no id (P2-MONEY-3): Clip withdrew
     // this attempt's own request (its 200 body names it) → cancelled, nothing was charged; the
-    // reader holds a payment (400 PAYMENT_PENDING) → it may still charge; anything else → nothing
-    // of this attempt waits on the reader.
+    // reader holds a payment (400 PAYMENT_PENDING) → it may still charge; Clip withdrew another
+    // request, or answered too soon after the send → no evidence yet; nothing pending, asked late
+    // enough → nothing of this attempt waits on the reader.
     if (r.cancelled && r.reference === a.id && r.pinpadRequestId) {
       const [taken] =
         await tx`select id from payment_attempts where provider='clip'
@@ -1074,12 +1092,25 @@ async function withdrawBySerial(
         return;
       }
     }
-    const status =
-      !r.cancelled && r.code === "PAYMENT_PENDING"
+    const settle = PAYMENTS_LIMITS.clipSerialSettleMs;
+    const status = r.cancelled
+      ? "serial_other"
+      : r.code === "PAYMENT_PENDING"
         ? "serial_pending"
-        : "serial_clear";
+        : askedAfterMs >= settle
+          ? "serial_clear"
+          : "serial_early";
     await tx`update payment_attempts set provider_status=${status},version=version+1
       where id=${a.id}`;
+    if (status === "serial_early" || status === "serial_other")
+      // The settled check: a slow create has landed by then, or never will.
+      await queueRecovery(
+        tx,
+        tenantId,
+        a.id,
+        "serial2",
+        Math.max(settle - askedAfterMs, 0) + 1000,
+      );
   });
 }
 
