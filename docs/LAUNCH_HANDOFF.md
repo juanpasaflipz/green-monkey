@@ -401,7 +401,12 @@ keep where noted.
     and platform tickets go in the normal global invoice
     ([PAYMENTS.md, "CFDI"](PAYMENTS.md#cfdi)). The accountant confirms the form, and that
     the platform's commission (documented by the platform's own CFDI de retenciones) stays
-    outside the restaurant's sale.
+    outside the restaurant's sale. Before CFDI goes live, stamp in the Facturapi sandbox one
+    platform ticket individually and one inside a global, both with FormaPago 31, and check
+    the PAC accepts them (PAYMENTS-FISCAL-4; the DB suite covers 31 and 03 only against the
+    Facturapi fake). Platform modifier prices stay the counter ones: the pilot keeps the
+    platform's extras at the counter price, or charges the difference as an open-price line
+    (PAYMENTS-FISCAL-5, [PILOT_SOP.md §8](PILOT_SOP.md#8-terminales-y-plataformas)).
   - **RESICO ISR withholding is modelled (030, LD-16 L9) and sandbox-verified on
     2026-10-07.** A nominative invoice from a persona física in régimen 626 to a persona
     moral carries a 1.25 % ISR retention per concept, on the concept's base

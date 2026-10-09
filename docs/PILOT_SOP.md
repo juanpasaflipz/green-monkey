@@ -439,11 +439,19 @@ plataformas»:
 1. Agrega cada terminal por su nombre («BBVA», «Clip Mostrador», «MP Caja») con su
    comisión con IVA (por ejemplo 3.6 % + IVA se escribe 4.18). Una terminal Clip o
    Mercado Pago se registra por ahora como manual: cobras en ella en modo independiente.
-2. En cada tablet de caja, elige su «Terminal predeterminada de este dispositivo».
-3. Activa las plataformas que usa el restaurante (Uber Eats, Rappi, DiDi Food, Otra) y
-   su comisión estimada.
+2. En cada tablet de caja, elige su «Terminal predeterminada de este dispositivo». Sin
+   predeterminada y con varias terminales, el cobro con tarjeta pide «Elige la terminal».
+3. Las plataformas vienen **desactivadas**: activa solo las que usa el restaurante (para
+   Juanberto's: Uber Eats, Rappi y DiDi Food) y escribe su comisión estimada. Deja «Otra»
+   desactivada salvo que de verdad recibas pedidos de otra plataforma: cada cobro con «Otra»
+   aparece en «Finanzas → Excepciones» para revisarlo.
 4. Si los precios en la plataforma son distintos a los del mostrador, escríbelos en
-   «Precios por plataforma». Vacío: se usa el precio del mostrador.
+   «Precios por plataforma». Vacío: se usa el precio del mostrador. Los extras y
+   modificadores siempre usan el precio del mostrador: deja los extras de la plataforma al
+   mismo precio que en el mostrador o cobra la diferencia como una línea de precio abierto
+   (si no, el ticket y la factura declaran menos de lo que cobró la plataforma). Cuando una
+   plataforma tiene precios propios, solo acepta pedidos registrados con «Precios: esa
+   plataforma».
 5. Con tu contador, revisa «Forma de pago SAT para pedidos pagados por plataforma» en
    la configuración de facturación (31 Intermediario pagos, recomendado).
 
@@ -453,14 +461,24 @@ cobro». El recibo dice «Tarjeta · {terminal}».
 
 **Pedido de plataforma.** Al recibir el pedido en la tablet de la plataforma:
 
-1. En «Vender», si hay precios por plataforma, elige «Precios: Uber Eats» (o la que
-   corresponda) antes de agregar productos.
+1. En «Vender», con «Para llevar» o «A domicilio» (nunca mesa ni «Comer aquí»), si hay
+   precios por plataforma, elige «Precios: Uber Eats» (o la que corresponda) **antes de
+   enviar**. La orden muestra «Pedido con precios de …». Si la enviaste con precios de
+   mostrador y la plataforma tiene precios propios, la plataforma no podrá cobrarla: pide a
+   un gerente cancelarla y regístrala otra vez con sus precios.
 2. Escribe en «Nombre» el código del pedido (por ejemplo «DiDi 4F2A») y envíalo.
-3. «Cobrar» → «Plataforma» → la plataforma → número de pedido (opcional) → marca «La
-   plataforma ya cobró este pedido» → «Confirmar cobro». Cubre todo el saldo, sin
-   propina. No entra al efectivo esperado ni a la tarjeta del corte.
+3. «Cobrar» → «Plataforma» → la plataforma → número de pedido (obligatorio para Uber Eats,
+   Rappi y DiDi; se llena solo con el código del nombre, revísalo) → marca «La plataforma
+   ya cobró este pedido» → «Confirmar cobro». Cubre todo el saldo, sin propina. No entra al
+   efectivo esperado ni a la tarjeta del corte.
 
 **Cerrar caja.** El corte muestra la tarjeta por terminal y «Pagado por plataformas»
-aparte. Si usas terminales con nombre, escribe el «Total del lote» de cada una; las
-diferencias aparecen en «Finanzas → Excepciones».
+aparte («Total plataformas»; cada nombre de «Otra» en su propia línea). Si usas terminales
+con nombre, escribe el «Total del lote» de **cada** terminal que cobró (o de ninguna): el
+cierre no acepta solo algunas. Las diferencias aparecen en «Finanzas → Excepciones».
+
+**Revisar (gerente, cada día).** En «Finanzas → Excepciones», «Pago por plataforma a revisar»
+lista los cobros con «Otra», los de una orden sin la lista de precios de esa plataforma y los
+registrados sin conexión fuera de las reglas, con quién los cobró y en qué caja. Compáralos
+con el pago de la plataforma: un pago en efectivo registrado como plataforma aparece aquí.
 
