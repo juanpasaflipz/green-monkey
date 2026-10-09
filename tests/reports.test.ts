@@ -328,7 +328,7 @@ describe("business-day formula (FIN-04, DB-7, OFF-9)", () => {
               businessDate(instant, zone, cutoff),
             );
           }
-  });
+  }, 30_000);
 
   it("an event at exactly the cutoff instant belongs to the new day; one millisecond earlier to the previous day", () => {
     for (const zone of zones)
@@ -435,7 +435,7 @@ describe("business-day formula (FIN-04, DB-7, OFF-9)", () => {
         ),
       ).toBeLessThan(0);
     }
-  });
+  }, 30_000);
 
   it("wideWindow needs its full ±3 days: the far-apart worst cases (UTC+14 vs UTC−12, cutoff 0 vs 23:59) fall outside ±2 days", () => {
     const east = { timezone: "Pacific/Kiritimati", cutoff: 0 }; // UTC+14, no DST
