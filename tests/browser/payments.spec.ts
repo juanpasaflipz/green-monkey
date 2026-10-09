@@ -148,6 +148,10 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
     .first()
     .click();
   await expect(page.locator(".cart-lines")).toContainText("$59.00");
+  // PAYMENTS-UX-1: the price list is visible next to the cart's state.
+  await expect(page.locator(".cart-badges")).toContainText(
+    "Pedido con precios de Uber Eats",
+  );
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(
@@ -175,7 +179,10 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
     .getByRole("button", { name: "Siguiente venta", exact: true })
     .click();
 
-  // A card sale recorded on the named terminal.
+  // A card sale recorded on the named terminal, on the pilot's iPad (1024×768, the compact
+  // layout; PAYMENTS-UX-18): the card form with its terminal chips never pushes Confirm below
+  // the fold (FOH-10).
+  await page.setViewportSize({ width: 1024, height: 768 });
   await page
     .getByRole("button", { name: /Taco de hongos/ })
     .first()
@@ -187,11 +194,15 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
   await dialog.getByRole("button", { name: terminal, exact: true }).click();
   await dialog.getByLabel("Referencia de aprobación").fill("4471");
   await dialog.getByLabel("Confirmo que la terminal aprobó este pago").check();
+  await expect(
+    dialog.getByRole("button", { name: "Confirmar cobro", exact: true }),
+  ).toBeInViewport();
   await axe(page, "dialog");
   await dialog
     .getByRole("button", { name: "Confirmar cobro", exact: true })
     .click();
   await expect(page.locator(".receipt")).toContainText(`Tarjeta · ${terminal}`);
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page
     .getByRole("button", { name: "Siguiente venta", exact: true })
     .click();
@@ -203,9 +214,14 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
     .filter({ hasText: "Pagado por plataformas" });
   await expect(platforms).toContainText("Uber Eats");
   await expect(platforms).toContainText("$59.00");
+  // PAYMENTS-UX-7: the platforms total is not a terminal net.
+  await expect(platforms).toContainText("Total plataformas");
+  await expect(platforms).not.toContainText("Neto en terminal");
   const byTerminal = page.locator("table").filter({ hasText: terminal });
   await expect(byTerminal).toContainText("Tarjeta por terminal");
   await expect(byTerminal).toContainText("$45.00");
+  // PAYMENTS-UX-13: refunds have their own column.
+  await expect(byTerminal.locator("thead")).toContainText("Reembolsos");
 
   // Undo: archive the terminal, clear the price, turn Uber Eats off and clear DiDi's commission
   // (both platforms back to their default: off).
