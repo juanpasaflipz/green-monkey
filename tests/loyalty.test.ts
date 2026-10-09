@@ -24,6 +24,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { consentText, dateOnly, joinDoneText, thresholdHint } from "../src/features/loyalty/format";
 import { MemberSheet } from "../src/features/loyalty/Members";
+import { CLUB_REFRESH_MS, clubReadDue } from "../src/features/loyalty/loyaltyApi";
 import { customersVisible, type MemberDetail } from "../shared/loyalty";
 
 describe("parsePhone", () => {
@@ -500,5 +501,22 @@ describe("the stamp threshold hint follows what the owner typed (LOYALTY-UX-18)"
     expect(thresholdHint("250", "es", "MXN")).toContain("$250.00");
     expect(thresholdHint("250", "es", "MXN")).not.toContain("$400.00");
     expect(thresholdHint("abc", "es", "MXN")).toContain("$400.00");
+  });
+});
+
+describe("Vender re-reads the club (LOYALTY-UX-5)", () => {
+  const t0 = 1_000_000;
+  it("reads a restaurant it never read, and a good read again after five minutes", () => {
+    expect(clubReadDue(null, "a", t0)).toBe(true);
+    expect(clubReadDue({ tenant: "b", readAt: t0, failures: 0 }, "a", t0)).toBe(true);
+    expect(clubReadDue({ tenant: "a", readAt: t0, failures: 0 }, "a", t0 + CLUB_REFRESH_MS - 1)).toBe(false);
+    expect(clubReadDue({ tenant: "a", readAt: t0, failures: 0 }, "a", t0 + CLUB_REFRESH_MS)).toBe(true);
+  });
+  it("retries a failed read with backoff (5 s, 10 s, 20 s, … at most 5 min), never caching the failure for the shift", () => {
+    expect(clubReadDue({ tenant: "a", readAt: t0, failures: 1 }, "a", t0 + 4_999)).toBe(false);
+    expect(clubReadDue({ tenant: "a", readAt: t0, failures: 1 }, "a", t0 + 5_000)).toBe(true);
+    expect(clubReadDue({ tenant: "a", readAt: t0, failures: 2 }, "a", t0 + 9_999)).toBe(false);
+    expect(clubReadDue({ tenant: "a", readAt: t0, failures: 3 }, "a", t0 + 20_000)).toBe(true);
+    expect(clubReadDue({ tenant: "a", readAt: t0, failures: 30 }, "a", t0 + CLUB_REFRESH_MS)).toBe(true);
   });
 });

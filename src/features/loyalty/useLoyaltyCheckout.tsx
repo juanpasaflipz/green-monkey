@@ -34,6 +34,7 @@ export function useLoyaltyCheckout({
   current,
   context,
   draftId,
+  orderLabel,
 }: {
   session: Session;
   locale: Locale;
@@ -45,12 +46,23 @@ export function useLoyaltyCheckout({
   context: number;
   /** The cart's draft (its operationId). */
   draftId: string;
+  /** How Vender names an order ("#42", dated for another business day). */
+  orderLabel: (o: Order) => string;
 }) {
   const t = tr(locale);
   const club = useLoyaltyClub(session, online);
   const [member, setMember] = useState<MemberSummary | null>(null);
   const [prompt, setPrompt] = useState(false);
-  const [notice, setNotice] = useState("");
+  /**
+   * Link failures, one per order and naming it (LOYALTY-UX-3, UX-4): they stay across carts until
+   * the cashier dismisses them or a later link of that order succeeds.
+   */
+  const [failures, setFailures] = useState<{ orderId: string; text: string }[]>([]);
+  const fail = (orderId: string, text: string) =>
+    setFailures((f) => [...f.filter((x) => x.orderId !== orderId), { orderId, text }]);
+  const resolved = (orderId: string) =>
+    setFailures((f) => (f.some((x) => x.orderId === orderId) ? f.filter((x) => x.orderId !== orderId) : f));
+  const linkFailed = (o: Order) => fill(t("loyaltyLinkFailedOrder"), { order: orderLabel(o) });
   /** The cart cycle already prompted (or the cashier chose "Sin club"). */
   const prompted = useRef(false);
   /** Orders this cart linked to its member (id → member id). */
@@ -111,15 +123,16 @@ export function useLoyaltyCheckout({
     }
   }, [lines, currentId, member, club?.promptAtCheckout, online]);
 
-  async function link(orderId: string, m: MemberSummary, budget?: number) {
-    if (linked.current.get(orderId) === m.id) return true;
+  async function link(o: Order, m: MemberSummary, budget?: number) {
+    if (linked.current.get(o.id) === m.id) return true;
     try {
-      await loyaltyApi.link(orderId, m.id, budget);
-      linked.current.set(orderId, m.id);
-      forgetLoyaltyReceipt(orderId);
+      await loyaltyApi.link(o.id, m.id, budget);
+      linked.current.set(o.id, m.id);
+      forgetLoyaltyReceipt(o.id);
+      resolved(o.id);
       return true;
     } catch {
-      setNotice(t("loyaltyLinkFailed"));
+      fail(o.id, linkFailed(o));
       return false;
     }
   }
@@ -128,8 +141,9 @@ export function useLoyaltyCheckout({
     club,
     member,
     prompt,
-    notice,
-    clearNotice: () => setNotice(""),
+    /** The link failures to show, each naming its order. */
+    notices: failures,
+    dismissNotice: resolved,
     openPrompt: () => {
       prompted.current = true;
       setPrompt(true);
@@ -139,8 +153,7 @@ export function useLoyaltyCheckout({
     use(m: MemberSummary) {
       setMember(m);
       setPrompt(false);
-      setNotice("");
-      if (currentId) void link(currentId, m, LINK_BUDGET_MS);
+      if (currentId && current) void link(current, m, LINK_BUDGET_MS);
       else draftMembers.set(draftId, m);
     },
     /** "Quitar cliente": before sending, just the cart; on an open check, the link too. */
@@ -148,16 +161,23 @@ export function useLoyaltyCheckout({
       const was = member;
       setMember(null);
       draftMembers.delete(draftId);
-      if (currentId && was && linked.current.get(currentId) === was.id)
+      if (currentId && current && was && linked.current.get(currentId) === was.id) {
+        const o = current;
         void loyaltyApi
           .change(currentId, null, was.id)
-          .then(() => linked.current.delete(currentId))
-          .catch(() => setNotice(t("loyaltyLinkFailed")));
+          .then(() => {
+            linked.current.delete(currentId);
+            resolved(currentId);
+          })
+          .catch(() =>
+            fail(currentId, fill(t("loyaltyUnlinkFailedOrder"), { order: orderLabel(o) })),
+          );
+      }
     },
     /** After a send created or reached the order (fire-and-forget, 3 s). */
     afterOrderExists(o: Order) {
       if (member && club && online && isServerOrder(o))
-        void link(o.id, member, LINK_BUDGET_MS);
+        void link(o, member, LINK_BUDGET_MS);
     },
     /**
      * payments' onPaymentSettled exit (R18): link if the order is not linked yet (a create-and-pay
@@ -170,7 +190,7 @@ export function useLoyaltyCheckout({
       if (!member && !linked.current.has(o.id)) return "";
       let view: OrderLoyaltyView;
       const work = (async () => {
-        if (member && !(await link(o.id, member))) return null;
+        if (member && !(await link(o, member))) return null;
         const v = await loyaltyApi.reconcile(o.id);
         forgetLoyaltyReceipt(o.id);
         void prefetchLoyaltyReceipt(o.id);
@@ -179,7 +199,7 @@ export function useLoyaltyCheckout({
       trackLoyaltyReceiptWork(o.id, work);
       try {
         const v = await work;
-        if (!v) return t("loyaltyLinkFailed");
+        if (!v) return linkFailed(o);
         view = v;
       } catch {
         return "";

@@ -241,7 +241,13 @@ export function Selling({
     current,
     context: contextCount,
     draftId: draft.operationId,
+    orderLabel: (o) => numberText(o),
   });
+  /**
+   * The club's after-payment result (stamps, a completed card or a link failure), shown in the
+   * receipt dialog of its order, where the cashier looks (LOYALTY-UX-3).
+   */
+  const [clubResult, setClubResult] = useState<{ orderId: string; text: string } | null>(null);
   /**
    * R18: the single "payment settled" exit payments P1 introduces (stubbed until it merges). The
    * club's link, reconcile and toast hang on it; their failure is a notice, never an error.
@@ -249,10 +255,10 @@ export function Selling({
   function paymentSettled(order: Order) {
     onPaymentSettled(order);
     void loyalty.afterPayment(order).then((text) => {
-      if (
-        text &&
-        (currentRef.current?.id === order.id || receiptRef.current?.id === order.id)
-      )
+      if (!text) return;
+      setClubResult({ orderId: order.id, text });
+      // No receipt for this order on screen: the cart shows it instead.
+      if (receiptRef.current?.id !== order.id && currentRef.current?.id === order.id)
         setNotice(text);
     });
   }
@@ -1495,11 +1501,18 @@ export function Selling({
               {t("loyaltyOfflineHint")}
             </small>
           )}
-          {loyalty.notice && (
-            <p role="status" className="tiny">
-              {loyalty.notice}
+          {loyalty.notices.map((n) => (
+            <p role="status" className="tiny loyalty-failure" key={n.orderId}>
+              {n.text}{" "}
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => loyalty.dismissNotice(n.orderId)}
+              >
+                {t("loyaltyDismiss")}
+              </button>
             </p>
-          )}
+          ))}
         </div>
       )}
       {loyalty.prompt && loyalty.club && (
@@ -2024,6 +2037,7 @@ export function Selling({
           locale={locale}
           onNext={reset}
           onBack={() => setReceipt(null)}
+          status={clubResult?.orderId === receipt.id ? clubResult.text : undefined}
           label={offline.receiptProps(receipt)?.label}
           labelHint={offline.receiptProps(receipt)?.labelHint}
           printLabel={offline.receiptProps(receipt)?.printLabel}

@@ -74,8 +74,11 @@ export default defineArea({
     loyaltyOfflineHint: "El club requiere conexión.",
     loyaltyChip: "{name} · {stamps}/{required}",
     loyaltyRemove: "Quitar cliente",
-    loyaltyLinkFailed:
-      "No se pudo agregar al cliente. Agrégalo desde Detalle de orden.",
+    loyaltyLinkFailedOrder:
+      "No se pudo agregar al cliente a la orden #{order}. Agrégalo desde Detalle de orden.",
+    loyaltyUnlinkFailedOrder:
+      "No se pudo quitar al cliente de la orden #{order}. Quítalo desde Detalle de orden.",
+    loyaltyDismiss: "Cerrar aviso",
     loyaltyStampAddedOne: "{name} sumó 1 sello: {stamps} de {required}.",
     loyaltyStampAddedMany: "{name} sumó {n} sellos: {stamps} de {required}.",
     loyaltyCardCompleted: "¡{name} completó su tarjeta! Tiene {rewards} premio(s).",
@@ -305,7 +308,11 @@ export default defineArea({
     loyaltyOfflineHint: "The club needs a connection.",
     loyaltyChip: "{name} · {stamps}/{required}",
     loyaltyRemove: "Remove customer",
-    loyaltyLinkFailed: "Couldn't add the customer. Add them from Order details.",
+    loyaltyLinkFailedOrder:
+      "Couldn't add the customer to order #{order}. Add them from Order details.",
+    loyaltyUnlinkFailedOrder:
+      "Couldn't remove the customer from order #{order}. Remove them from Order details.",
+    loyaltyDismiss: "Dismiss",
     loyaltyStampAddedOne: "{name} earned 1 stamp: {stamps} of {required}.",
     loyaltyStampAddedMany: "{name} earned {n} stamps: {stamps} of {required}.",
     loyaltyCardCompleted:

@@ -209,7 +209,10 @@ test("cashier: the first item opens Cliente del club; enrollment with consent; a
   await page.getByRole("button", { name: "Confirmar cobro", exact: true }).click();
   const receipt = page.locator(".receipt");
   await expect(receipt).toContainText("Cobrado");
-  await expect(page.locator(".notice")).toContainText("Ana sumó 1 sello: 1 de 10.");
+  // The club's result is in the receipt dialog, where the cashier looks (LOYALTY-UX-3).
+  const status = page.locator(".receipt-status");
+  await expect(status).toBeVisible();
+  await expect(status).toHaveText("Ana sumó 1 sello: 1 de 10.");
   const block = receipt.locator(".loyalty-receipt-block");
   await expect(block).toContainText("1 de 10 sellos");
   await expect(block).not.toContainText("Ana");
@@ -325,6 +328,71 @@ test("walk-in and moves: a Sin club sale's Vender receipt shows and prints the j
   await expect(page.locator(".loyalty-chip")).toContainText("Ana");
   await page.getByRole("button", { name: "Nueva orden", exact: true }).click();
   await expect(page.locator(".loyalty-chip")).toHaveCount(0);
+});
+
+test("link failures name their order, clear when a later link of it succeeds and otherwise stay until dismissed (LOYALTY-UX-3, UX-4)", async ({
+  page,
+}) => {
+  await login(page);
+  await openDrawer(page);
+  await sell(page);
+  const useAna = async () => {
+    await product(page, "Taco de hongos").click();
+    const dialog = page.getByRole("dialog", { name: "Cliente del club" });
+    await dialog.getByLabel("Teléfono (10 dígitos)").fill(memberPhone);
+    await dialog.getByRole("button", { name: "Buscar", exact: true }).first().click();
+    await dialog.getByRole("button", { name: "Usar", exact: true }).click();
+    await expect(page.locator(".loyalty-chip")).toContainText("Ana");
+  };
+  const pay = async () => {
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    await page.getByRole("button", { name: "Confirmar cobro", exact: true }).click();
+    await expect(page.locator(".receipt")).toContainText("Cobrado");
+  };
+  // The send-time link fails once; the after-payment link succeeds: no failure is left behind.
+  let failures = 1;
+  await page.route("**/api/loyalty/orders/*/member", async (route) => {
+    if (failures-- > 0) await route.fulfill({ status: 409, contentType: "application/json", body: '{"error":"loyalty_retry"}' });
+    else await route.continue();
+  });
+  await useAna();
+  await pay();
+  await expect(page.locator(".receipt-status")).toContainText("Ana sumó");
+  await page.getByRole("button", { name: "Siguiente venta", exact: true }).click();
+  await expect(page.locator(".loyalty-failure")).toHaveCount(0);
+  // Every link fails: the receipt says so for that order, and the notice stays after the next
+  // sale starts until the cashier dismisses it.
+  failures = 1000;
+  await useAna();
+  await pay();
+  await expect(page.locator(".receipt-status")).toContainText(/No se pudo agregar al cliente a la orden #\d+/);
+  await page.getByRole("button", { name: "Siguiente venta", exact: true }).click();
+  const notice = page.locator(".loyalty-failure");
+  await expect(notice).toHaveCount(1);
+  await expect(notice).toContainText(/a la orden #\d+/);
+  await notice.getByRole("button", { name: "Cerrar aviso", exact: true }).click();
+  await expect(page.locator(".loyalty-failure")).toHaveCount(0);
+  await page.unroute("**/api/loyalty/orders/*/member");
+});
+
+test("another terminal turns the club off and on: Vender follows when it comes back into focus (LOYALTY-UX-5)", async ({
+  page,
+  baseURL,
+}) => {
+  await login(page);
+  await sell(page);
+  const club = page.getByRole("button", { name: "Club", exact: true });
+  await expect(club).toBeVisible();
+  const focus = () => page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await inTenant(baseURL, (tx) => tx`update loyalty_settings set enabled=false where tenant_id=${tenantId}`);
+  try {
+    await focus();
+    await expect(club).toHaveCount(0);
+  } finally {
+    await inTenant(baseURL, (tx) => tx`update loyalty_settings set enabled=true where tenant_id=${tenantId}`);
+  }
+  await focus();
+  await expect(club).toBeVisible();
 });
 
 test("offline: the Club button is disabled with its hint and the sale completes", async ({ page }) => {

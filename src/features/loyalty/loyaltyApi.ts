@@ -6,7 +6,7 @@
  * LOYALTY-OPS-1/UX-1); printing waits briefly for it (prepareLoyaltyReceipt), because
  * printDocument renders into its own root.
  */
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "../../api";
 import type { Order, Session } from "../../../shared/domain";
 import {
@@ -136,26 +136,65 @@ type ClubState = {
   view: LoyaltyClubView | null;
   /** Clientes: the club is on, or a member's data is still held (ARCO, LOYALTY-PRIVACY-3). */
   customers: { clubOn: boolean } | null;
+  /** When it was last read, and how many reads in a row failed since the last good one. */
+  readAt: number;
+  failures: number;
 };
 let club: ClubState | null = null;
+let clubRead: { tenant: string; read: Promise<void> } | null = null;
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
-/** Re-reads the club (after saving settings, or after an ARCO deletion). */
-export async function refreshClub(session: Session) {
-  try {
-    const v = (await loyaltyApi.settings()) as LoyaltyClubView &
-      Partial<LoyaltySettingsView>;
-    club = {
-      tenant: session.tenantId,
-      view: v.enabled ? v : null,
-      customers: customersVisible(v)
-        ? { clubOn: v.enabled && v.plan !== "free" }
-        : null,
-    };
-  } catch {
-    club = { tenant: session.tenantId, view: null, customers: null };
-  }
-  emit();
+
+/** Another terminal may change the club: Vender re-reads it this often (LOYALTY-UX-5). */
+export const CLUB_REFRESH_MS = 5 * 60_000;
+/**
+ * Whether the club should be read again: never read for this restaurant, older than
+ * CLUB_REFRESH_MS, or a failed read whose backoff (5 s, 10 s, 20 s, … up to 5 min) has passed.
+ */
+export function clubReadDue(
+  state: Pick<ClubState, "tenant" | "readAt" | "failures"> | null,
+  tenant: string,
+  now: number,
+): boolean {
+  if (!state || state.tenant !== tenant) return true;
+  const wait = state.failures
+    ? Math.min(CLUB_REFRESH_MS, 5000 * 2 ** (state.failures - 1))
+    : CLUB_REFRESH_MS;
+  return now - state.readAt >= wait;
+}
+/**
+ * Re-reads the club (after saving settings or an ARCO deletion, on focus, on reconnecting and
+ * periodically). A failed read keeps the last good view of this restaurant and is retried with
+ * backoff, so one transient error never hides the club for the shift.
+ */
+export function refreshClub(session: Session): Promise<void> {
+  const tenant = session.tenantId;
+  if (clubRead?.tenant === tenant) return clubRead.read;
+  const read = (async () => {
+    try {
+      const v = (await loyaltyApi.settings()) as LoyaltyClubView &
+        Partial<LoyaltySettingsView>;
+      club = {
+        tenant,
+        view: v.enabled ? v : null,
+        customers: customersVisible(v)
+          ? { clubOn: v.enabled && v.plan !== "free" }
+          : null,
+        readAt: Date.now(),
+        failures: 0,
+      };
+    } catch {
+      club =
+        club?.tenant === tenant
+          ? { ...club, readAt: Date.now(), failures: club.failures + 1 }
+          : { tenant, view: null, customers: null, readAt: Date.now(), failures: 1 };
+    } finally {
+      clubRead = null;
+    }
+    emit();
+  })();
+  clubRead = { tenant, read };
+  return read;
 }
 const useClubState = () =>
   useSyncExternalStore(
@@ -187,10 +226,29 @@ export function useLoyaltyClub(
   const snapshot = useClubState();
   const tenant = session?.tenantId ?? "";
   const role = session?.role ?? "";
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
   useEffect(() => {
     if (!session || !online || role === "kitchen") return;
-    if (club?.tenant === tenant) return;
-    void refreshClub(session);
+    const read = (force: boolean) => {
+      const s = sessionRef.current;
+      if (s && (force || clubReadDue(club, s.tenantId, Date.now())))
+        void refreshClub(s);
+    };
+    // Coming back online re-reads; so does the terminal coming back into view.
+    read(club?.tenant === tenant);
+    const onFocus = () => read(true);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") read(true);
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
+    const timer = setInterval(() => read(false), 15_000);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
+      clearInterval(timer);
+    };
   }, [tenant, online, role]);
   return snapshot && snapshot.tenant === tenant ? snapshot.view : null;
 }
@@ -214,7 +272,7 @@ export function prefetchLoyaltyReceipt(
 ): Promise<ReceiptLoyaltyView | null> {
   const cached = receipts.get(orderId);
   if (cached) return Promise.resolve(cached);
-  if (club && !club.view) return Promise.resolve(null);
+  if (club && !club.view && !club.failures) return Promise.resolve(null);
   const inFlight = receiptReads.get(orderId);
   if (inFlight) return inFlight;
   const epoch = receiptEpoch.get(orderId) ?? 0;

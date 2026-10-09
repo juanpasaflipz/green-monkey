@@ -445,6 +445,7 @@ export function ReceiptModal({
   noteActions,
   header,
   footer,
+  status,
 }: {
   order: Order;
   session: Session;
@@ -471,6 +472,8 @@ export function ReceiptModal({
   /** Forwarded to the shown and the printed ReceiptDocument. */
   header?: ReactNode;
   footer?: ReactNode;
+  /** A result to announce with the receipt (loyalty's stamps or a link failure); not printed. */
+  status?: ReactNode;
 }) {
   const t = strings[locale];
   const [settings, saveSettings] = usePrintSettings();
@@ -494,6 +497,11 @@ export function ReceiptModal({
       // prints and starts the next sale without scrolling (FOH-10).
       footer={
         <>
+          {status && (
+            <p className="notice receipt-status" role="status">
+              {status}
+            </p>
+          )}
           {error && (
             <p className="error" role="alert">
               {error}
