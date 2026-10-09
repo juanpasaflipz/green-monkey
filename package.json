@@ -65,7 +65,8 @@
     "test:acceptance:day": "bash scripts/restaurant-day.sh",
     "test:db:restaurant-day": "tsx tests/restaurant-day-db.ts",
     "stripe:tax-rate:sandbox": "tsx scripts/stripe-sandbox-tax-rate.ts",
-    "test:db:payments": "tsx tests/payments-db.ts"
+    "test:db:payments": "tsx tests/payments-db.ts && tsx tests/payments-p2-db.ts",
+    "test:db:payments-p2": "tsx tests/payments-p2-db.ts"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.3.0",
