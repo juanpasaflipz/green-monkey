@@ -97,6 +97,9 @@ export default defineArea({
     cashPlatforms:
       "Pagado por plataformas (no cuenta como efectivo ni tarjeta)",
     cashPlatformsNet: "Total plataformas",
+    cashBatchRequired: "escribe su total del lote",
+    cashBatchAllOrNone:
+      "Escribe el total del lote de cada terminal que cobró, o deja todos en blanco.",
     cashUnresolvedAttempts:
       "Hay cobros en terminal sin resolver. Un gerente debe resolverlos antes de cerrar.",
     cashTerminalFees: "Comisiones estimadas",
@@ -246,6 +249,9 @@ export default defineArea({
     cashBatchDifference: "Batch difference",
     cashPlatforms: "Paid by platforms (not cash or card)",
     cashPlatformsNet: "Platforms total",
+    cashBatchRequired: "enter its batch total",
+    cashBatchAllOrNone:
+      "Enter the batch total of every terminal that took money, or leave them all blank.",
     cashUnresolvedAttempts:
       "There are unresolved terminal charges. A manager must resolve them before closing.",
     cashTerminalFees: "Estimated fees",
@@ -432,6 +438,10 @@ export default defineArea({
     payments_platform_price_list: [
       "La orden se registró con precios de otra plataforma. Cóbrala con esa plataforma.",
       "The order was rung at another platform's prices. Charge it with that platform.",
+    ],
+    payments_batch_totals_incomplete: [
+      "Escribe el total del lote de cada terminal que cobró en esta caja, o de ninguna.",
+      "Enter the batch total of every terminal that took money in this drawer, or of none.",
     ],
     payments_platform_needs_price_list: [
       "Esta orden se registró con precios de mostrador y esa plataforma tiene precios propios. Regístrala con «Precios» de la plataforma para cobrarla con ella.",

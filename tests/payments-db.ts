@@ -1869,6 +1869,20 @@ try {
       ),
       "invalid_input",
     );
+    // PAYMENTS-SECURITY-2 / UX-3 / MONEY-2 / CONCURRENCY-5: a batch total for BBVA alone would
+    // leave «Otra terminal»'s $30.00 uncompared (and hide its shortage): every terminal holding
+    // money, or none.
+    await rejects(
+      write(closer, (tx) =>
+        closeCash(tx, closer, {
+          operationId: randomUUID(),
+          counted: 53_000,
+          reason: "",
+          terminalReports: [{ terminalId: bbva.id, reported: 3300 }],
+        }),
+      ),
+      "payments_batch_totals_incomplete",
+    );
     await write(closer, (tx) =>
       closeCash(tx, closer, {
         operationId: randomUUID(),

@@ -164,6 +164,10 @@ export function DrawerCloseDialog({
     terminalError = `${t("discountsCloseTerminal")}: ${translateError("invalid_amount", locale)}`;
   }
   const batches: { terminalId: string | null; reported: number }[] = [];
+  // PAYMENTS-UX-17: each batch field has its own error, naming its terminal.
+  const batchErrors: Record<string, string> = {};
+  const batchLabel = (row: { label: string | null }) =>
+    `${t("cashBatchTotal")} · ${row.label ?? t("payOtherTerminal")}`;
   for (const row of terminalRows) {
     const typed = batchTexts[row.terminalId ?? ""]?.trim();
     if (!typed) continue;
@@ -173,10 +177,25 @@ export function DrawerCloseDialog({
         reported: parseMoneyInput(typed, exponent),
       });
     } catch {
-      terminalError = `${t("cashBatchTotal")}: ${translateError("invalid_amount", locale)}`;
+      batchErrors[row.terminalId ?? ""] =
+        `${batchLabel(row)}: ${translateError("invalid_amount", locale)}`;
     }
   }
-  const inputError = countedError || terminalError;
+  // PAYMENTS-SECURITY-2 / UX-3 / MONEY-2: every terminal that holds money, or none (the server
+  // refuses a partial report: a blank terminal's shortage would hide).
+  if (batches.length || Object.keys(batchErrors).length)
+    for (const row of terminalRows)
+      if (
+        row.net !== 0 &&
+        !batchTexts[row.terminalId ?? ""]?.trim() &&
+        !batchErrors[row.terminalId ?? ""]
+      )
+        batchErrors[row.terminalId ?? ""] =
+          `${batchLabel(row)}: ${t("cashBatchRequired")}`;
+  const batchErrorId = (key: string) =>
+    batchErrors[key] ? `close-batch-${key || "other"}-error` : undefined;
+  const inputError =
+    countedError || terminalError || Object.values(batchErrors)[0] || "";
   const visibleDifference =
     visible && counted !== null && drawer.expected !== null
       ? counted - drawer.expected
@@ -343,27 +362,37 @@ export function DrawerCloseDialog({
           {terminalRows.length ? (
             <fieldset>
               <legend>{t("cashCardByTerminal")}</legend>
-              {terminalRows.map((row) => (
-                <Field
-                  key={row.terminalId ?? "other"}
-                  label={`${t("cashBatchTotal")} · ${row.label ?? t("payOtherTerminal")}`}
-                >
-                  <input
-                    inputMode="decimal"
-                    value={batchTexts[row.terminalId ?? ""] ?? ""}
-                    aria-invalid={!!terminalError || undefined}
-                    aria-describedby={
-                      terminalError ? "close-terminal-error" : undefined
-                    }
-                    onChange={(e) =>
-                      setBatchTexts((b) => ({
-                        ...b,
-                        [row.terminalId ?? ""]: e.target.value,
-                      }))
-                    }
-                  />
-                </Field>
-              ))}
+              <p className="muted tiny">{t("cashBatchAllOrNone")}</p>
+              {terminalRows.map((row) => {
+                const key = row.terminalId ?? "";
+                return (
+                  <div key={key || "other"}>
+                    <Field label={batchLabel(row)}>
+                      <input
+                        inputMode="decimal"
+                        value={batchTexts[key] ?? ""}
+                        aria-invalid={!!batchErrors[key] || undefined}
+                        aria-describedby={batchErrorId(key)}
+                        onChange={(e) =>
+                          setBatchTexts((b) => ({
+                            ...b,
+                            [key]: e.target.value,
+                          }))
+                        }
+                      />
+                    </Field>
+                    {batchErrors[key] && (
+                      <p
+                        className="error field-error"
+                        role="alert"
+                        id={batchErrorId(key)}
+                      >
+                        {batchErrors[key]}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
             </fieldset>
           ) : (
             <Field label={t("discountsCloseTerminal")}>

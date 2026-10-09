@@ -508,6 +508,16 @@ export async function closeDrawerRow(
   const breakdown = reports.length
     ? await drawerBreakdown(tx, d.id, { fees: false })
     : { byTerminal: [] };
+  // PAYMENTS-SECURITY-2 / UX-3 / MONEY-2 / CONCURRENCY-5: batch totals are typed for every
+  // terminal that holds money or for none. A partial report would compare external_reported (the
+  // typed rows) with the whole card net and hide a blank terminal's shortage from Excepciones.
+  if (
+    reports.length &&
+    breakdown.byTerminal.some(
+      (b) => b.net !== 0 && !reports.some((r) => r.terminalId === b.terminalId),
+    )
+  )
+    throw new DomainError("payments_batch_totals_incomplete", 400);
   const closed =
     await tx`update cash_sessions set counted=${p.counted},expected=${totals.expectedCash},
       reason=${p.reason},closed_at=clock_timestamp(),closed_by=${s.employeeId},count_mode=${mode},
