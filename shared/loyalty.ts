@@ -41,7 +41,7 @@ export function parsePhone(raw: string, country: LoyaltyCountry): string | null 
   return local && /^[2-9][0-9]{9}$/.test(local) ? "+1" + local : null;
 }
 
-/** "···· 9933": the last four digits only. */
+/** "···· 0001": the last four digits only. */
 export const maskPhone = (e164: string | null) =>
   e164 ? "···· " + e164.slice(-4) : "";
 

@@ -55,13 +55,13 @@ describe("parsePhone", () => {
   });
   it("refuses 9 and 11 digits, letters and other country codes for Mexico", () => {
     for (const raw of [
-      "554587993",
+      "555000000",
       "15550000001",
       "55500000011",
-      "55 4587 99a3",
+      "55 5000 00a1",
       "",
       "+44 20 7946 0958",
-      "52155458799",
+      "52155500000",
     ])
       expect(parsePhone(raw, "MX"), raw).toBeNull();
   });
@@ -82,7 +82,7 @@ describe("parsePhone", () => {
 
 describe("names and masks", () => {
   it("maskPhone shows the last four digits only", () => {
-    expect(maskPhone("+525550000001")).toBe("···· 9933");
+    expect(maskPhone("+525550000001")).toBe("···· 0001");
     expect(maskPhone(null)).toBe("");
   });
   it("formatPhone groups Mexican and US numbers", () => {
@@ -453,7 +453,7 @@ describe("Clientes and the ARCO sheet (LOYALTY-PRIVACY-3, PRIVACY-5, UX-12)", ()
   const imported: MemberDetail = {
     id: "00000000-0000-4000-8000-000000000001",
     firstName: "Ana",
-    maskedPhone: "···· 9933",
+    maskedPhone: "···· 0001",
     stamps: 3,
     required: 10,
     rewards: 0,
