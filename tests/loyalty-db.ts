@@ -16,6 +16,7 @@ import { apiErrorHandler } from "../server/api-errors.js";
 import { setLogSink } from "../server/logging.js";
 import { addRound, createOrder, getOrder, recordPayment } from "../server/orders.js";
 import { voidLines } from "../server/voids.js";
+import { savePlatforms } from "../server/payments/settings.js";
 import { closeCheck } from "../server/checks.js";
 import { recordRefund } from "../server/refunds.js";
 import { applyDiscount, reverseDiscount } from "../server/discounts.js";
@@ -745,19 +746,59 @@ try {
     assert.deepEqual([m.stamps, m.rewards], [2, 1]);
   });
 
-  // L9 (spec §9.2: a platform tender earns nothing) needs payments P1's 037, whose tenders.method
-  // constraint accepts 'platform'. Until then the unit tests cover the exclusion; once the
-  // constraint accepts it, this check fails so the P1 rebase writes L9 (LOYALTY-OPS-4).
-  await test("L9 gate. a platform tender earns nothing: pending payments P1 (037); this fails once tenders accept 'platform' so the rebase must write L9", async () => {
-    const [c] = await admin`select pg_get_constraintdef(oid) as def from pg_constraint
-      where conrelid='tenders'::regclass and contype='c' and pg_get_constraintdef(oid) like '%method%'`;
-    const acceptsPlatform = String(c?.def ?? "").includes("'platform'");
-    assert.equal(
-      acceptsPlatform,
-      false,
-      "tenders.method accepts 'platform' (037 merged): write L9 (link a member, pay with a platform tender, expect no earn; mixed cash + platform earns on the cash part) and remove this gate",
+  /** A platform tender (037): the whole remaining balance, no tip, confirmed, with DiDi's order code. */
+  const payPlatform = (f: Fixture, orderId: string, amount: number) =>
+    run(f.s.cashier, (tx) =>
+      recordPayment(tx, f.s.cashier, orderId, {
+        operationId: randomUUID(),
+        amount,
+        tip: 0,
+        received: amount,
+        method: "platform",
+        platform: "didi_food",
+        externalConfirmed: true,
+        reference: "4F2A",
+      }),
     );
-    console.log("SKIP L9: requires 037's platform tender (payments P1); covered by the unit tests until then");
+
+  await test("L9. a platform tender earns nothing (R15, Q9): a platform-paid order settles linked with no earn, reconciles to 0 and, unlinked, offers no join QR; cash plus platform earns on the cash part only, and the cash tip never counts", async () => {
+    const f = await clubTenant("plataforma");
+    await run(f.s.manager, (tx) =>
+      savePlatforms(tx, f.s.manager, {
+        operationId: randomUUID(),
+        platforms: [{ platform: "didi_food", enabled: true, commissionBp: 2500, expectedVersion: 0 }],
+      }),
+    );
+    const ana = await enroll(f);
+    // A $900 banquete paid by the platform: the stamp base is 0 (all cash would earn 3).
+    const o = await newOrder(f, [{ product: f.p.banquete, quantity: 1 }]);
+    await link(f, o.id, ana.id);
+    const paid = await payPlatform(f, o.id, 90000);
+    assert.deepEqual([paid.checkState, paid.tenders.map((t) => t.method)], ["closed", ["platform"]]);
+    await runJobs(f, o.id);
+    assert.deepEqual(await ledgerKinds(f, o.id), [], "a platform tender posts no earn");
+    const view = await run(f.s.cashier, (tx) => reconcileOrderRoute(tx, f.s.cashier, o.id));
+    assert.deepEqual([view.settled, view.earned, view.member?.stamps], [true, 0, 0]);
+    assert.deepEqual([(await member(f, ana.id)).stamps, (await member(f, ana.id)).lifetime_stamps], [0, 0]);
+    // The same sale with no member: its receipt offers no join QR (nothing to earn, LOYALTY-UX-7).
+    const walkIn = await newOrder(f, [{ product: f.p.banquete, quantity: 1 }]);
+    await payPlatform(f, walkIn.id, 90000);
+    assert.deepEqual(await run(f.s.cashier, (tx) => receiptLoyalty(tx, f.s.cashier, walkIn.id)), { kind: "none" });
+    // $400 cash with a $50 tip, then the platform covers the remaining $500: the base is the
+    // $400 cash part, which earns 2 at the $400 threshold (all of it would earn 3; the tip, none).
+    const mixed = await newOrder(f, [{ product: f.p.banquete, quantity: 1 }]);
+    await link(f, mixed.id, ana.id);
+    await pay(f, mixed.id, 40000, { tip: 5000 });
+    assert.deepEqual(await ledgerKinds(f, mixed.id), [], "an open balance earns nothing yet");
+    const mixedPaid = await payPlatform(f, mixed.id, 50000);
+    assert.deepEqual(
+      [mixedPaid.checkState, mixedPaid.tenders.map((t) => t.method).sort()],
+      ["closed", ["cash", "platform"]],
+    );
+    await runJobs(f, mixed.id);
+    assert.deepEqual(await ledgerKinds(f, mixed.id), ["earn:2"]);
+    const m = await member(f, ana.id);
+    assert.deepEqual([m.stamps, m.lifetime_stamps, m.ledger_stamps], [2, 2, 2]);
   });
 
   await test("L8. refunds: a partial one below the threshold posts nothing, one crossing it −1, a full one reverses all; crossing a completed unredeemed card withdraws the reward; a redeemed one leaves negative stamps; both refund paths enqueue", async () => {
