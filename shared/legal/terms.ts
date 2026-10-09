@@ -46,7 +46,9 @@ export const termsContent: LegalDocumentContent = {
         id: "pagos-terminal",
         title: "5. Pagos de tus comensales",
         paragraphs: [
-          "Green Monkey no procesa los pagos de tus comensales. Los cobros con tarjeta se hacen en una terminal externa y el personal solo registra en Green Monkey el pago confirmado en ese otro dispositivo.",
+          "Green Monkey no es un procesador de pagos y no recibe el dinero de tus comensales. El personal registra en Green Monkey los cobros hechos en una terminal externa y, si conectas tu cuenta de Mercado Pago o de Clip, también puede enviar el importe de un cobro a tu propia terminal integrada.",
+          "Cobros con terminal integrada: al conectar tu cuenta de Mercado Pago o de Clip, Green Monkey guarda cifradas sus credenciales solo para enviar a tus terminales el importe y la propina de cada cobro que inicie tu personal y para consultar su resultado. Tu proveedor procesa el cobro conforme a tu contrato con él; Green Monkey registra el pago cuando el proveedor lo confirma, con la marca, el tipo y los últimos 4 dígitos de la tarjeta que reporta y su comisión. Al desconectar la cuenta, Green Monkey borra las credenciales.",
+          "Eres responsable de tu relación con tu proveedor de pagos, de sus comisiones, contracargos y reembolsos (que se hacen en la aplicación del proveedor). Un cobro cuyo resultado no se puede confirmar queda «sin confirmar» hasta que una persona gerente lo resuelve con el historial del proveedor.",
         ],
       },
       {
@@ -162,7 +164,9 @@ export const termsContent: LegalDocumentContent = {
         id: "pagos-terminal",
         title: "5. Your guests' payments",
         paragraphs: [
-          "Green Monkey does not process your guests' payments. Card payments are taken on an external terminal, and staff only record in Green Monkey the payment confirmed on that other device.",
+          "Green Monkey is not a payment processor and does not receive your guests' money. Staff record in Green Monkey the payments taken on an external terminal and, if you connect your Mercado Pago or Clip account, can also send a payment's amount to your own integrated terminal.",
+          "Integrated terminal payments: when you connect your Mercado Pago or Clip account, Green Monkey keeps its credentials encrypted only to send your terminals the amount and tip of each charge your staff starts and to check its outcome. Your provider processes the charge under your contract with it; Green Monkey records the payment once the provider confirms it, with the card brand, type and last 4 digits it reports and its fee. When you disconnect the account, Green Monkey deletes the credentials.",
+          "You are responsible for your relationship with your payment provider, its fees, chargebacks and refunds (made in the provider's app). A charge whose outcome cannot be confirmed stays «unconfirmed» until a manager resolves it with the provider's history.",
         ],
       },
       {

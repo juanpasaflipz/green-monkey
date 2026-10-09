@@ -620,6 +620,47 @@ describe("legal documents", () => {
     );
   });
 
+  it("the terms, the privacy notice and the DPA cover integrated card payments: Mercado Pago and Clip, card brand/type/last 4, credential custody, the transmission on the restaurant's instructions (critic R40, P2-SECURITY-2)", () => {
+    const text = (doc: LegalDocumentKey, id: string, locale: "es" | "en") =>
+      LEGAL_CONTENT[doc][locale].sections
+        .find((x) => x.id === id)!
+        .paragraphs.join(" ")
+        .toLowerCase();
+    for (const [locale, last4, custody, noProcess] of [
+      [
+        "es",
+        "últimos 4 dígitos",
+        "guarda cifradas",
+        "no es un procesador de pagos",
+      ],
+      [
+        "en",
+        "last 4 digits",
+        "keeps them encrypted",
+        "is not a payment processor",
+      ],
+    ] as const) {
+      for (const provider of ["mercado pago", "clip"]) {
+        expect(text("terms", "pagos-terminal", locale)).toContain(provider);
+        expect(text("dpa", "objeto", locale)).toContain(provider);
+        expect(text("dpa", "transferencias", locale)).toContain(provider);
+        expect(text("privacy", "restaurantes", locale)).toContain(provider);
+      }
+      expect(text("terms", "pagos-terminal", locale)).toContain(noProcess);
+      expect(text("dpa", "objeto", locale)).toContain(last4);
+      expect(text("dpa", "objeto", locale)).toContain(custody);
+      expect(text("privacy", "restaurantes", locale)).toContain(last4);
+      // Never the full number: the text says so (the adapters discard it).
+      expect(text("dpa", "objeto", locale)).toMatch(
+        locale === "es" ? /número completo/ : /full number/,
+      );
+    }
+    // The old clause («staff only record ...») is gone: it is false with integrated charging.
+    expect(text("terms", "pagos-terminal", "es")).not.toContain(
+      "no procesa los pagos de tus comensales",
+    );
+  });
+
   it("every published version's text is pinned: a text change without a new version fails (LEGAL-8, Código de Comercio Art. 49)", () => {
     // Add a line here when a new version ships; never edit an existing one.
     const PUBLISHED: Record<
@@ -629,18 +670,26 @@ describe("legal documents", () => {
       privacy: {
         "2026-10-06":
           "30c412cea63b811aca906f95f7f7964b6ba69580e4d6a14e2d07d5caeac27e85",
+        "2026-10-09":
+          "41c8fa8e220bbaa6e81f89c1a9f61ad991d14cc54f0f6f198cc84c45f2e41f05",
       },
       terms: {
         "2026-10-06":
           "419e6f331b875a5e68eee218d1307d92757fc471eb8f214f445dcce3e2ab3bcd",
+        "2026-10-09":
+          "0d2a29069456c7bccd38b6dd8394895ed748579ece212ae455eb183c3da6c4a4",
       },
       dpa: {
         "2026-10-06":
           "e27b6ca16653d26a9a31627f7837a96e5c341a4ddf75daa78efc322dc4cc23bb",
+        "2026-10-09":
+          "36be309554fd8733c9b6d2786a9fade700f69519ed7c2a6d45fb47617374887b",
       },
       billing_consent: {
         "2026-10-06":
           "f8d6b72d4a9f528126e3e292bc06d88e41e8ceed87289da561e14cd8e6cba90f",
+        "2026-10-09":
+          "d13021aecb6b7a425b0fa80bd161b74707c090979fbe239c9c4cc456e2a3e68e",
       },
     };
     for (const doc of Object.keys(PUBLISHED) as Array<keyof typeof PUBLISHED>) {

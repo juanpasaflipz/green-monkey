@@ -25,6 +25,7 @@ export const dpaContent: LegalDocumentContent = {
         paragraphs: [
           "Empleados: nombre, usuario, rol, PIN cifrado, turnos y tarifa por hora. La tarifa por hora es un dato financiero o patrimonial: el restaurante debe obtener el consentimiento expreso de sus empleados (artículo 7).",
           "Comensales: nombre o alias en las órdenes y notas de las órdenes. Una nota de alergia vinculada a un nombre es un dato sensible (artículos 2, fracción VI, y 8); recomendamos usar alias.",
+          "Datos de tarjeta de los cobros con terminal integrada, cuando el restaurante conecta su cuenta de Mercado Pago o de Clip: la marca, el tipo (crédito, débito o prepago) y los últimos 4 dígitos que reporta el proveedor. Green Monkey no recibe ni guarda el número completo, la fecha de vencimiento, el código de seguridad ni el nombre del titular. Las credenciales del restaurante con ese proveedor (token de acceso, llaves y clave de notificaciones): Green Monkey las recibe en un sobre cifrado, las guarda cifradas solo para enviar los cobros a las terminales del restaurante y consultar su resultado, y las borra cuando el restaurante desconecta la cuenta o las reemplaza.",
           "Receptores de CFDI, cuando el restaurante activa la facturación electrónica: RFC, nombre o razón social, régimen fiscal, código postal y correo electrónico de quien pide su factura, que Green Monkey envía a Facturapi para timbrar el CFDI y entregarlo por correo.",
           "El certificado de sello digital (CSD) del restaurante y su contraseña: Green Monkey los recibe en un sobre cifrado, los entrega a Facturapi para que pueda timbrar los CFDI del restaurante y borra su copia.",
         ],
@@ -91,6 +92,7 @@ export const dpaContent: LegalDocumentContent = {
         title: "11. Transferencias",
         paragraphs: [
           "Green Monkey no transfiere los datos a terceros, salvo las comunicaciones que la ley exige o que hace por instrucción del responsable, como el envío de los datos de un CFDI a un proveedor autorizado de certificación para su timbrado y, por su conducto, al SAT (artículo 36); y las órdenes de autoridad competente, que informará al responsable cuando la ley lo permita.",
+          "Por instrucción del responsable, cuando conecta su cuenta de Mercado Pago o de Clip, Green Monkey envía a ese proveedor, con las credenciales del restaurante, el importe, la propina, una referencia y una descripción («Orden» y su número) de cada cobro con terminal integrada, y recibe de él su resultado, la comisión y los datos de tarjeta de la sección 2. Mercado Pago y Clip prestan su servicio al restaurante conforme a sus propios contratos con él; no son subencargados de Green Monkey.",
         ],
       },
     ],
@@ -112,6 +114,7 @@ export const dpaContent: LegalDocumentContent = {
         paragraphs: [
           "Employees: name, login, role, hashed PIN, shifts and hourly rate. The hourly rate is financial or property data: the restaurant must obtain its employees' express consent (article 7).",
           "Guests: name or alias on orders and order notes. An allergy note tied to a name is sensitive data (articles 2, section VI, and 8); we recommend using aliases.",
+          "Card data of integrated terminal payments, when the restaurant connects its Mercado Pago or Clip account: the brand, type (credit, debit or prepaid) and last 4 digits the provider reports. Green Monkey never receives or stores the full number, the expiry date, the security code or the cardholder's name. The restaurant's credentials with that provider (access token, keys and notification secret): Green Monkey receives them in an encrypted envelope, keeps them encrypted only to send charges to the restaurant's terminals and check their outcome, and deletes them when the restaurant disconnects or replaces the account.",
           "CFDI recipients, when the restaurant enables electronic invoicing: the RFC, name or legal name, tax regime, postal code and email of whoever requests an invoice, which Green Monkey sends to Facturapi to stamp the CFDI and deliver it by email.",
           "The restaurant's digital seal certificate (CSD) and its password: Green Monkey receives them in an encrypted envelope, hands them to Facturapi so it can stamp the restaurant's CFDI, and deletes its copy.",
         ],
@@ -178,6 +181,7 @@ export const dpaContent: LegalDocumentContent = {
         title: "11. Transfers",
         paragraphs: [
           "Green Monkey does not transfer the data to third parties, except communications the law requires or that it makes on the controller's instructions, such as sending a CFDI's data to an authorized certification provider for stamping and, through it, to the SAT (article 36); and orders from a competent authority, which it will report to the controller where the law allows.",
+          "On the controller's instructions, when it connects its Mercado Pago or Clip account, Green Monkey sends that provider, with the restaurant's credentials, the amount, tip, a reference and a description («Orden» and its number) of each integrated terminal charge, and receives from it the outcome, the fee and the card data in section 2. Mercado Pago and Clip serve the restaurant under their own contracts with it; they are not Green Monkey's sub-processors.",
         ],
       },
     ],

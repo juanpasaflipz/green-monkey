@@ -162,7 +162,9 @@ Every outcome writes an attempt event and an audit row, and Excepciones lists it
 
 ### Privacy inputs for the legal set (critic R40)
 
-Payments supplies these lines; the loyalty track drafts them into the platform privacy notice and DPA in `shared/legal/*` (LD-74), and counsel reviews them (LD-3):
+P2 drafted these lines into `shared/legal/*` itself (LD-78, P2-SECURITY-2): legal version 2026-10-09 of the terms (§5), the privacy notice (§6) and the DPA (§2, §11), each a separate paragraph entry so the merge with loyalty's club lines (same version string) is a union; the pinned hashes and change lines of the merged version are recomputed then (`tests/legal.test.ts`). Counsel reviews them before the set is published (LD-3):
+
+- **Terms §5 («Pagos de tus comensales»):** Green Monkey is not a payment processor and never receives diners' money; with a connected Mercado Pago or Clip account it sends the amount and tip of each charge staff start to the restaurant's own terminal, keeps the account's credentials encrypted for that alone, records the payment the provider confirms (card brand, type, last 4, fee) and deletes the credentials on disconnect; the restaurant owns the provider relationship (fees, chargebacks, refunds in the provider's app); an unconfirmed charge waits for a manager. The old clause («el personal solo registra el pago confirmado en ese otro dispositivo») was false with P2 and is replaced.
 
 - **Data categories (DPA §2):** card brand, card type and the last 4 digits of a card charged on an integrated terminal (stored on the tender and the attempt; never the full number, the expiry or the cardholder's name, which the adapters discard). No diner identity is stored on an attempt.
 - **Transmission (DPA §11):** on the restaurant's instruction, the amount, tip, an opaque reference (the attempt id) and, for Mercado Pago, a description ("Orden {n}") go to the restaurant's own Mercado Pago or Clip account; Green Monkey keeps the restaurant's provider credentials sealed (custody), opened only by the payments worker.

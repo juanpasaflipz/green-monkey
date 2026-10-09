@@ -106,19 +106,63 @@ const FIRST_VERSION = {
   changes: FIRST,
 } as const;
 
+/**
+ * The integrated card payments version of the terms, the privacy notice and the DPA (037 P2,
+ * critic R40, P2-SECURITY-2): terms §5 describes integrated charging and the custody of the
+ * restaurant's provider credentials; the DPA adds the card brand/type/last-4 category (§2) and
+ * the transmission to the restaurant's own Mercado Pago or Clip (§11); the privacy notice adds
+ * the encargado line (§6). Counsel reviews the text before the legal set is published (LD-3).
+ * Not a material change, for the reason loyalty's club version gives (no account had accepted a
+ * published version: production signup stays paused until the set is published, LD-72/LD-74).
+ * The loyalty track ships its club lines as the same version string: at the merge the two are
+ * one version whose text is the union (the pinned hashes and change lines are recomputed then).
+ */
+const PAYMENTS_VERSION = {
+  version: "2026-10-09",
+  requiresAcceptanceSince: "2026-10-06",
+  previousVersion: "2026-10-06",
+  previousRequiresAcceptanceSince: "2026-10-06",
+  announcedAt: "2026-10-09",
+  effectiveFrom: "2026-10-09",
+} as const;
+
 export const LEGAL_DOCUMENTS: Record<LegalDocumentKey, LegalDocumentMeta> = {
   privacy: {
-    ...FIRST_VERSION,
+    ...PAYMENTS_VERSION,
+    changes: {
+      es: [
+        "Cobros con terminal integrada (Mercado Pago, Clip): datos de tarjeta y credenciales del restaurante (§6).",
+      ],
+      en: [
+        "Integrated terminal payments (Mercado Pago, Clip): card data and the restaurant's credentials (§6).",
+      ],
+    },
     path: "/legal/privacidad",
     enPath: "/legal/privacy",
   },
   terms: {
-    ...FIRST_VERSION,
+    ...PAYMENTS_VERSION,
+    changes: {
+      es: [
+        "Cobros con terminal integrada con tu cuenta de Mercado Pago o de Clip (§5).",
+      ],
+      en: [
+        "Integrated terminal payments with your Mercado Pago or Clip account (§5).",
+      ],
+    },
     path: "/legal/terminos",
     enPath: "/legal/terms",
   },
   dpa: {
-    ...FIRST_VERSION,
+    ...PAYMENTS_VERSION,
+    changes: {
+      es: [
+        "Cobros con terminal integrada: datos de tarjeta y credenciales (§2) y envío a Mercado Pago o Clip por instrucción del restaurante (§11).",
+      ],
+      en: [
+        "Integrated terminal payments: card data and credentials (§2) and sending to Mercado Pago or Clip on the restaurant's instructions (§11).",
+      ],
+    },
     path: "/legal/encargo-de-datos",
     enPath: "/legal/data-processing",
   },
