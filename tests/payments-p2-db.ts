@@ -62,7 +62,11 @@ import { saveFiscalProfile } from "../server/fiscal.js";
 import { newTender } from "../server/offline-sync.js";
 import { acceptHold } from "../server/public-holds.js";
 import { discountExpectation, planDiscount } from "../shared/discounts.js";
-import { archiveTerminal, saveTerminal } from "../server/payments/settings.js";
+import {
+  archiveTerminal,
+  paymentOptions,
+  saveTerminal,
+} from "../server/payments/settings.js";
 import {
   disableProvider,
   providerCapabilities,
@@ -3418,6 +3422,107 @@ try {
     hooks.mercadopago = back.webhookUrl;
     await drain(A);
     assert.deepEqual((await caps(A)).mercadopago, { enabled: true });
+  });
+
+  await test("providers switched off while charges are live (P2V-GATE-4): with PAYMENTS_PROVIDERS unset the worker has no runtime, yet each pending charge keeps one poll link a minute (never a retry) and becomes unknown (payments_provider_unavailable) at its deadline, alerted; «Tarjeta» offers manual terminals only, /capabilities says worker_not_configured, a manager resolves the MP charge, no job dies; with the providers back a re-check resumes the Clip one", async () => {
+    const mgr = fresh(A, ids.manager, "manager");
+    const pollsOf = (attemptId: string) =>
+      count(
+        A,
+        (
+          tx,
+        ) => tx`select count(*)::int as n from jobs where kind='payments_poll'
+          and state in ('queued','available','running') and payload->>'attemptId'=${attemptId}`,
+      );
+    const oM = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const m = await pending(oM, terminals.mp);
+    const oC = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const c = await pending(oC, terminals.clip);
+    const deadBefore = dead.length;
+    // The operator unsets PAYMENTS_PROVIDERS: the worker boots with no runtime and serves none.
+    setPaymentsRuntime(null);
+    await publish([]);
+    try {
+      await round(A);
+      for (const x of [m, c]) {
+        assert.equal(await stateOf(x.id), "pending", "before the deadline");
+        assert.equal(await pollsOf(x.id), 1, "the chain lives on");
+        const [link] = await asOwner(
+          A,
+          (
+            tx,
+          ) => tx`select attempts, next_at > now() + interval '50 seconds' as later
+            from jobs where kind='payments_poll' and state in ('queued','available')
+              and payload->>'attemptId'=${x.id}`,
+        );
+        assert.deepEqual(
+          [link.attempts, link.later],
+          [0, true],
+          "a new link a minute later, not a retry of this one",
+        );
+      }
+      // Past both deadlines (MP: expiry + 2 min; Clip: 10 min), still no provider.
+      await asOwner(
+        A,
+        (
+          tx,
+        ) => tx`update payment_attempts set sent_at = now() - interval '13 minutes'
+          where id in (${m.id}, ${c.id})`,
+      );
+      const mark = logLines.length;
+      await round(A);
+      for (const x of [m, c]) {
+        const row = await attemptRow(x.id);
+        assert.deepEqual(
+          [row.state, row.error_code],
+          ["unknown", "payments_provider_unavailable"],
+        );
+        assert.equal(await pollsOf(x.id), 0);
+      }
+      assert.ok(
+        logLines
+          .slice(mark)
+          .some(
+            (l) =>
+              l.includes('"message":"alert"') &&
+              l.includes(`payments_attempt_unknown_${A.slice(0, 8)}`),
+          ),
+        "the operations alert fired",
+      );
+      // The app with the providers off: manual terminals only, and /capabilities says why.
+      const options = await write(cashier, (tx) => paymentOptions(tx, cashier));
+      assert.equal(options.integratedAvailable, false);
+      assert.deepEqual(
+        options.terminals.filter((t) => t.integrated),
+        [],
+      );
+      assert.ok(options.terminals.some((t) => t.kind === "manual"));
+      assert.deepEqual(await caps(A), {
+        mercadopago: { enabled: false, reason: "worker_not_configured" },
+        clip: { enabled: false, reason: "worker_not_configured" },
+      });
+      const o3 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+      await rejects(
+        start(cashier, o3.id, terminals.mp, o3.total),
+        "payments_provider_unavailable",
+      );
+      // MP's order expired with its margin: a manager's «No se cobró» frees the order.
+      await resolve(mgr, m.id, {
+        outcome: "not_charged",
+        note: NOTE,
+        confirmed: true,
+      });
+      assert.equal(await stateOf(m.id), "dismissed");
+      assert.equal(dead.length, deadBefore, "no job went dead");
+    } finally {
+      setPaymentsRuntime(runtime);
+      await publish(["mercadopago", "clip"]);
+    }
+    // Providers back: «Volver a consultar» reads the Clip request again (still on the reader,
+    // never taken), its chain resumes, and its deadline withdraws it.
+    await resolve(cashier, c.id, { outcome: "check" });
+    assert.equal(await drive(c.id, ["cancelled"]), "cancelled");
+    assert.equal(fake.charges.get(c.ref)!.status, "canceled");
   });
 
   await test("upload boxes (P2-SECURITY-1): a save replaced before its job ran is wiped when that job runs; a box whose job never ran is swept by the disconnect; a verification job that goes dead wipes its box and fails the account instead of leaving it «Verificando»", async () => {

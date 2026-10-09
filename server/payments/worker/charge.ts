@@ -55,6 +55,7 @@ import {
   type WorkerAttempt,
 } from "./runtime.js";
 import { PAYMENTS_LIMITS } from "../../../shared/payments.js";
+import { sendAlert } from "../../ops/alerts.js";
 
 const id = (v: unknown) =>
   typeof v === "string" &&
@@ -1124,6 +1125,63 @@ async function clipDeadline(ctx: JobContext, rt: PaymentsRuntime, l: Usable) {
   if (unknown) raise(rt, unknownAlert(tenantId, "no_final_status"));
 }
 
+/**
+ * payments_poll on a worker that serves no provider: PAYMENTS_PROVIDERS unset or emptied while
+ * charges are live (P2V-GATE-4). Nothing can be read or withdrawn, but the chain still carries a
+ * pending attempt to its deadline (one link a minute, never a retry that would use up the job's
+ * claims), where it becomes unknown (payments_provider_unavailable), alerted, for a manager to
+ * resolve: the same path as an account that cannot be used. A watched Clip request keeps its
+ * watch, so reads resume once the providers are back.
+ */
+async function pollWithoutProviders(
+  ctx: JobContext,
+  attemptId: string,
+  chain: string,
+  seq: number,
+): Promise<JobOutcome> {
+  const tenantId = ctx.job.tenantId;
+  const unknown = await ctx.tenant(async (tx) => {
+    const a = await lockAttempt(tx, attemptId);
+    if (!a || !a.provider_reference) return false;
+    if (clipWatch(a)) {
+      await schedulePoll(
+        tx,
+        tenantId,
+        attemptId,
+        chain,
+        seq + 1,
+        PAYMENTS_LIMITS.clipWatchMs,
+      );
+      return false;
+    }
+    if (a.state !== "pending") return false;
+    if (Date.now() <= deadline(a)) {
+      await schedulePoll(
+        tx,
+        tenantId,
+        attemptId,
+        chain,
+        seq + 1,
+        PAYMENTS_LIMITS.providersOffPollMs,
+      );
+      return false;
+    }
+    await tx`update payment_attempts set state='unknown',error_code='payments_provider_unavailable',
+        version=version+1 where id=${attemptId}`;
+    await workerEvent(tx, tenantId, attemptId, "unknown", {
+      code: "payments_provider_unavailable",
+      source: "no_providers",
+    });
+    return true;
+  });
+  // No runtime, so no payments alert sink: the operations sink (ALERT_WEBHOOK_URL).
+  if (unknown)
+    void sendAlert(unknownAlert(tenantId, "providers_off")).catch(
+      () => undefined,
+    );
+  return { status: "done" };
+}
+
 /** payments_poll: one read of a pending attempt, then the next link of its chain. */
 export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
   const rt = paymentsRuntime();
@@ -1139,12 +1197,7 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
       : "p";
   const seq = Number.isInteger(p?.seq) ? (p.seq as number) : 1;
   if (!attemptId) return { status: "dead", code: "invalid_payload" };
-  if (!rt)
-    return {
-      status: "retry",
-      code: "payments_provider_unavailable",
-      afterMs: 60_000,
-    };
+  if (!rt) return pollWithoutProviders(ctx, attemptId, chain, seq);
   const tenantId = ctx.job.tenantId;
   // A database failure throws here: the runner retries this link with back-off (never "done",
   // which would end the chain with the attempt pending).

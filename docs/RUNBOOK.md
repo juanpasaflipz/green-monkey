@@ -555,6 +555,14 @@ completó»). Money may or may not have been taken. Nothing retries on its own.
    credenciales** (allowed while charges are live; they keep polling meanwhile and are
    re-read once the account is active). A single 401/403 on an order never fails an account:
    only the provider's own verification call refusing the same credentials does.
+5. Switching integrated charging off (`PAYMENTS_PROVIDERS` unset or emptied on the worker,
+   P2V-GATE-4): first let «Cobros en terminal en curso» empty on every register and disconnect
+   the restaurants' accounts. A charge still live when the worker restarts without providers
+   is never stranded: its poll chain keeps running (one link a minute) and at its deadline
+   it becomes «Sin confirmar» (`payments_provider_unavailable`, alert
+   `payments_attempt_unknown_<tenant>` from the operations sink), resolved like any unknown
+   outcome above. Nothing reaches the provider meanwhile, so for Clip cancel the request on
+   the reader.
 
 **Payments: notification failures.** Notifications only make the worker read sooner: charges
 still settle by polling (every 5 s on Mercado Pago and 2 s on Clip for 3 minutes, then every
