@@ -170,6 +170,7 @@ describe("shared/payments constants and helpers", () => {
         name: "Clip ficticio",
         kind: "clip_pinpad",
         providerDeviceId,
+        feeBp: null,
       }).success;
     expect(save("..")).toBe(false);
     expect(save(".")).toBe(false);
