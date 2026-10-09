@@ -1,7 +1,7 @@
 // Payments (037) client unit tests, phase P1: tender labels on receipts and lists, the offline
 // drawer totals, Excepciones text, the tender CSV and the corte of a drawer with terminals and
 // platforms. Pure: no database, no browser.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   offlineMethodKey,
   tenderLabel,
@@ -27,6 +27,20 @@ import {
   type ExceptionRow,
   type TenderReportRow,
 } from "../shared/reports";
+import { readsPaymentOptions } from "../src/features/payments/options";
+
+// options.ts caches the answer in the offline store.
+vi.mock("../src/offline", async () => ({
+  db: (await import("./offline-fake-db")).fakeDb,
+}));
+
+describe("payment options (restaurant-day G4)", () => {
+  it("only the operator roles the route permits read GET /payments/options; a kitchen display never asks", () => {
+    expect(readsPaymentOptions("kitchen")).toBe(false);
+    for (const role of ["owner", "manager", "cashier", "server"])
+      expect(readsPaymentOptions(role)).toBe(true);
+  });
+});
 
 describe("tender labels (receipts, Órdenes, Caja)", () => {
   it("names the platform, the terminal and the card; recovered and unknown methods keep their labels", () => {
