@@ -252,6 +252,9 @@ local and CI clusters need (contract C-11):
   `CREATE INDEX CONCURRENTLY`; each statement must be idempotent;
 - refuses a pooled (`-pooler`) host and, in staging/production, a superuser,
   BYPASSRLS, CREATEROLE or `neon_superuser` login;
+- loyalty (038) adds a guarded `DO` block to `scripts/grants.sql` (SELECT and INSERT on its four
+  tables, column UPDATEs on settings, members' contact and redaction columns and links; no DELETE;
+  balances only through the ledger trigger), so the manifest still applies to schemas before 038;
 - with `--grants`, the reviewed grants manifest `scripts/grants.sql` for
   `PG_APP_USER` commits in the **same transaction as the newest pending
   migration**, before its `schema_migrations` row. Readiness keys on that row,

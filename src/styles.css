@@ -1356,6 +1356,13 @@ th {
   }
 }
 @media (max-width: 800px) {
+  /* The cart's bottom row (Guardar borrador, Descuento, the club's Canjear premio, the saved
+     note) wraps on a portrait tablet or a phone instead of pushing the page sideways
+     (restaurant-day L6-redeem @768x1024); a landscape tablet keeps one line, so Caja 1's lines
+     never scroll out of view (FOH-10, restaurant-day A13). */
+  .cart-actions {
+    flex-wrap: wrap;
+  }
   .topbar {
     padding: 0 12px;
     gap: 12px;

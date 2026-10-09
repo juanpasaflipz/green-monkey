@@ -107,6 +107,13 @@ export type OrderDef = {
   };
   /** lines removed from the draft before sending (86) */
   removed?: number[];
+  /**
+   * Branch L (loyalty spec §9.4): what the cashier does at the "Cliente del club" prompt the
+   * first line opens: enroll a new member, look one up by phone, or "Sin club".
+   */
+  club?: "enroll" | "lookup" | "skip";
+  /** Branch L: "Canjear premio" on one unit of this line, after "Enviar productos primero". */
+  reward?: { line: number };
   payment: Payment | null;
 };
 
@@ -1262,6 +1269,171 @@ export const CHECKS_B: CheckDef[] = [
       { lines: [{ product: "FL", qty: 1 }] },
     ],
     payments: [{ method: "cash", amount: 44500, bill: 500 }],
+  },
+];
+
+/**
+ * Branch L (loyalty spec §9.4, lead decision LD-80): a third restaurant, created like A and B,
+ * that runs the club through the UI: a member joins at the prompt, earns a full card, redeems it,
+ * and a refund reverses one of her stamps. A counter service in Mexico City with a SAT test RFC;
+ * no stock, modifiers or kitchen display (nothing here is about them).
+ */
+export const RESTAURANT_L = {
+  owner: {
+    name: "Inés Robledo Garza",
+    email: "ines.robledo@elmezquite.invalid",
+    subjectSeed: "restaurant-day/owner-l",
+  },
+  name: "Tortas El Mezquite",
+  timezone: "America/Mexico_City",
+  fiscal: {
+    rfc: "IIA040805DZ4",
+    legalName: "Tortas El Mezquite",
+    regime: "601",
+    regimeLabel: "601 — General de Ley Personas Morales",
+    receiptRegime: "601 General de Ley Personas Morales",
+    zip: "03100",
+    street: "Av. Coyoacán 1435",
+    neighborhood: "Del Valle",
+    municipality: "Benito Juárez",
+    state: "Ciudad de México",
+    series: "L",
+  },
+  staff: [
+    {
+      key: "ines",
+      name: "Inés Robledo Garza",
+      role: "owner",
+      roleLabel: "Propietario",
+      pin: "604913",
+    },
+    {
+      key: "joaquin",
+      name: "Joaquín Peralta",
+      role: "manager",
+      roleLabel: "Responsable",
+      pin: "582047",
+    },
+    {
+      key: "mariana",
+      name: "Mariana Ríos",
+      role: "cashier",
+      roleLabel: "Cajero",
+      pin: "736158",
+    },
+  ] satisfies Staff[],
+  devices: ["Caja"],
+  stock: [] as StockDef[],
+  groups: [] as GroupDef[],
+  categories: ["Tortas", "Bebidas"],
+  products: [
+    {
+      id: "TM",
+      name: "Torta de milanesa",
+      category: "Tortas",
+      kind: "product",
+      price: 9500,
+      station: "Cocina",
+      groups: [],
+      recipe: [],
+      cost: 3200,
+      tax: "default",
+    },
+    {
+      id: "TC",
+      name: "Torta cubana",
+      category: "Tortas",
+      kind: "product",
+      price: 12000,
+      station: "Cocina",
+      groups: [],
+      recipe: [],
+      cost: 4800,
+      tax: "default",
+    },
+    {
+      id: "RV",
+      name: "Refresco de vidrio",
+      category: "Bebidas",
+      kind: "product",
+      price: 3000,
+      station: "Barra",
+      groups: [],
+      recipe: [],
+      cost: 1100,
+      tax: "default",
+    },
+  ] satisfies ProductDef[],
+  openingCash: 100000,
+};
+
+/**
+ * Restaurant L's club (Configuración › Club de lealtad): three stamps a card, one stamp per paid
+ * purchase plus one per full $50.00 of its stamp base (non-platform tenders net of refunds), and
+ * the default reward, one product up to $150.00. Rosa and her 55 5000 0xxx phone are fictional.
+ */
+export const CLUB_L = {
+  programName: "Club El Mezquite",
+  privacyNoticeUrl: "https://elmezquite.invalid/aviso-de-privacidad",
+  stampsRequired: 3,
+  threshold: 5000,
+  rewardCap: 15000,
+  rewardDescription: "Un producto gratis",
+  member: { name: "Rosa Ibáñez", firstName: "Rosa", phone: "5550000271" },
+};
+
+/**
+ * Branch L order book (Mariana collects every sale). L1: Rosa joins at the prompt and her first
+ * purchase completes a card; L2: a walk-in answers "Sin club" and gets the join QR; L3: Rosa
+ * redeems her reward on the torta cubana and pays the rest by card.
+ */
+export const ORDERS_L: OrderDef[] = [
+  {
+    id: "L1",
+    number: 1,
+    cashier: "mariana",
+    callName: "Rosa",
+    club: "enroll",
+    lines: [
+      { product: "TM", qty: 1 },
+      { product: "RV", qty: 1 },
+    ],
+    payment: { method: "cash", bill: 200 },
+  },
+  {
+    id: "L2",
+    number: 2,
+    cashier: "mariana",
+    club: "skip",
+    lines: [{ product: "TM", qty: 1 }],
+    payment: { method: "cash", bill: 100 },
+  },
+  {
+    id: "L3",
+    number: 3,
+    cashier: "mariana",
+    callName: "Rosa",
+    club: "lookup",
+    reward: { line: 0 },
+    lines: [
+      { product: "TC", qty: 1 },
+      { product: "RV", qty: 1 },
+    ],
+    payment: { method: "external", ref: "300003" },
+  },
+];
+
+/** Branch L: a cash refund on L1 that lowers its stamp base below a threshold (Joaquín approves). */
+export const REFUNDS_L: RefundDef[] = [
+  {
+    id: "RL1",
+    order: "L1",
+    actor: "mariana",
+    approver: "joaquin",
+    method: "cash",
+    amount: 3000,
+    reasonLabel: "Producto con defecto o queja",
+    explanation: "Refresco sin gas",
   },
 ];
 

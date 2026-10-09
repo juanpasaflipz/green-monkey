@@ -102,6 +102,9 @@ export const TABLE_LEVEL: Record<string, number> = {
   payment_platform_prices: LEVEL.config,
   payment_provider_accounts: LEVEL.config,
   payment_device_terminals: LEVEL.config,
+  // loyalty (038; ARCHITECTURE LO-3, LO-R10): member rows FOR NO KEY UPDATE, the settings row
+  loyalty_members: LEVEL.config,
+  loyalty_settings: LEVEL.config,
   order_numbers: LEVEL.orderNumbers,
   public_hold_numbers: LEVEL.orderNumbers,
   orders: LEVEL.orders,

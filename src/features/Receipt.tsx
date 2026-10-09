@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 import { lineRemaining } from "../../shared/settlement";
 import { changeDue, orderNoteEditable, roundNotes } from "../../shared/service";
 import {
@@ -77,6 +77,48 @@ export type ReceiptSlot = (p: {
   locale: Locale;
 }) => ReactNode;
 const receiptSlots: { header?: ReceiptSlot; footer?: ReceiptSlot } = {};
+/**
+ * Blocks other areas print after the footer (loyalty 038's club block). Kept apart from fiscal's
+ * footer `extra`, which replaces fiscal's invoicing line and prints only with a ticket.
+ */
+const receiptExtras = new Map<string, ReceiptSlot>();
+export function setReceiptExtra(area: string, slot: ReceiptSlot | null) {
+  if (slot) receiptExtras.set(area, slot);
+  else receiptExtras.delete(area);
+}
+/** Data an area's block needs before a receipt prints (loyalty's club block). Never throws. */
+export type ReceiptPrepare = (p: {
+  order: Order;
+  kind: ReceiptKind;
+}) => Promise<unknown>;
+const receiptPrepares = new Map<string, ReceiptPrepare>();
+export function setReceiptPrepare(area: string, prepare: ReceiptPrepare | null) {
+  if (prepare) receiptPrepares.set(area, prepare);
+  else receiptPrepares.delete(area);
+}
+/**
+ * Waits, at most `ms`, for every area's data for this receipt: printDocument renders into its own
+ * root right away, so a block still loading would print empty. Never throws.
+ */
+export async function prepareReceipt(
+  order: Order,
+  kind: ReceiptKind,
+  ms = 2000,
+): Promise<void> {
+  if (!receiptPrepares.size) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    Promise.all(
+      [...receiptPrepares.values()].map((prepare) =>
+        prepare({ order, kind }).catch(() => undefined),
+      ),
+    ),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, ms);
+    }),
+  ]);
+  clearTimeout(timer);
+}
 /**
  * Registers receipt header/footer content once, at startup. Every
  * ReceiptDocument then shows it: the receipt modal and its print, and the
@@ -358,6 +400,9 @@ export function ReceiptDocument({
         </>
       )}
       {bottom}
+      {[...receiptExtras].map(([area, extra]) => (
+        <Fragment key={area}>{extra(slot)}</Fragment>
+      ))}
     </div>
   );
 }
@@ -396,6 +441,7 @@ export function ReceiptModal({
   noteActions,
   header,
   footer,
+  status,
 }: {
   order: Order;
   session: Session;
@@ -422,6 +468,8 @@ export function ReceiptModal({
   /** Forwarded to the shown and the printed ReceiptDocument. */
   header?: ReactNode;
   footer?: ReactNode;
+  /** A result to announce with the receipt (loyalty's stamps or a link failure); not printed. */
+  status?: ReactNode;
 }) {
   const t = strings[locale];
   const [settings, saveSettings] = usePrintSettings();
@@ -445,6 +493,11 @@ export function ReceiptModal({
       // prints and starts the next sale without scrolling (FOH-10).
       footer={
         <>
+          {status && (
+            <p className="notice receipt-status" role="status">
+              {status}
+            </p>
+          )}
           {error && (
             <p className="error" role="alert">
               {error}
@@ -464,8 +517,11 @@ export function ReceiptModal({
               </select>
             </label>
             <Button
-              onClick={() => {
-                if (!local) void auditPrint(order.id, "receipt", reprint);
+              onClick={async () => {
+                if (!local) {
+                  void auditPrint(order.id, "receipt", reprint);
+                  await prepareReceipt(order, kind);
+                }
                 void printDocument(
                   <ReceiptDocument
                     order={order}

@@ -6,7 +6,8 @@
  * void, offline evidence or public ordering rows (tests assert the
  * allow-list). It redacts in place only (redactionRules): the diner name and
  * note of public ordering holds older than 30 days, which 034's transition
- * trigger allows as a redaction-only update (LD-41, PUBLIC-SECURITY-3).
+ * trigger allows as a redaction-only update (LD-41, PUBLIC-SECURITY-3), and the
+ * name and phone of loyalty members inactive for 24 months (038).
  *
  * Both tables force row-level security and the runtime role has no DELETE,
  * so the pass runs as the schema owner from GitHub Actions: once per deploy
@@ -212,6 +213,19 @@ export const redactionRules: readonly {
     table: "public_order_holds",
     set: `name = '', note = ''`,
     predicate: `(name <> '' OR note <> '') AND created_at < now() - interval '30 days'`,
+  },
+  // Loyalty (038, specs/loyalty-w4.md §2.11, §3.3): a club member with no activity for 24 months
+  // (the last ledger row other than an import, else the last pos-lite visit, else joining) loses
+  // name, phone and the notice snapshot; the member, ledger and order links stay (no loyalty row
+  // is ever deleted). 038's guard trigger lets this first redaction through; 038's partial index
+  // loyalty_members_inactive serves the predicate.
+  {
+    table: "loyalty_members",
+    set: `name = '', name_key = '', phone_e164 = NULL, consent_notice_url = NULL,
+        marketing_opt_in = false, redacted_at = now(), redaction_reason = 'retention',
+        version = version + 1, updated_at = now()`,
+    predicate: `redacted_at IS NULL
+    AND coalesce(last_activity_at, legacy_last_visit_at, joined_at) < now() - interval '24 months'`,
   },
 ];
 

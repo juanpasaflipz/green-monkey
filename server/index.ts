@@ -81,6 +81,8 @@ import { cfdiCapability } from "./cfdi/hooks.js";
 import * as accountRoutes from "./routes/account.js";
 import * as publicOrderingRoutes from "./routes/public-ordering.js";
 import * as paymentsRoutes from "./routes/payments.js";
+import * as loyaltyRoutes from "./routes/loyalty.js";
+import { loyaltyCapability } from "./loyalty/settings.js";
 import {
   paymentRecoveryStatus,
   retryPaymentRecovery,
@@ -158,6 +160,8 @@ cfdiRoutes.registerPreAuth({ app, sql });
 accountRoutes.registerPreAuth({ app, sql });
 // payments (037): provider webhooks (P2) are pre-auth, before authentication (critic R31).
 paymentsRoutes.registerPreAuth({ app, sql });
+// loyalty (038, R31): the diner's /club page, after account's pre-auth routes and payments'.
+loyaltyRoutes.registerPreAuth({ app, sql });
 app.use("/api", authentication(sql));
 // account (031): every /api/account-data/* path is owner-only with a recent step-up (C30).
 app.use("/api/account-data", accountRoutes.accountDataGuard);
@@ -475,6 +479,7 @@ route("get", "/capabilities", async (tx) => ({
   facturapi: await cfdiCapability(tx),
   printer: { enabled: false, reason: "device_not_paired" },
   resend: { enabled: false, reason: "sender_and_sandbox_required" },
+  loyalty: await loyaltyCapability(tx),
 }));
 opsRoutes.register({ app, sql, route });
 accessRoutes.register({ app, sql, route });
@@ -489,12 +494,13 @@ accountRoutes.register({ app, sql, route });
 publicOrderingRoutes.register({ app, sql, route });
 // Wave 4 authenticated routes, in order: payments, loyalty, kiosk (critic R31).
 paymentsRoutes.register({ app, sql, route });
+loyaltyRoutes.register({ app, sql, route });
 app.use("/api", (_req, res) => res.status(404).json({ error: "not_found" }));
 if (process.env.NODE_ENV === "production") {
   // Diner pages (public ordering 032) stay out of search indexes; helmet
   // already sends Referrer-Policy: no-referrer on every response.
   app.use((req, res, next) => {
-    if (/^\/(qr|kiosk)(\/|$)/.test(req.path))
+    if (/^\/(qr|kiosk|club)(\/|$)/.test(req.path))
       res.set("X-Robots-Tag", "noindex");
     next();
   });

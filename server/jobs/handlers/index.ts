@@ -10,3 +10,4 @@ import "./ops.js";
 // import "./reports.js";
 // import "./cfdi.js";
 // import "./account.js";
+import "./loyalty.js";

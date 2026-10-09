@@ -15,6 +15,7 @@ import {
   LogOut,
   ChevronDown,
   CircleHelp,
+  HeartHandshake,
 } from "lucide-react";
 import type { Session, Locale, Product } from "../shared/domain";
 import { strings, errorNotice, type Key } from "./i18n";
@@ -92,8 +93,22 @@ installFiscalReceipt();
 import { clearCfdiStatus, prefetchCfdiStatus } from "./features/cfdi/status";
 import { cfdiReceiptExtra } from "./features/cfdi/CfdiReceiptBlock";
 import { setFiscalFooterExtra } from "./features/fiscal/FiscalReceipt";
+import { setReceiptExtra, setReceiptPrepare } from "./features/Receipt";
+import {
+  loyaltyReceiptExtra,
+  loyaltyReceiptPrepare,
+} from "./features/loyalty/LoyaltyReceiptBlock";
+import {
+  useLoyaltyClub,
+  useLoyaltyCustomers,
+} from "./features/loyalty/loyaltyApi";
+import { Members } from "./features/loyalty/Members";
 // cfdi (030): the printed self-invoicing block in fiscal's footer `extra` slot.
 setFiscalFooterExtra((p) => cfdiReceiptExtra(p));
+// loyalty (038): the club block after the footer (its own slot: it prints with or without a
+// fiscal ticket and never replaces fiscal's or cfdi's lines).
+setReceiptExtra("loyalty", loyaltyReceiptExtra);
+setReceiptPrepare("loyalty", loyaltyReceiptPrepare);
 type StepUpRequest = {
   sessionId: string;
   resolve: () => void;
@@ -110,6 +125,10 @@ export default function App() {
   const net = useConnectivity();
   const online = net.canUseServer;
   const inbox = usePublicInbox(session, online);
+  // loyalty (038): the club for Vender; Clientes shows while the club is on, or while any member's
+  // data is held (ARCO on every plan and with the club off, LOYALTY-PRIVACY-3).
+  useLoyaltyClub(session, online);
+  const customers = useLoyaltyCustomers(session);
   const [error, setError] = useState("");
   const [ticketsOpen, setTicketsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -633,6 +652,7 @@ export default function App() {
             ["operation", ShoppingBag],
             ["inventory", Package],
             ["finance", ChartNoAxesCombined],
+            ...(customers ? [["customers", HeartHandshake]] : []),
             ["team", Users],
             ["settings", Settings],
           ]
@@ -689,7 +709,7 @@ export default function App() {
                 aria-current={current ? "page" : undefined}
               >
                 <Glyph size={20} strokeWidth={current ? 2.4 : 2} />
-                <span>{t(name as Key)}</span>
+                <span>{t(name === "customers" ? "loyaltyNav" : (name as Key))}</span>
                 {(name === "orders" || name === "operation") && (
                   <NavBadge count={inbox.pending} />
                 )}
@@ -856,6 +876,14 @@ export default function App() {
               locale={locale}
               online={online}
               navigate={setView}
+            />
+          ) : view === "customers" ? (
+            <Members
+              key={`${scope(session)}:${view}`}
+              session={session}
+              locale={locale}
+              online={online}
+              clubOn={customers?.clubOn ?? false}
             />
           ) : (
             <Operations

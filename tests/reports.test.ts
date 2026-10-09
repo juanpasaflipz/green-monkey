@@ -690,6 +690,10 @@ describe("audit groups and exception kinds (GAP-3)", () => {
     expect(groupsOf("cfdi.invoice.stamped")).toEqual(["fiscal"]);
     expect(groupsOf("account.owner.transferred")).toEqual(["access"]);
     expect(groupsOf("public.hold_decided")).toEqual(["sales"]);
+    // loyalty (038, R27): its own Bitácora group.
+    expect(groupsOf("loyalty.reward.redeemed")).toEqual(["loyalty"]);
+    expect(groupsOf("loyalty.member.deleted")).toEqual(["loyalty"]);
+    expect(groupsOf("loyalty.settings.saved")).toEqual(["loyalty"]);
     for (const op of [
       "public.link_created",
       "public.settings_saved",

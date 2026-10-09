@@ -21,7 +21,7 @@ import {
   type DeviceName,
   type Devices,
 } from "../restaurant-day/ui.js";
-import { setupA, setupB } from "../restaurant-day/setup-flows.js";
+import { setupA, setupB, setupL } from "../restaurant-day/setup-flows.js";
 import { preflight } from "../restaurant-day/preflight.js";
 import { serviceB } from "../restaurant-day/service-b.js";
 import { crossRestaurant } from "../restaurant-day/cross.js";
@@ -33,6 +33,7 @@ import {
 } from "../restaurant-day/service-a.js";
 import { serviceA4, serviceA5 } from "../restaurant-day/close-a.js";
 import { serviceA3 } from "../restaurant-day/outage.js";
+import { serviceL } from "../restaurant-day/club-l.js";
 
 test.skip(
   process.env.RD_ACCEPTANCE !== "1",
@@ -149,5 +150,18 @@ test.describe("restaurant day", () => {
   test("X1 cross-restaurant isolation", async () => {
     test.setTimeout(3 * 60_000);
     await crossRestaurant(dev, state);
+  });
+
+  // Branch L (loyalty spec §9.4, LD-80): the club runs in its own restaurant, so
+  // A's and B's sales, tables and literal tables never meet it.
+  test.describe("L: Tortas El Mezquite", () => {
+    test("L setup (L1–L2)", async () => {
+      test.setTimeout(5 * 60_000);
+      await setupL(dev, state, saveState);
+    });
+    test("L club day (L3–L8)", async () => {
+      test.setTimeout(6 * 60_000);
+      await serviceL(dev, state);
+    });
   });
 });

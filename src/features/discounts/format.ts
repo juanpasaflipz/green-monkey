@@ -4,6 +4,7 @@ import {
   type DiscountReason,
   type OrderDiscount,
   type RefundReason,
+  RESERVED_DISCOUNT_REASON,
 } from "../../../shared/discounts";
 import { strings, type Key } from "../../i18n";
 
@@ -44,6 +45,8 @@ export const DISCOUNT_REASON_LABELS: Record<DiscountReason, Key> = {
   promotion: "discountsReasonPromotion",
   regular_customer: "discountsReasonRegularCustomer",
   other: "discountsReasonOther",
+  // loyalty (038 §2.6): recorded by "Canjear premio" only; prints "Recompensa del club".
+  loyalty_reward: "discountsReasonLoyaltyReward",
 };
 /** Refund reason labels (see DISCOUNT_REASON_LABELS). */
 export const REFUND_REASON_LABELS: Record<RefundReason, Key> = {
@@ -77,10 +80,13 @@ export function reasonLabel(
 
 /** "Descuento 10 %", "Descuento" or "Cortesía". */
 export function discountRowLabel(
-  d: Pick<OrderDiscount, "kind" | "percentBps">,
+  d: Pick<OrderDiscount, "kind" | "percentBps"> & { reasonCode?: string },
   locale: Locale,
 ): string {
   const t = strings[locale];
+  // loyalty (038 §2.6): a club reward reads "Recompensa del club", never "Cortesía".
+  if (d.reasonCode === RESERVED_DISCOUNT_REASON)
+    return t[DISCOUNT_REASON_LABELS.loyalty_reward];
   if (d.kind === "comp") return t.discountsRowComp;
   if (d.kind === "percent" && d.percentBps)
     return fill(t.discountsRowPercent, {

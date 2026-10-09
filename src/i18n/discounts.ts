@@ -71,6 +71,7 @@ export default defineArea({
     discountsReasonPromotion: "Promoción",
     discountsReasonRegularCustomer: "Cliente frecuente",
     discountsReasonOther: "Otro (explica en la nota)",
+    discountsReasonLoyaltyReward: "Recompensa del club",
     discountsRefundTitle: "Reembolso · Orden #{n}",
     discountsRefundModeItems: "Por productos",
     discountsRefundModeAmount: "Por importe",
@@ -350,6 +351,7 @@ export default defineArea({
     discountsReasonPromotion: "Promotion",
     discountsReasonRegularCustomer: "Regular customer",
     discountsReasonOther: "Other (explain in the note)",
+    discountsReasonLoyaltyReward: "Loyalty reward",
     discountsRefundTitle: "Refund · Order #{n}",
     discountsRefundModeItems: "By item",
     discountsRefundModeAmount: "By amount",
@@ -562,6 +564,11 @@ export default defineArea({
     discountsDrawerOpenOffline: "Opening the drawer needs a connection.",
   },
   errors: {
+    // loyalty (038 §4.5): the reward reason is recorded only by "Canjear premio".
+    discount_reason_reserved: [
+      "Ese motivo solo se usa al canjear premios del club.",
+      "That reason is only used to redeem club rewards.",
+    ],
     discount_invalid: [
       "Revisa el descuento: un porcentaje entre 0.01 y 100 o un importe mayor que cero.",
       "Check the discount: a percentage between 0.01 and 100 or an amount above zero.",

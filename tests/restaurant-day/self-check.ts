@@ -19,9 +19,9 @@ function sortRows<T extends Record<string, unknown>>(day: T): T {
 
 export function oracleDay() {
   const day = oracle();
-  return { A: sortRows(day.A), B: sortRows(day.B) };
+  return { A: sortRows(day.A), B: sortRows(day.B), L: day.L };
 }
 
 export function expectedDay() {
-  return { A: sortRows(EXPECTED.A), B: sortRows(EXPECTED.B) };
+  return { A: sortRows(EXPECTED.A), B: sortRows(EXPECTED.B), L: EXPECTED.L };
 }

@@ -22,6 +22,7 @@ import {
   type ApprovalContext,
 } from "./discounts.js";
 import { assertRefundAllowed, recordRefundTax } from "./fiscal.js";
+import { loyaltyRefundRecorded } from "./loyalty/hooks.js";
 import { recipeStockIds } from "../shared/menu.js";
 import {
   businessDate,
@@ -151,6 +152,8 @@ export async function insertRefundBatch(
     );
     refundIds.push(refundId);
   }
+  // loyalty (038, R19): the last statement of the batch; a refund lowers the stamp base.
+  await loyaltyRefundRecorded(tx, s, b.orderId, batchId);
   return { batchId, refundIds, refundLineIds };
 }
 

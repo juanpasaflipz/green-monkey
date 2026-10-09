@@ -16,6 +16,12 @@ export const EMPTY_PAYMENT_OPTIONS: PaymentOptions = {
 const key = (s: Pick<Session, "tenantId" | "deviceId">) =>
   `payments-options:${s.tenantId}:${s.deviceId}`;
 
+/**
+ * GET /payments/options is for operators (server permit, P1 §6). A kitchen display mounts Vender
+ * hidden, so it never asks: a 403 there is a console error on every KDS sign-in (restaurant-day G4).
+ */
+export const readsPaymentOptions = (role: string) => role !== "kitchen";
+
 /** The last good GET /payments/options; empty until the first answer. */
 export function usePaymentOptions(
   session: Pick<Session, "tenantId" | "deviceId" | "role">,
@@ -31,7 +37,7 @@ export function usePaymentOptions(
         if (live && row?.value) setOptions(row.value as PaymentOptions);
       })
       .catch(() => {});
-    if (online)
+    if (online && readsPaymentOptions(session.role))
       void api<PaymentOptions>("/payments/options")
         .then(async (fresh) => {
           if (!live) return;

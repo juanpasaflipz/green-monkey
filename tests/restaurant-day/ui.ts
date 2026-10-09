@@ -48,6 +48,8 @@ export type DeviceName =
   | "sofiaB"
   | "tomasB"
   | "cocinaB"
+  | "ownerL"
+  | "cajaL"
   | "probe"
   | "probe2";
 
@@ -79,6 +81,9 @@ export const DEVICE_SPECS: Record<DeviceName, Spec> = {
   sofiaB: { width: 390, height: 844, tz: "America/Tijuana" },
   tomasB: { width: 390, height: 844, tz: "America/Tijuana" },
   cocinaB: { width: 768, height: 1024, tz: "America/Tijuana" },
+  // Branch L (loyalty spec §9.4): the owner's computer and the one register.
+  ownerL: { width: 1440, height: 900, tz: "America/Mexico_City" },
+  cajaL: { width: 1024, height: 768, tz: "America/Mexico_City" },
   probe: { width: 1024, height: 768, tz: "America/Mexico_City" },
   probe2: { width: 1024, height: 768, tz: "America/Mexico_City" },
 };

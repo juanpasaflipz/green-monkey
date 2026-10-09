@@ -232,6 +232,18 @@ to 20,000 rows and then say "La exportación se detuvo en 20,000 filas. Reduce e
 writer is `shared/csv.ts` (cfdi and fiscal reuse it). For Excel set to another locale use
 "Datos → Desde texto/CSV".
 
+## Club de lealtad (038)
+
+Finanzas › "Club de lealtad" ([Loyalty](LOYALTY.md)), owners and managers, one read-only snapshot for
+the business-date range (92 days at most): members (total, new in the period, imported, with purchases),
+stamps (earned, reversed, adjustments), rewards (earned net of withdrawals, redeemed net of
+restorations, the redemption rate, and their value as active `loyalty_reward` discounts by the order's
+business date), member sales (Σ stamp base of linked settled orders and its share of all settled
+sales) and the top 10 members by visits. The check `loyalty_ledger_vs_members` shows an alert when a
+member's cached balances differ from their ledger. Rewards are discounts, so the drawer, cortes and
+Excepciones need no change: they show "Recompensa del club" as any discount. The Bitácora has a
+"Club de lealtad" group (`loyalty.*`).
+
 ## Roles and plans
 
 Hoy, Finanzas, CSV and the corte del día: owners and managers. Cortes: see "Access" above.

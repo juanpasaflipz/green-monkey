@@ -91,6 +91,16 @@ export const EXPORT_TABLE_LABELS: Readonly<
     "Kitchen display versions",
   ],
   line_voids: ["Anulaciones", "Voids"],
+  loyalty_ledger: ["Movimientos del club de lealtad", "Loyalty club activity"],
+  loyalty_members: ["Socios del club de lealtad", "Loyalty club members"],
+  loyalty_order_links: [
+    "Órdenes de socios del club",
+    "Loyalty club member orders",
+  ],
+  loyalty_settings: [
+    "Configuración del club de lealtad",
+    "Loyalty club settings",
+  ],
   menu_categories: ["Categorías del menú", "Menu categories"],
   menu_state: ["Estado del menú", "Menu state"],
   modifier_groups: ["Grupos de modificadores", "Modifier groups"],

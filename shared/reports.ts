@@ -312,6 +312,8 @@ export const AUDIT_GROUPS = {
   ],
   fiscal: ["fiscal.", "cfdi."],
   reports: ["reports."],
+  // loyalty (038, R27): settings, members (ARCO included), links, rewards and the import.
+  loyalty: ["loyalty."],
 } as const;
 export type AuditGroup = keyof typeof AUDIT_GROUPS;
 export const AUDIT_GROUP_KEYS = Object.keys(AUDIT_GROUPS) as [

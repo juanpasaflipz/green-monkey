@@ -145,6 +145,16 @@ const operations: Record<string, Key> = {
   "payment.platforms_saved": "payOpPlatformsSaved",
   "payment.platform_prices_saved": "payOpPlatformPricesSaved",
   "payment.device_terminal_set": "payOpDeviceTerminalSet",
+  // loyalty (038)
+  "loyalty.settings.saved": "loyaltyOpSettings",
+  "loyalty.member.enrolled": "loyaltyOpEnrolled",
+  "loyalty.member.updated": "loyaltyOpUpdated",
+  "loyalty.member.deleted": "loyaltyOpDeleted",
+  "loyalty.stamps.adjusted": "loyaltyOpAdjusted",
+  "loyalty.order.linked": "loyaltyOpLinked",
+  "loyalty.order.relinked": "loyaltyOpRelinked",
+  "loyalty.reward.redeemed": "loyaltyOpRedeemed",
+  "loyalty.import.page": "loyaltyOpImport",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",

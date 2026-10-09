@@ -66,11 +66,15 @@ web and worker: "Taquería Nopal Azul" (counter service, 26 orders, a ten-minute
 offline sales, refunds, a blind close with a shortage) and "Restaurante Casa Jacaranda" (table
 service on phones, border region at IVA 8%, split payments, a paid table waiting for "Liberar
 mesa"). Every money figure is checked against an independent oracle and hand-typed tables, then a
-DB reconciliation suite (D1–D19) re-reads the day under RLS.
+DB reconciliation suite (D1–D19) re-reads the day under RLS. Branch L (loyalty spec §9.4, LD-80)
+adds a third restaurant, "Tortas El Mezquite", created the same way, whose club runs through the
+UI (a member joins at the prompt and completes a card, a walk-in takes the join QR, the reward is
+redeemed with no PIN, a refund reverses a stamp) with its own oracle rules (R18 reward, R19
+stamps), hand-typed tables (`expected.ts` L) and checks D20–D23; A's and B's tables are unchanged.
 
 | Piece | Where |
 | --- | --- |
-| Browser chain (10 serial tests, 46 checkpoints with axe, overflow and the production-text scanner at three sizes) | `tests/browser/restaurant-day.spec.ts`, `tests/restaurant-day/*.ts`, `playwright.restaurant-day.config.ts` |
+| Browser chain (12 serial tests, 53 checkpoints in branch N with axe, overflow and the production-text scanner at three sizes; branch L is the last two tests) | `tests/browser/restaurant-day.spec.ts`, `tests/restaurant-day/*.ts`, `playwright.restaurant-day.config.ts` |
 | DB reconciliation | `tests/restaurant-day-db.ts` (`npm run test:db:restaurant-day`) |
 | Local run | `bash scripts/restaurant-day.sh` (`npm run test:acceptance:day`) with `RD_LEGAL_*` and `RD_SUPPORT_*` exported; it refuses any database but the disposable `green_monkey_acceptance_dev` on loopback |
 | CI | `.github/workflows/restaurant-day.yml`: on demand, nightly (`vars.RD_NIGHTLY_REF`) and on release/* PRs into `main`; jobs `restaurant-day` and `restaurant-day-cfdi` are required checks in `ops/github/main-ruleset.json` |
@@ -118,6 +122,13 @@ cobro" 141-253 ms against 2 s), system time p95 0.53-0.68 s (budget 4 s), kitche
 bill (budgets 15 s and 16 s), 8 taps exact and 9 with "$100", 2 activations from cart to
 confirmation. Local latencies are not production latencies (no network between browser and server).
 
+**Branch L, October 9, 2026 (local only, track/loyalty with payments P1).** The gate runs on the
+loyalty track with P1 merged: branch N, 12/12 browser tests in 12.2 min, then D1–D23 (744 s in all
+at load 12-20), 0 waivers, 0 soft findings, no error or warn line from the web and only the
+tolerated `web_down` warn from the worker. Before that run it found three product defects, fixed
+below (P1's kitchen 403 at A8, loyalty's "$0" at A3, loyalty's cart row at L6/A13), and one A15.6
+roster wait that did not recur.
+
 ### Product defects the gate found (fixed at the source, each with a regression test in its owner's suite)
 
 | Finding | Fix | Regression test |
@@ -138,6 +149,9 @@ confirmation. Local latencies are not production latencies (no network between b
 | G4 at A14.4 (branch K): with the platform's CFDI provider configured, every refund dialog of a restaurant that never activated CFDI asked for the ticket's CFDI view and logged a 409 | `a0caee3`: `status.ts` asks only once CFDI has a mode | `tests/cfdi-client.test.ts` |
 | G3 dates (B6-cfdi, A14-detail): Detalle de orden dated the order with `toLocaleString` ("7/10/2026, 9:41:23"); A14-detail had scanned the dialog before it loaded | `bfecfbe`: `OrderDetail.tsx` uses `dateTime`; the checkpoint waits for the loaded detail | `tests/browser/service.spec.ts` |
 | G3 dates (B7-global, branch K; review ACC-PR-5b): cfdi's `dateTimeLabel` ("Abierto hasta" in Facturas globales, document times) printed es-MX's 12-hour "7 oct 2026, 4:53 p.m." | `src/features/cfdi/format.ts` sets `hourCycle: "h23"` ("7 oct 2026, 16:53"); the cfdi files leave the date-format scan's skip list | `tests/datetime.test.ts` (no skip); branch K asserts "Abierto hasta" exactly |
+| G4 at A8 (payments P1): the kitchen display's hidden Vender asked `GET /api/payments/options`, which only operators may read, and logged a 403 | `18b8f01`: `usePaymentOptions` skips the kitchen role | `tests/payments-client.test.ts` |
+| G3 at A3 (loyalty): Configuración's club threshold hint wrote "Usa $0" (no cents) for every restaurant | `1ede75c`: "$0.00" in both locales | `tests/loyalty.test.ts` (every amount in the club's strings) |
+| Overflow at L6-redeem @768×1024 (loyalty): with "Canjear premio" beside Descuento, the cart's bottom row pushed the page sideways; letting it wrap at every width then hid Caja 1's first line at A13 (FOH-10) | `17aff1f`, `f191755`: the row wraps under 800 px only | `tests/browser/loyalty.spec.ts` (768 px, no horizontal scroll); A13 |
 
 ### Spec expectations bound to the built behaviour (recorded here per LD-16 L1; assertions adapted, not weakened)
 
@@ -178,6 +192,7 @@ confirmation. Local latencies are not production latencies (no network between b
 - Done (LD-59): `RD_SUPPORT_PHONE` (repository variable) is in E.164; the `RD_*` repository variables hold a fictional, plausible set (LD-3, LD-57).
 - `ops/github/main-ruleset.json` lists `restaurant-day` and `restaurant-day-cfdi`; the lead applies it with `scripts/ops/github-protect.sh` right after the release pull request merges (LD-57: earlier, it would block pull requests before the workflow exists on `main`, where it is not yet). `RD_NIGHTLY_REF` (not set yet) must name the release branch for the nightly run.
 - The gate's branch K has never run against the real sandbox, and the vendor's real legal values have never been exercised; the first `restaurant-day-cfdi` run with `FACTURAPI_TEST_KEY` verifies D22. Per LD-57 the key is not in GitHub secrets, so that job reports skipped; branch K passes against the fake, and the CFDI flows it drives were rehearsed locally against the real sandbox outside the gate (LD-51).
+- A15.6 waits 30 s for the backup terminal's roster to drop Paola, and the gate (`AccessGate.tsx`) polls the roster every 30 s, so a slow poll under load can miss the wait: it failed once at load 20 on track/loyalty (October 9) and passed on the next runs. Not changed here; a wait of a poll plus its request would remove the race.
 - §13.2 asks for the gate before any production deploy dispatch; `deploy.yml` does not check it yet (ops follow-up).
 - §13.2 requires two consecutive green CI runs after any change to the suite; only local runs exist so far (the workflow reaches `main` with the release pull request).
 - The two product questions branch K surfaced earlier (an open global period reading 0 tickets and
