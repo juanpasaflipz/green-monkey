@@ -162,7 +162,7 @@ describe("Excepciones and the tender CSV", () => {
       currency: "MXN",
       timezone: "America/Mexico_City",
     });
-    const [header, line] = csv.replace(/^﻿/, "").split(/\r\n/);
+    const [header, line] = csv.replace(/^\uFEFF/, "").split(/\r\n/);
     expect(header).toContain("Terminal");
     expect(header).toContain("Plataforma");
     expect(header).toContain("Comisiones");
