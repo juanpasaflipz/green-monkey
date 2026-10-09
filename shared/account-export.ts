@@ -26,6 +26,9 @@ export const EXPORT_TABLE_DENYLIST: ReadonlySet<string> = new Set([
   // CFDI register offers its own downloads).
   "cfdi_secrets",
   "cfdi_files",
+  // payments 037: provider credential ciphertext (the runtime role cannot read
+  // it either; listed as for cfdi_secrets, critic R38).
+  "payment_secrets",
 ]);
 /**
  * What the owner reads for each exportable table, [Spanish, English]: the
@@ -67,6 +70,10 @@ export const EXPORT_TABLE_LABELS: Readonly<
   devices: ["Dispositivos", "Devices"],
   dining_areas: ["Áreas", "Dining areas"],
   dining_tables: ["Mesas", "Tables"],
+  drawer_terminal_counts: [
+    "Totales de lote por terminal",
+    "Batch totals by terminal",
+  ],
   discount_allocations: ["Reparto de descuentos", "Discount allocations"],
   discounts: ["Descuentos", "Discounts"],
   employees: ["Equipo", "Staff"],
@@ -115,6 +122,29 @@ export const EXPORT_TABLE_LABELS: Readonly<
   order_lines: ["Productos de las órdenes", "Order lines"],
   order_numbers: ["Números de orden", "Order numbers"],
   orders: ["Órdenes", "Orders"],
+  payment_attempt_events: [
+    "Eventos de cobros en terminal",
+    "Terminal charge events",
+  ],
+  payment_attempts: ["Cobros en terminal", "Terminal charges"],
+  payment_device_terminals: [
+    "Terminal predeterminada por dispositivo",
+    "Default terminal by device",
+  ],
+  payment_platform_prices: [
+    "Precios por plataforma",
+    "Prices by platform",
+  ],
+  payment_platforms: ["Plataformas de entrega", "Delivery platforms"],
+  payment_provider_accounts: [
+    "Cuentas de Mercado Pago y Clip",
+    "Mercado Pago and Clip accounts",
+  ],
+  payment_provider_devices: [
+    "Terminales encontradas en los proveedores",
+    "Terminals found at providers",
+  ],
+  payment_terminals: ["Terminales de tarjeta", "Card terminals"],
   pin_throttles: ["Intentos de PIN", "PIN attempts"],
   public_hold_numbers: ["Números de pedidos en línea", "Online order numbers"],
   public_links: ["Enlaces QR y kiosco", "QR and kiosk links"],
