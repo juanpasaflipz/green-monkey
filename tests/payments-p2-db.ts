@@ -3137,10 +3137,10 @@ try {
     );
     await sleep(200);
     release();
-    assert.deepEqual(await Promise.all([first, second]), [
-      "mercadopago",
-      "mercadopago",
-    ]);
+    assert.deepEqual(
+      await noRetries("re-seal race", () => Promise.all([first, second])),
+      ["mercadopago", "mercadopago"],
+    );
     const [box] = await asOwner(
       A,
       (

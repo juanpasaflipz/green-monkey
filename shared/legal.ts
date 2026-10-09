@@ -119,9 +119,9 @@ const FIRST_VERSION = {
  */
 const PAYMENTS_VERSION = {
   version: "2026-10-09",
-  requiresAcceptanceSince: "2026-10-06",
-  previousVersion: "2026-10-06",
-  previousRequiresAcceptanceSince: "2026-10-06",
+  requiresAcceptanceSince: FIRST_VERSION.requiresAcceptanceSince,
+  previousVersion: FIRST_VERSION.version,
+  previousRequiresAcceptanceSince: FIRST_VERSION.requiresAcceptanceSince,
   announcedAt: "2026-10-09",
   effectiveFrom: "2026-10-09",
 } as const;
