@@ -2,6 +2,9 @@
 // external-terminal money are separated: only cash refunds reduce expected
 // cash, card tips never inflate it, and roles that may not see expected cash
 // get a redacted summary from the server (blind count, MON-9 / FIT-10).
+// payments (037): card money is also split by terminal, platform tenders are
+// reported apart (never cash, never card), and a drawer with a live terminal
+// attempt does not close (payments_attempt_unresolved).
 // Lock order: closeCash / closeDrawerRow 1 → 2 → 11; reviewDrawer 1 → 2 → 11
 // (FOR SHARE).
 import { randomUUID } from "node:crypto";
@@ -9,7 +12,10 @@ import type { Tx } from "./db.js";
 import { managers, operators, permit } from "./auth.js";
 import { audit, drawer, once } from "./orders.js";
 import { moneyControls } from "./discounts.js";
-import { DomainError, type Session } from "../shared/domain.js";
+import { DomainError, sum, type Session } from "../shared/domain.js";
+import { liveAttemptsOnDrawer } from "./payments/guards.js";
+import { holdLabel } from "../shared/public-ordering.js";
+import { isTenderMethod, type PlatformCode } from "../shared/payments.js";
 import {
   canCloseDrawer,
   canSeeExpected,
@@ -30,6 +36,10 @@ export type DrawerTotals = {
   externalNet: number;
   paymentCount: number;
   externalCount: number;
+  /** payments (037): paid by a platform; outside expected cash and card totals. */
+  platformSales: number;
+  platformRefunds: number;
+  platformCount: number;
 };
 
 /**
@@ -45,17 +55,22 @@ export async function drawerTotals(
       coalesce(t.cash_sales,0)::int as cash_sales,coalesce(t.cash_tips,0)::int as cash_tips,
       coalesce(t.external_sales,0)::int as external_sales,coalesce(t.external_tips,0)::int as external_tips,
       coalesce(t.payments,0)::int as payments,coalesce(t.external_count,0)::int as external_count,
+      coalesce(t.platform_sales,0)::int as platform_sales,coalesce(t.platform_count,0)::int as platform_count,
       coalesce(f.cash,0)::int as cash_refunds,coalesce(f.external,0)::int as external_refunds,
+      coalesce(f.platform,0)::int as platform_refunds,
       coalesce(m.amount,0)::int as movements
     from cash_sessions c
     left join lateral (select sum(amount) filter (where method='cash') as cash_sales,
         sum(tip) filter (where method='cash') as cash_tips,
         sum(amount) filter (where method='external') as external_sales,
         sum(tip) filter (where method='external') as external_tips,
-        count(*) as payments,count(*) filter (where method='external') as external_count
+        count(*) as payments,count(*) filter (where method='external') as external_count,
+        sum(amount) filter (where method='platform') as platform_sales,
+        count(*) filter (where method='platform') as platform_count
       from tenders where tenant_id=c.tenant_id and session_id=c.id) t on true
     left join lateral (select sum(amount) filter (where method='cash') as cash,
-        sum(amount) filter (where method='external') as external
+        sum(amount) filter (where method='external') as external,
+        sum(amount) filter (where method='platform') as platform
       from refunds where tenant_id=c.tenant_id and session_id=c.id) f on true
     left join lateral (select sum(amount) as amount from cash_movements
       where tenant_id=c.tenant_id and session_id=c.id) m on true
@@ -76,7 +91,115 @@ export async function drawerTotals(
     externalNet: r.external_sales + r.external_tips - r.external_refunds,
     paymentCount: r.payments,
     externalCount: r.external_count,
+    platformSales: r.platform_sales,
+    platformRefunds: r.platform_refunds,
+    platformCount: r.platform_count,
   };
+}
+
+/** One terminal's card money in a drawer (terminalId null = "Otra terminal"). */
+export type DrawerTerminalRow = {
+  terminalId: string | null;
+  /** The terminal's current name, else the latest snapshot on its tenders. */
+  label: string | null;
+  kind: string | null;
+  count: number;
+  amount: number;
+  tips: number;
+  refunds: number;
+  /** amount + tips − refunds: what the terminal's batch should show. */
+  net: number;
+  /** Recorded after the close (late offline sync); not in the close snapshot. */
+  late: number;
+  /** Kiosk-channel tenders of this terminal (critic R27). */
+  kioskCount: number;
+  kioskAmount: number;
+  /** Managers only. */
+  fees?: { provider: number; estimated: number };
+  /** The close's typed "Total del lote" and its difference, once closed. */
+  reported?: number | null;
+  difference?: number | null;
+};
+export type DrawerPlatformRow = {
+  platform: PlatformCode;
+  count: number;
+  amount: number;
+  refunds: number;
+  net: number;
+  late: number;
+  /** Managers only: estimated commission from the platform's rate. */
+  commission?: number;
+};
+/**
+ * Card money by terminal and platform money by platform for one drawer, in one
+ * grouped statement: tenders of the drawer plus refunds recorded in it (as
+ * drawerTotals counts them), so Σ terminals = the external totals and Σ
+ * platforms = the platform totals.
+ */
+export async function drawerBreakdown(
+  tx: Tx,
+  drawerId: string,
+  opts: { fees: boolean },
+): Promise<{ byTerminal: DrawerTerminalRow[]; platforms: DrawerPlatformRow[] }> {
+  const rows = await tx`with x as (
+      select t.method,t.terminal_id,t.platform,t.terminal_label,t.created_at,
+        t.amount,t.tip,0 as refund,t.fee,t.fee_source,1 as n,
+        (c.closed_at is not null and t.created_at>c.closed_at) as late,o.channel='kiosk' as kiosk
+      from tenders t
+      join cash_sessions c on c.tenant_id=t.tenant_id and c.id=t.session_id
+      join orders o on o.tenant_id=t.tenant_id and o.id=t.order_id
+      where t.session_id=${drawerId} and t.method<>'cash'
+      union all
+      select t.method,t.terminal_id,t.platform,t.terminal_label,r.created_at,
+        0,0,r.amount,null,null,0,false,false
+      from refunds r join tenders t on t.tenant_id=r.tenant_id and t.id=r.tender_id
+      where r.session_id=${drawerId} and r.method<>'cash')
+    select x.method,x.terminal_id,x.platform,
+      (array_agg(x.terminal_label order by x.created_at desc) filter (where x.terminal_label is not null))[1] as snapshot,
+      max(pt.name) as current_name,max(pt.kind) as kind,
+      sum(x.n)::int as count,sum(x.amount)::int as amount,sum(x.tip)::int as tips,sum(x.refund)::int as refunds,
+      coalesce(sum(x.amount+x.tip) filter (where x.late),0)::int as late,
+      coalesce(sum(x.n) filter (where x.kiosk),0)::int as kiosk_count,
+      coalesce(sum(x.amount) filter (where x.kiosk),0)::int as kiosk_amount,
+      coalesce(sum(x.fee) filter (where x.fee_source='provider'),0)::int as fee_provider,
+      coalesce(sum(x.fee) filter (where x.fee_source='estimated'),0)::int as fee_estimated
+    from x left join payment_terminals pt on pt.id=x.terminal_id
+    group by x.method,x.terminal_id,x.platform
+    order by x.method,max(pt.name) nulls last,x.terminal_id nulls last,x.platform`;
+  const byTerminal: DrawerTerminalRow[] = [];
+  const platforms: DrawerPlatformRow[] = [];
+  for (const r of rows) {
+    if (!isTenderMethod(r.method) || r.method === "cash")
+      throw new DomainError("report_method_unknown", 500);
+    if (r.method === "external")
+      byTerminal.push({
+        terminalId: r.terminal_id ?? null,
+        label: r.current_name ?? r.snapshot ?? null,
+        kind: r.kind ?? null,
+        count: r.count,
+        amount: r.amount,
+        tips: r.tips,
+        refunds: r.refunds,
+        net: r.amount + r.tips - r.refunds,
+        late: r.late,
+        kioskCount: r.kiosk_count,
+        kioskAmount: r.kiosk_amount,
+        ...(opts.fees
+          ? { fees: { provider: r.fee_provider, estimated: r.fee_estimated } }
+          : {}),
+      });
+    else
+      platforms.push({
+        platform: r.platform as PlatformCode,
+        count: r.count,
+        amount: r.amount,
+        refunds: r.refunds,
+        net: r.amount - r.refunds,
+        late: r.late,
+        ...(opts.fees ? { commission: r.fee_estimated + r.fee_provider } : {}),
+      });
+  }
+  return { byTerminal, platforms };
 }
 
 export type CashView = Record<string, unknown> & {
@@ -101,6 +224,24 @@ export type CashView = Record<string, unknown> & {
     /** Terminal payments recorded after the close (late offline sync); not in the close snapshot. */
     late: number;
   };
+  /** payments (037): card money per terminal (fees for managers only). */
+  byTerminal: DrawerTerminalRow[];
+  /** payments (037): paid by platforms; informative, outside expected cash. */
+  platform: { sales: number; refunds: number; net: number; count: number };
+  platforms: DrawerPlatformRow[];
+  /** payments (037): terminal attempts that keep this drawer from closing. */
+  unresolvedAttempts: {
+    id: string;
+    state: string;
+    target: string;
+    orderId: string | null;
+    holdId: string | null;
+    orderNumber: number | null;
+    holdLabel: string | null;
+    terminal: string;
+    amount: number;
+    createdAt: string;
+  }[];
   paymentCount: number;
   expected: number | null;
   closedExpected: number | null;
@@ -145,8 +286,36 @@ export async function cashSummary(
   if (!d) return null;
   const controls = await moneyControls(tx);
   const totals = await drawerTotals(tx, d.id);
-  const tenders =
-    await tx`select * from tenders where session_id=${d.id} order by created_at,id`;
+  const breakdown = await drawerBreakdown(tx, d.id, {
+    fees: managers.includes(s.role),
+  });
+  // Typed batch totals of a closed drawer, per terminal (null = Otra terminal).
+  const counts = d.closed_at
+    ? await tx`select terminal_id,expected,reported from drawer_terminal_counts where drawer_id=${d.id}`
+    : [];
+  const byTerminal = breakdown.byTerminal.map((row) => {
+    const count = counts.find(
+      (c) => (c.terminal_id ?? null) === row.terminalId,
+    );
+    return count
+      ? {
+          ...row,
+          reported: count.reported ?? null,
+          difference:
+            count.reported === null ? null : count.reported - count.expected,
+        }
+      : row;
+  });
+  const unresolved = d.closed_at ? [] : await liveAttemptsOnDrawer(tx, d.id);
+  // payments (037): fees and commissions are manager figures.
+  const seesFees = managers.includes(s.role);
+  const tenders = (
+    await tx`select * from tenders where session_id=${d.id} order by created_at,id`
+  ).map((t) => {
+    if (seesFees) return t;
+    const { fee: _fee, fee_source: _source, ...rest } = t;
+    return rest;
+  });
   const refunds =
     await tx`select * from refunds where session_id=${d.id} order by created_at,id`;
   const movements =
@@ -190,6 +359,30 @@ export async function cashSummary(
     closedByName: (closed_by_name ?? null) as string | null,
     countMode: (d.count_mode ?? null) as "blind" | "visible" | null,
     external,
+    byTerminal,
+    platform: {
+      sales: totals.platformSales,
+      refunds: totals.platformRefunds,
+      net: totals.platformSales - totals.platformRefunds,
+      count: totals.platformCount,
+    },
+    platforms: breakdown.platforms,
+    unresolvedAttempts: unresolved.map((a) => ({
+      id: a.id,
+      state: a.state,
+      target: a.target,
+      orderId: a.order_id,
+      holdId: a.hold_id,
+      // A kiosk hold attempt (039) is named by its hold ("Kiosco · K-14"), critic R8.
+      orderNumber: a.order_number,
+      holdLabel:
+        a.hold_channel && a.hold_number !== null
+          ? holdLabel(a.hold_channel, a.hold_number)
+          : null,
+      terminal: a.terminal_label,
+      amount: a.amount + a.tip,
+      createdAt: new Date(a.created_at).toISOString(),
+    })),
     paymentCount: totals.paymentCount,
   };
   if (!canSeeExpected(s.role, controls))
@@ -205,8 +398,9 @@ export async function cashSummary(
       counted: null,
       reason: null,
       cash: null,
-      tenders: tenders.filter((t) => t.method === "external"),
-      refunds: refunds.filter((r) => r.method === "external"),
+      // A blind count still lists card and platform money (never cash).
+      tenders: tenders.filter((t) => t.method !== "cash"),
+      refunds: refunds.filter((r) => r.method !== "cash"),
       movements: [],
       review: null,
     } as unknown as CashView;
@@ -245,6 +439,8 @@ export async function cashHistory(tx: Tx, s: Session, offset: number) {
     c.expected,c.counted,c.reason,
     coalesce((select sum(t.amount+t.tip) from tenders t where t.session_id=c.id and t.method='cash' and t.created_at>c.closed_at),0)::int as late_recovery,
     coalesce((select sum(t.amount+t.tip) from tenders t where t.session_id=c.id and t.method='external' and t.created_at>c.closed_at),0)::int as late_external,
+    coalesce((select sum(t.amount) from tenders t where t.session_id=c.id and t.method='platform'),0)::int as platform_sales,
+    (select coalesce(sum(dc.reported-dc.expected),0)::int from drawer_terminal_counts dc where dc.drawer_id=c.id and dc.reported is not null) as terminal_difference,
     (select jsonb_agg(distinct o.restaurant_snapshot->>'currency') from tenders t join orders o on o.tenant_id=t.tenant_id and o.id=t.order_id where t.session_id=c.id) as currencies,
     opener.name as opened_by_name,closer.name as closed_by_name,c.count_mode,
     c.external_expected,c.external_reported,
@@ -267,10 +463,20 @@ export async function closeDrawerRow(
   tx: Tx,
   s: Session,
   d: { id: string },
-  p: { counted: number; reason: string; externalReported?: number | null },
+  p: {
+    counted: number;
+    reason: string;
+    externalReported?: number | null;
+    terminalReports?: { terminalId: string | null; reported: number }[];
+  },
   mode: "blind" | "visible",
   extra: Record<string, unknown> = {},
 ): Promise<void> {
+  // payments (037): money may still be in flight at a terminal for this
+  // drawer; a manager resolves those attempts first (no force-close, Q12).
+  // A plain read under the drawer lock the caller holds (LO-11).
+  if ((await liveAttemptsOnDrawer(tx, d.id)).length)
+    throw new DomainError("payments_attempt_unresolved", 409);
   const totals = await drawerTotals(tx, d.id);
   if (
     mode === "visible" &&
@@ -278,19 +484,49 @@ export async function closeDrawerRow(
     p.reason.trim().length < 3
   )
     throw new DomainError("reason_required");
+  const reports = p.terminalReports ?? [];
+  if (
+    new Set(reports.map((r) => r.terminalId ?? "")).size !== reports.length
+  )
+    throw new DomainError("invalid_input");
+  // external_reported stays the sum of the batch totals (old readers).
+  const externalReported =
+    p.externalReported ??
+    (reports.length ? sum(reports.map((r) => r.reported)) : null);
+  if (
+    reports.length &&
+    externalReported !== sum(reports.map((r) => r.reported))
+  )
+    throw new DomainError("invalid_input");
+  const breakdown = reports.length
+    ? await drawerBreakdown(tx, d.id, { fees: false })
+    : { byTerminal: [] };
   const closed =
     await tx`update cash_sessions set counted=${p.counted},expected=${totals.expectedCash},
       reason=${p.reason},closed_at=clock_timestamp(),closed_by=${s.employeeId},count_mode=${mode},
-      external_expected=${totals.externalNet},external_reported=${p.externalReported ?? null}
+      external_expected=${totals.externalNet},external_reported=${externalReported}
     where id=${d.id} and closed_at is null returning id`;
   if (!closed.length) throw new DomainError("drawer_required", 409);
+  for (const r of reports) {
+    const expected =
+      breakdown.byTerminal.find((b) => b.terminalId === r.terminalId)?.net ??
+      0;
+    if (r.terminalId) {
+      const [terminal] =
+        await tx`select id from payment_terminals where id=${r.terminalId}`;
+      if (!terminal) throw new DomainError("payments_terminal_not_found", 404);
+    }
+    await tx`insert into drawer_terminal_counts(tenant_id,id,drawer_id,terminal_id,expected,reported)
+      values(${s.tenantId},${randomUUID()},${d.id},${r.terminalId},${expected},${r.reported})`;
+  }
   await audit(tx, s, "cash.close", d.id, {
     counted: p.counted,
     expected: totals.expectedCash,
     discrepancy: p.counted - totals.expectedCash,
     countMode: mode,
     externalExpected: totals.externalNet,
-    externalReported: p.externalReported ?? null,
+    externalReported,
+    ...(reports.length ? { terminalReports: reports } : {}),
     ...extra,
   });
 }

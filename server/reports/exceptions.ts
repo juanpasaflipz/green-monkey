@@ -86,7 +86,8 @@ export function exceptionsCte(
     union all
     select 'refund', b.id, b.created_at, b.actor_id, b.approver_id, null, b.amount::int8, b.order_id,
       b.reason_code, b.note, b.device_id,
-      jsonb_build_object('mode', b.mode, 'cash', b.cash_amount, 'external', b.external_amount, 'restock', b.restock),
+      jsonb_build_object('mode', b.mode, 'cash', b.cash_amount, 'external', b.external_amount,
+        'platform', b.platform_amount, 'restock', b.restock),
       b.business_date
       from refund_batches b
      where b.business_date between ${range.from}::date and ${range.to}::date
@@ -95,7 +96,8 @@ export function exceptionsCte(
       null, r.reason, cs.device_id,
       jsonb_build_object('mode', 'legacy',
         'cash', case when r.method = 'cash' then r.amount else 0 end,
-        'external', case when r.method = 'external' then r.amount else 0 end, 'restock', false),
+        'external', case when r.method = 'external' then r.amount else 0 end,
+        'platform', case when r.method = 'platform' then r.amount else 0 end, 'restock', false),
       ${day("r.created_at")}
       from refunds r
       join tenders t on t.tenant_id = r.tenant_id and t.id = r.tender_id
@@ -142,6 +144,26 @@ export function exceptionsCte(
      where cs.closed_at >= ${w.ws} and cs.closed_at < ${w.we}
        and cs.external_reported is not null and cs.external_expected is not null
        and cs.external_reported <> cs.external_expected
+       -- payments (037): a close that typed batch totals per terminal is listed per terminal below.
+       and not exists (select 1 from drawer_terminal_counts dc
+                        where dc.tenant_id = cs.tenant_id and dc.drawer_id = cs.id)
+    union all
+    select 'terminal_difference', dc.id, cs.closed_at, coalesce(cs.closed_by, lc.actor_id), null, null,
+      (dc.reported - dc.expected)::int8, null, null, '', cs.device_id,
+      jsonb_build_object('terminalId', dc.terminal_id, 'terminal', pt.name),
+      ${day("cs.closed_at")}
+      from drawer_terminal_counts dc
+      join cash_sessions cs on cs.tenant_id = dc.tenant_id and cs.id = dc.drawer_id
+      left join payment_terminals pt on pt.tenant_id = dc.tenant_id and pt.id = dc.terminal_id
+      left join lateral (
+        select a.actor_id from audit a
+         where cs.closed_by is null and a.tenant_id = cs.tenant_id and a.operation = 'cash.close'
+           and a.entity_id = cs.id::text
+           and a.created_at >= cs.closed_at - interval '1 hour' and a.created_at <= cs.closed_at + interval '1 minute'
+         order by a.created_at limit 1) lc on true
+      ${cfgOn("cs.closed_at")}
+     where cs.closed_at >= ${w.ws} and cs.closed_at < ${w.we}
+       and dc.reported is not null and dc.reported <> dc.expected
     union all
     select 'reprint', a.id, a.created_at, a.actor_id, null, null, 0::int8,
       case when a.entity_id ~ ${UUID} then a.entity_id::uuid end, null, coalesce(a.detail->>'reason', ''),

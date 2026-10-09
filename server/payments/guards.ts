@@ -32,12 +32,18 @@ export async function liveAttemptsOnDrawer(tx: Tx, drawerId: string) {
       amount: number;
       tip: number;
       created_at: Date;
+      order_number: number | null;
+      hold_channel: "qr" | "kiosk" | null;
+      hold_number: number | null;
     }[]
-  >`select id,state,target,order_id,hold_id,terminal_label,amount,tip,created_at
-      from payment_attempts
-      where cash_session_id=${drawerId}
-        and state in ('created','sending','pending','unknown','approved','review')
-      order by created_at, id limit 50`;
+  >`select a.id,a.state,a.target,a.order_id,a.hold_id,a.terminal_label,a.amount,a.tip,a.created_at,
+        o.number as order_number,h.channel as hold_channel,h.number as hold_number
+      from payment_attempts a
+      left join orders o on o.tenant_id=a.tenant_id and o.id=a.order_id
+      left join public_order_holds h on h.tenant_id=a.tenant_id and h.id=a.hold_id
+      where a.cash_session_id=${drawerId}
+        and a.state in ('created','sending','pending','unknown','approved','review')
+      order by a.created_at, a.id limit 50`;
 }
 
 /**

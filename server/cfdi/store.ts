@@ -42,6 +42,8 @@ import {
   type CfdiTicketView,
   type CfdiUse,
   type CardForm,
+  DEFAULT_PLATFORM_FORM,
+  type PlatformForm,
   type GlobalPeriodView,
   type Periodicity,
   type PendingSelfInvoice,
@@ -96,6 +98,8 @@ export type SettingsRow = {
   conceptMode: "grouped" | "itemized";
   conceptDescription: string;
   cardPaymentForm: CardForm;
+  /** payments (037): FormaPago of platform tenders (default 31 pending the accountant). */
+  platformPaymentForm: PlatformForm;
   defaultUse: CfdiUse;
   selfInvoiceEnabled: boolean;
   /** The self-invoicing terms in force today (a pending change already due is applied). */
@@ -259,7 +263,7 @@ export async function loadSettings(
     select enabled, mode, test_from::text as test_from, live_from::text as live_from, live_enabled_at,
       live_requested_at, live_requested_from::text as live_requested_from, live_requested_by,
       global_periodicity, next_periodicity, next_periodicity_from::text as next_periodicity_from,
-      global_auto, concept_mode, concept_description, card_payment_form, default_use,
+      global_auto, concept_mode, concept_description, card_payment_form, platform_payment_form, default_use,
       self_invoice_enabled, self_invoice_policy, self_invoice_days, portal_reissue_global,
       next_self_invoice_policy, next_self_invoice_days, next_portal_reissue_global,
       next_self_invoice_from::text as next_self_invoice_from,
@@ -306,6 +310,7 @@ export async function loadSettings(
     conceptMode: r.concept_mode,
     conceptDescription: r.concept_description,
     cardPaymentForm: r.card_payment_form,
+    platformPaymentForm: r.platform_payment_form ?? DEFAULT_PLATFORM_FORM,
     defaultUse: r.default_use,
     selfInvoiceEnabled: r.self_invoice_enabled,
     selfInvoicePolicy: terms.policy,

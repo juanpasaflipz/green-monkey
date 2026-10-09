@@ -9,10 +9,14 @@ import {
   drawerRow,
   parseRange,
   LIMITS,
+  methodOf,
   type DateRange,
   type DrawerFacts,
+  type DrawerPlatformFact,
   type DrawerRow,
+  type DrawerTerminalFact,
 } from "../../shared/reports.js";
+import type { PlatformCode } from "../../shared/payments.js";
 import { businessDayCte, iso, isoRequired, windowOf } from "./days.js";
 import type { ReportsPorts } from "./ports.js";
 import { restaurantOf, type ReportRestaurant } from "./restaurant.js";
@@ -26,6 +30,71 @@ export type LoadedDrawer = DrawerFacts & {
   /** No other drawer of the same device was opened after this one (spec §2.12, LD-15 Q6). */
   latestOnDevice: boolean;
 };
+
+type Split = {
+  method: string;
+  terminalId: string | null;
+  platform: string | null;
+  label: string | null;
+  kind: string | null;
+  platformLabel: string | null;
+  count: number;
+  amount: number;
+  tips: number;
+  refunds: number;
+  lateCount: number;
+  lateAmount: number;
+  lateTips: number;
+  feeProvider: number;
+  feeEstimated: number;
+  kioskCount: number;
+  kioskAmount: number;
+  expected: number | null;
+  reported: number | null;
+};
+/** payments (037): the drawer's per-terminal and per-platform rows (no default to cash). */
+function drawerSplits(raw: unknown): {
+  terminals: DrawerTerminalFact[];
+  platforms: DrawerPlatformFact[];
+} {
+  const terminals: DrawerTerminalFact[] = [];
+  const platforms: DrawerPlatformFact[] = [];
+  for (const x of (raw ?? []) as Split[]) {
+    const method = methodOf(x.method);
+    if (method === "external")
+      terminals.push({
+        terminalId: x.terminalId,
+        label: x.label,
+        kind: x.kind,
+        count: n(x.count),
+        amount: n(x.amount),
+        tips: n(x.tips),
+        refunds: n(x.refunds),
+        lateCount: n(x.lateCount),
+        lateAmount: n(x.lateAmount),
+        lateTips: n(x.lateTips),
+        feeProvider: n(x.feeProvider),
+        feeEstimated: n(x.feeEstimated),
+        kioskCount: n(x.kioskCount),
+        kioskAmount: n(x.kioskAmount),
+        expected: x.expected === null ? null : n(x.expected),
+        reported: x.reported === null ? null : n(x.reported),
+      });
+    else if (method === "platform")
+      platforms.push({
+        platform: x.platform as PlatformCode,
+        label: x.platformLabel,
+        count: n(x.count),
+        amount: n(x.amount),
+        refunds: n(x.refunds),
+        lateCount: n(x.lateCount),
+        lateAmount: n(x.lateAmount),
+        commission: n(x.feeProvider) + n(x.feeEstimated),
+      });
+    else throw new RangeError("report_method_unknown");
+  }
+  return { terminals, platforms };
+}
 
 /**
  * Every figure of the drawers selected by `filter`: the drawers opened in a business-date range
@@ -69,6 +138,7 @@ export async function loadDrawers(
       t.cash_count, t.cash_amount, t.cash_tips, t.cash_late_count, t.cash_late_amount, t.cash_late_tips,
       t.ext_count, t.ext_amount, t.ext_tips, t.ext_late_count, t.ext_late_amount, t.ext_late_tips,
       rf.cash_refunds, rf.ext_refunds, mv.paid_out_count, mv.paid_outs, mv.pay_ins,
+      t.pf_count, t.pf_amount, t.pf_late_count, t.pf_late_amount, rf.pf_refunds, sp.splits,
       d.expected, d.counted, d.reason, d.count_mode, d.external_expected, d.external_reported,
       rv.note as review_note, rv.created_at as review_at, rv.reviewer_name,
       coalesce(zp.prints, 0) as z_prints,
@@ -99,12 +169,57 @@ export async function loadDrawers(
         coalesce(sum(t.tip) filter (where t.method = 'external'), 0)::int8 as ext_tips,
         count(*) filter (where t.method = 'external' and t.created_at > d.closed_at)::int as ext_late_count,
         coalesce(sum(t.amount) filter (where t.method = 'external' and t.created_at > d.closed_at), 0)::int8 as ext_late_amount,
-        coalesce(sum(t.tip) filter (where t.method = 'external' and t.created_at > d.closed_at), 0)::int8 as ext_late_tips
+        coalesce(sum(t.tip) filter (where t.method = 'external' and t.created_at > d.closed_at), 0)::int8 as ext_late_tips,
+        count(*) filter (where t.method = 'platform')::int as pf_count,
+        coalesce(sum(t.amount) filter (where t.method = 'platform'), 0)::int8 as pf_amount,
+        count(*) filter (where t.method = 'platform' and t.created_at > d.closed_at)::int as pf_late_count,
+        coalesce(sum(t.amount) filter (where t.method = 'platform' and t.created_at > d.closed_at), 0)::int8 as pf_late_amount
       from tenders t where t.tenant_id = d.tenant_id and t.session_id = d.id) t
     cross join lateral (
       select coalesce(sum(r.amount) filter (where r.method = 'cash'), 0)::int8 as cash_refunds,
-        coalesce(sum(r.amount) filter (where r.method = 'external'), 0)::int8 as ext_refunds
+        coalesce(sum(r.amount) filter (where r.method = 'external'), 0)::int8 as ext_refunds,
+        coalesce(sum(r.amount) filter (where r.method = 'platform'), 0)::int8 as pf_refunds
       from refunds r where r.tenant_id = d.tenant_id and r.session_id = d.id) rf
+    -- payments (037): card money by terminal and platform money by platform (the drawer's own
+    -- tenders plus the refunds recorded in it), with the batch totals typed at the close.
+    cross join lateral (
+      select coalesce(jsonb_agg(jsonb_build_object(
+          'method', g.method, 'terminalId', g.terminal_id, 'platform', g.platform,
+          'label', coalesce(pt.name, g.snapshot), 'kind', pt.kind, 'platformLabel', g.platform_label,
+          'count', g.count, 'amount', g.amount, 'tips', g.tips, 'refunds', g.refunds,
+          'lateCount', g.late_count, 'lateAmount', g.late_amount, 'lateTips', g.late_tips,
+          'feeProvider', g.fee_provider, 'feeEstimated', g.fee_estimated,
+          'kioskCount', g.kiosk_count, 'kioskAmount', g.kiosk_amount,
+          'expected', dc.expected, 'reported', dc.reported)
+          order by g.method, pt.name nulls last, g.terminal_id nulls last, g.platform), '[]'::jsonb) as splits
+      from (
+        select u.method, u.terminal_id, u.platform,
+          (array_agg(u.terminal_label order by u.created_at desc) filter (where u.terminal_label is not null))[1] as snapshot,
+          (array_agg(u.platform_label order by u.created_at desc) filter (where u.platform_label is not null))[1] as platform_label,
+          sum(u.n)::int as count, sum(u.amount)::int8 as amount, sum(u.tip)::int8 as tips,
+          sum(u.refund)::int8 as refunds,
+          count(*) filter (where u.late and u.n = 1)::int as late_count,
+          coalesce(sum(u.amount) filter (where u.late), 0)::int8 as late_amount,
+          coalesce(sum(u.tip) filter (where u.late), 0)::int8 as late_tips,
+          coalesce(sum(u.fee) filter (where u.fee_source = 'provider'), 0)::int8 as fee_provider,
+          coalesce(sum(u.fee) filter (where u.fee_source = 'estimated'), 0)::int8 as fee_estimated,
+          count(*) filter (where u.kiosk)::int as kiosk_count,
+          coalesce(sum(u.amount) filter (where u.kiosk), 0)::int8 as kiosk_amount
+        from (
+          select t.method, t.terminal_id, t.platform, t.terminal_label, t.platform_label, t.created_at,
+            t.amount, t.tip, 0 as refund, t.fee, t.fee_source, 1 as n,
+            (d.closed_at is not null and t.created_at > d.closed_at) as late, (o.channel = 'kiosk') as kiosk
+          from tenders t join orders o on o.tenant_id = t.tenant_id and o.id = t.order_id
+          where t.tenant_id = d.tenant_id and t.session_id = d.id and t.method <> 'cash'
+          union all
+          select t.method, t.terminal_id, t.platform, t.terminal_label, t.platform_label, r.created_at,
+            0, 0, r.amount, null, null, 0, false, false
+          from refunds r join tenders t on t.tenant_id = r.tenant_id and t.id = r.tender_id
+          where r.tenant_id = d.tenant_id and r.session_id = d.id and r.method <> 'cash') u
+        group by u.method, u.terminal_id, u.platform) g
+      left join payment_terminals pt on pt.tenant_id = d.tenant_id and pt.id = g.terminal_id
+      left join drawer_terminal_counts dc on dc.tenant_id = d.tenant_id and dc.drawer_id = d.id
+        and g.method = 'external' and dc.terminal_id is not distinct from g.terminal_id) sp
     cross join lateral (
       select count(*) filter (where m.amount < 0)::int as paid_out_count,
         coalesce(-sum(m.amount) filter (where m.amount < 0), 0)::int8 as paid_outs,
@@ -154,6 +269,14 @@ export async function loadDrawers(
       lateAmount: n(r.ext_late_amount),
       lateTips: n(r.ext_late_tips),
     },
+    platform: {
+      count: n(r.pf_count),
+      amount: n(r.pf_amount),
+      refunds: n(r.pf_refunds),
+      lateCount: n(r.pf_late_count),
+      lateAmount: n(r.pf_late_amount),
+    },
+    ...drawerSplits(r.splits),
     paidOuts: { count: n(r.paid_out_count), amount: n(r.paid_outs) },
     payIns: n(r.pay_ins),
     stored: {

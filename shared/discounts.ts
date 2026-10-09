@@ -229,6 +229,12 @@ export const cashCloseInput = z
     // .optional() without a default: a legacy body parses to the same object,
     // so its once() fingerprint is unchanged (old bundles during a deploy).
     externalReported: money.nullable().optional(),
+    // payments (037): "Total del lote" per terminal; null terminalId = tenders
+    // recorded without a named terminal ("Otra terminal"). Optional, no default.
+    terminalReports: z
+      .array(z.object({ terminalId: id.nullable(), reported: money }).strict())
+      .max(40)
+      .optional(),
   })
   .strict();
 export const cashReviewInput = z
