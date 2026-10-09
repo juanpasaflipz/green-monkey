@@ -44,10 +44,24 @@ export const PAYMENTS_LIMITS = {
   mpMinAmount: 500,
   /** MP Orders expiration_time by attempt origin (critic R10; MP accepts 30 s to 3 h). */
   mpExpiration: { pos: "PT10M", kiosk: "PT5M" },
-  pollFastMs: 2000,
+  /**
+   * The worker's reads of a fresh charge (the first pollFastForMs), per provider (P2-PROVIDERS-8).
+   * MP every 5 s: its signed notifications already make the worker read at once, and its rate
+   * limit (429) is per access token, shared by every live charge of the restaurant (pos-lite
+   * throttled to one read per 5 s per payment after hitting it). Clip every 2 s.
+   */
+  pollFastMs: { mercadopago: 5000, clip: 2000 },
   pollFastForMs: 180_000,
   pollSlowMs: 10_000,
   unknownAfterExpiryMs: 120_000,
+  /**
+   * An MP create answered only with 429 made no order (P2-PROVIDERS-8): the push waits these
+   * (or MP's Retry-After when longer) between its three tries, about 30 s in all, and then
+   * declines it (payments_provider_unavailable: the cashier's manual fallback). A wait that
+   * would take the whole back-off past mpRateLimitBudgetMs declines at once.
+   */
+  mpRateLimitWaitsMs: [10_000, 20_000],
+  mpRateLimitBudgetMs: 40_000,
   /**
    * Clip requests never expire (developer.clip.mx documents no lifetime; wave4 R10): after this
    * long the worker withdraws the request (DELETE /payment/{id}); if the reader already holds it,

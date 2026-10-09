@@ -416,15 +416,24 @@ async function ensureChain(tx: Tx, tenantId: string, attemptId: string) {
   const [live] = await tx`select 1 from jobs
     where kind='payments_poll' and state in ('queued','available','running')
       and payload->>'attemptId'=${attemptId} limit 1`;
-  if (!live)
-    await schedulePoll(
-      tx,
-      tenantId,
-      attemptId,
-      newChain(),
-      1,
-      PAYMENTS_LIMITS.pollFastMs,
-    );
+  if (live) return;
+  const [a] =
+    await tx`select provider from payment_attempts where id=${attemptId}`;
+  await schedulePoll(
+    tx,
+    tenantId,
+    attemptId,
+    newChain(),
+    1,
+    fastPollMs(a?.provider as string),
+  );
+}
+
+/** The fresh-charge read cadence of a provider (PAYMENTS_LIMITS.pollFastMs, P2-PROVIDERS-8). */
+function fastPollMs(provider: string): number {
+  return provider === "clip"
+    ? PAYMENTS_LIMITS.pollFastMs.clip
+    : PAYMENTS_LIMITS.pollFastMs.mercadopago;
 }
 
 /**
@@ -696,6 +705,57 @@ async function adoptNotified(
 
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * An MP create answered 429 (P2-PROVIDERS-8). MP's Orders API limits order creation per client
+ * and asks to wait for Retry-After before sending the request again: a 429 is refused before it is
+ * processed, so it makes no order. Each try is a `sent`/`resent` event written before the call and
+ * each 429 a `rate_limited` event, so "every try of this attempt got 429" survives claims, a
+ * crashed claim (a try with no answer recorded) and a requeue. While that holds the push backs off
+ * (PAYMENTS_LIMITS.mpRateLimitWaitsMs, or MP's Retry-After when longer: about 30 s over its three
+ * claims) and then declines the attempt `payments_provider_unavailable`, which offers the cashier
+ * the manual fallback instead of «Sin confirmar». Any other try (network error, timeout, 5xx, a
+ * claim that died) may have reached MP: `ambiguous`, and the caller keeps the unknown path.
+ */
+async function rateLimited(
+  tx: Tx,
+  tenantId: string,
+  attemptId: string,
+  claim: number,
+  retryAfterMs: number | null,
+): Promise<
+  | { verdict: "retry"; afterMs: number }
+  | { verdict: "declined" | "ambiguous" | "moved" }
+> {
+  const now = await lockAttempt(tx, attemptId);
+  if (now?.state !== "sending") return { verdict: "moved" };
+  await workerEvent(tx, tenantId, attemptId, "rate_limited", {
+    httpStatus: 429,
+  });
+  const [h] = await tx`select
+      count(*) filter (where kind in ('sent','resent'))::int as tries,
+      count(*) filter (where kind = 'rate_limited')::int as limited,
+      coalesce(extract(epoch from now() - min(created_at)
+        filter (where kind in ('sent','resent'))) * 1000, 0)::float8 as elapsed
+    from payment_attempt_events where attempt_id=${attemptId}`;
+  if (h.tries !== h.limited) return { verdict: "ambiguous" };
+  const waits = PAYMENTS_LIMITS.mpRateLimitWaitsMs;
+  const wait = Math.max(waits[claim - 1] ?? Infinity, retryAfterMs ?? 0);
+  if (
+    claim <= waits.length &&
+    Number(h.elapsed) + wait <= PAYMENTS_LIMITS.mpRateLimitBudgetMs
+  )
+    return { verdict: "retry", afterMs: wait };
+  await tx`update payment_attempts set state='declined',error_code='payments_provider_unavailable',
+      decided_at=now(),version=version+1 where id=${attemptId}`;
+  await workerEvent(tx, tenantId, attemptId, "declined", {
+    code: "payments_provider_unavailable",
+    source: "rate_limited",
+    before: "sending",
+    httpStatus: 429,
+  });
+  return { verdict: "declined" };
+}
+
 /** payments_push: created → sending → pending (or declined / unknown). */
 export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
   const rt = paymentsRuntime();
@@ -816,6 +876,15 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
       )
         e.code = "payments_terminal_not_linked";
     }
+    if (a.provider === "mercadopago" && e.status === 429) {
+      const limited = await ctx.tenant((tx) =>
+        rateLimited(tx, tenantId, attemptId, ctx.job.attempts, e.retryAfterMs),
+      );
+      if (limited.verdict === "retry")
+        return { status: "retry", code: e.code, afterMs: limited.afterMs };
+      if (limited.verdict !== "ambiguous") return { status: "done" };
+      // An earlier try may have reached MP: the path below, as for any retryable failure.
+    }
     if (e.retryable && a.provider === "mercadopago" && ctx.job.attempts < 3)
       // Same idempotency key on the next run: MP returns the same order if it exists.
       return {
@@ -886,7 +955,7 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
       attemptId,
       "p",
       1,
-      PAYMENTS_LIMITS.pollFastMs,
+      fastPollMs(a.provider),
     );
   });
   return { status: "done" };
@@ -1140,7 +1209,7 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
   const elapsed = Date.now() - new Date(a.sent_at ?? a.created_at).getTime();
   const cadence =
     elapsed < PAYMENTS_LIMITS.pollFastForMs
-      ? PAYMENTS_LIMITS.pollFastMs
+      ? fastPollMs(a.provider)
       : PAYMENTS_LIMITS.pollSlowMs;
   let read: Read | null;
   try {

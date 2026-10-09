@@ -538,6 +538,12 @@ completó»). Money may or may not have been taken. Nothing retries on its own.
    on the reader and press **Volver a consultar**, which frees the order by itself.
 3. When the provider is back: switch MP devices back to «Integrado (PDV)» (restart), and
    charge one small order per terminal (**Cobro de prueba**) before relying on it.
+4. MP rate limiting is not this kind of outage (P2-PROVIDERS-8): a create answered 429 on
+   every try made no order (the restaurant's access token spent its request budget), so after
+   about 30 s of back-off the charge is declined `payments_provider_unavailable` and the
+   cashier is offered the manual fallback at once; nothing stays blocked. The attempt's events
+   show one `rate_limited` per try. Many in a row for one restaurant: fewer MP terminals
+   charging at once, and check that nothing else uses the same access token.
 4. Operator: a worker-wide problem (`/capabilities` shows `worker_not_configured`, the worker
    log has `payments_worker_disabled`, or every restaurant fails) is the worker's
    `PAYMENTS_PROVIDERS` / `CREDENTIAL_ENCRYPTION_KEY` or the provider; one restaurant failing
@@ -547,8 +553,8 @@ completó»). Money may or may not have been taken. Nothing retries on its own.
    only the provider's own verification call refusing the same credentials does.
 
 **Payments: notification failures.** Notifications only make the worker read sooner: charges
-still settle by polling (every 2 s for 3 minutes, then every 10 s), so a broken notification
-costs seconds, not money.
+still settle by polling (every 5 s on Mercado Pago and 2 s on Clip for 3 minutes, then every
+10 s), so a broken notification costs seconds, not money.
 
 - `webhook_rejected` events (MP): the notification secret in MP («Webhooks → Clave secreta»)
   differs from the one entered in Configuración. The owner enters both credentials again

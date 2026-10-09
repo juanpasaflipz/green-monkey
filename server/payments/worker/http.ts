@@ -27,7 +27,33 @@ export type HttpResponse = {
   status: number;
   /** Parsed JSON, or null when the body is empty or not JSON. */
   body: unknown;
+  /** A Retry-After header's wait (seconds or an HTTP date), clamped to RETRY_AFTER_MAX_MS. */
+  retryAfterMs?: number | null;
 };
+
+/** The longest Retry-After honoured; a longer one is read as this (a charge cannot wait more). */
+export const RETRY_AFTER_MAX_MS = 60_000;
+
+/**
+ * Retry-After as milliseconds (RFC 9110 §10.2.3: delay-seconds or an HTTP-date); null when absent
+ * or unreadable. Mercado Pago's Orders API asks to wait for it after a 429 on order creation.
+ */
+export function retryAfterMs(
+  value: string | null,
+  now: number = Date.now(),
+): number | null {
+  if (!value) return null;
+  const v = value.trim();
+  // An HTTP-date starts with the day name ("Fri, 09 Oct 2026 12:00:12 GMT"); Date.parse alone
+  // would also read "1.5" or "-5" as dates.
+  const ms = /^\d{1,6}$/.test(v)
+    ? Number(v) * 1000
+    : /^[A-Za-z]{3,9},? /.test(v)
+      ? Date.parse(v) - now
+      : NaN;
+  if (!Number.isFinite(ms)) return null;
+  return Math.min(Math.max(ms, 0), RETRY_AFTER_MAX_MS);
+}
 
 /** Default timeout of a provider call (spec §4.7: 15 s). */
 export const PROVIDER_TIMEOUT_MS = 15_000;
@@ -88,10 +114,17 @@ export async function providerRequest(o: {
     } catch {
       body = null;
     }
-  return { status: res.status, body };
+  return {
+    status: res.status,
+    body,
+    retryAfterMs: retryAfterMs(res.headers.get("retry-after")),
+  };
 }
 
-/** 429 and 5xx as retryable ProviderErrors (the caller maps 4xx itself). */
+/**
+ * 429 and 5xx as retryable ProviderErrors (the caller maps 4xx itself). A 429 waits for the
+ * provider's Retry-After when it sends one, else 3.5 s (pos-lite's observed MP back-off).
+ */
 export function transientError(r: HttpResponse): ProviderError | null {
   if (r.status === 429)
     return new ProviderError(
@@ -99,7 +132,7 @@ export function transientError(r: HttpResponse): ProviderError | null {
       429,
       null,
       true,
-      3500,
+      r.retryAfterMs ?? 3500,
     );
   if (r.status >= 500)
     return new ProviderError(

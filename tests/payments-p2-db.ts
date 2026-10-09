@@ -1825,6 +1825,151 @@ try {
     assert.equal((await tenderOf(v3.id)).length, 0);
   });
 
+  await test("MP 429s (P2-PROVIDERS-8): a create answered only 429 made no order: the push backs off 10 s then 20 s and declines it payments_provider_unavailable (the manual fallback), never unknown; a 5xx among the tries keeps the unknown path; MP is read every 5 s while a charge is fresh, Clip every 2 s", async () => {
+    const pushJob = async (attemptId: string) =>
+      (
+        await asOwner(
+          A,
+          (tx) => tx`select state,attempts,error_code,
+              extract(epoch from next_at - now())::float8 as wait_s
+            from jobs where kind='payments_push' and dedupe_key=${attemptId}`,
+        )
+      )[0] as Record<string, any>;
+    const creates = (attemptId: string) =>
+      fake.requests.filter(
+        (r) =>
+          r.method === "POST" &&
+          r.path === "/mp/v1/orders" &&
+          r.idempotencyKey === attemptId,
+      ).length;
+    // (a) 429 on every try.
+    const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    for (let i = 0; i < 3; i++) fake.next("mercadopago", "rateLimit429");
+    const view = await start(cashier, o.id, terminals.mp, o.total);
+    await round(A);
+    let job = await pushJob(view.id);
+    assert.deepEqual(
+      [job.state, job.attempts, job.error_code, await stateOf(view.id)],
+      ["available", 1, "payments_provider_rate_limited", "sending"],
+    );
+    assert.ok(job.wait_s > 5 && job.wait_s <= 10, `first wait ${job.wait_s}`);
+    await round(A);
+    job = await pushJob(view.id);
+    assert.equal(job.attempts, 2);
+    assert.ok(job.wait_s > 15 && job.wait_s <= 20, `second wait ${job.wait_s}`);
+    await round(A);
+    const row = await attemptRow(view.id);
+    assert.deepEqual(
+      [row.state, row.error_code, row.provider_reference],
+      ["declined", "payments_provider_unavailable", null],
+    );
+    assert.equal((await pushJob(view.id)).state, "done");
+    assert.equal(creates(view.id), 3, "three tries, one key");
+    assert.equal(
+      [...fake.charges.values()].filter((c) => c.reference === view.id).length,
+      0,
+      "MP made no order",
+    );
+    assert.deepEqual(
+      (await eventsOf(view.id)).map((e) => e.kind),
+      [
+        "created",
+        "sent",
+        "rate_limited",
+        "resent",
+        "rate_limited",
+        "resent",
+        "rate_limited",
+        "declined",
+      ],
+    );
+    assert.deepEqual((await eventsOf(view.id)).at(-1)?.detail, {
+      code: "payments_provider_unavailable",
+      source: "rate_limited",
+      before: "sending",
+      httpStatus: 429,
+    });
+    // The order is free again: the cashier charges it on a manual terminal (the fallback).
+    assert.equal(
+      (await write(cashier, (tx) => activeAttempts(tx, cashier))).some(
+        (a: AttemptView) => a.id === view.id,
+      ),
+      false,
+    );
+    const again = await pending(o, terminals.mp);
+    await write(cashier, (tx) =>
+      requestCancel(tx, cashier, again.id, { operationId: randomUUID() }),
+    );
+    assert.equal(await drive(again.id, ["cancelled"]), "cancelled");
+
+    // (b) A 5xx first (MP may have made the order), then 429s: unknown, as before, with a recovery.
+    const o2 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    fake.next("mercadopago", "server5xx");
+    fake.next("mercadopago", "rateLimit429");
+    fake.next("mercadopago", "rateLimit429");
+    const v2 = await start(cashier, o2.id, terminals.mp, o2.total);
+    for (let i = 0; i < 3; i++) await round(A, { due: i > 0 });
+    const row2 = await attemptRow(v2.id);
+    assert.deepEqual(
+      [row2.state, row2.error_code],
+      ["unknown", "payments_provider_unreachable"],
+    );
+    assert.equal(creates(v2.id), 3);
+    // The recovery's identical re-POST finds (here: makes) MP's order; the cashier cancels it.
+    assert.equal(await drive(v2.id, ["pending"]), "pending");
+    await write(cashier, (tx) =>
+      requestCancel(tx, cashier, v2.id, { operationId: randomUUID() }),
+    );
+    assert.equal(await drive(v2.id, ["cancelled"]), "cancelled");
+
+    // (c) Read cadence of a fresh charge: the poll chain's links are 5 s apart for MP, 2 s for Clip.
+    const link = async (attemptId: string, seq: number, from: Date) =>
+      Number(
+        (
+          await asOwner(
+            A,
+            (
+              tx,
+            ) => tx`select extract(epoch from next_at - ${from}::timestamptz)::float8 as s
+              from jobs where kind='payments_poll' and payload->>'attemptId'=${attemptId}
+                and (payload->>'seq')::int=${seq}`,
+          )
+        )[0].s,
+      );
+    const clock = async () =>
+      (await admin`select clock_timestamp() as t`)[0].t as Date;
+    for (const [terminalId, ms] of [
+      [terminals.mp, 5000],
+      [terminals.clip, 2000],
+    ] as const) {
+      const oc = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+      const vc = await start(cashier, oc.id, terminalId, oc.total);
+      const before = await clock();
+      await round(A, { due: false });
+      const after = await clock();
+      assert.equal(await stateOf(vc.id), "pending");
+      const span = (after.getTime() - before.getTime()) / 1000;
+      const first = await link(vc.id, 1, before);
+      assert.ok(
+        first >= ms / 1000 - 0.05 && first <= ms / 1000 + span + 0.05,
+        `first read ${first} s after the push (${ms} ms)`,
+      );
+      const before2 = await clock();
+      await round(A);
+      const after2 = await clock();
+      const span2 = (after2.getTime() - before2.getTime()) / 1000;
+      const second = await link(vc.id, 2, before2);
+      assert.ok(
+        second >= ms / 1000 - 0.05 && second <= ms / 1000 + span2 + 0.05,
+        `next read ${second} s after the first (${ms} ms)`,
+      );
+      await write(cashier, (tx) =>
+        requestCancel(tx, cashier, vc.id, { operationId: randomUUID() }),
+      );
+      assert.equal(await drive(vc.id, ["cancelled"]), "cancelled");
+    }
+  });
+
   await test("dead push: when payments_push goes dead with the attempt still sending (its last claim fails, or its lease expires on that claim), the attempt becomes unknown (payments_push_failed) and nothing is sent again; Cobros en terminal lists it with Resolver, Excepciones after 10 minutes, and a manager resolves it", async () => {
     const pushJob = async (attemptId: string) =>
       (

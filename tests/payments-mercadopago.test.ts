@@ -19,7 +19,11 @@ import {
   verifyMpSignature,
   type MpClient,
 } from "../server/payments/worker/mercadopago";
-import { ProviderError } from "../server/payments/worker/http";
+import {
+  ProviderError,
+  RETRY_AFTER_MAX_MS,
+  retryAfterMs,
+} from "../server/payments/worker/http";
 
 const BASE = "https://api.mercadopago.com";
 const c: MpClient = {
@@ -225,6 +229,48 @@ describe("createPointOrder: request shape", () => {
     )) as ProviderError;
     expect(limited.code).toBe("payments_provider_rate_limited");
     expect(limited.retryAfterMs).toBe(3500);
+  });
+});
+
+describe("429 and Retry-After (P2-PROVIDERS-8: MP's Orders API asks to wait for Retry-After after a 429 on order creation)", () => {
+  it("parses delay-seconds and an HTTP date, clamps to a minute, ignores anything else", () => {
+    const now = Date.parse("2026-10-09T12:00:00Z");
+    expect(retryAfterMs("7", now)).toBe(7000);
+    expect(retryAfterMs(" 0 ", now)).toBe(0);
+    expect(retryAfterMs("Fri, 09 Oct 2026 12:00:12 GMT", now)).toBe(12_000);
+    expect(retryAfterMs("Fri, 09 Oct 2026 11:59:00 GMT", now)).toBe(0);
+    expect(retryAfterMs("3600", now)).toBe(RETRY_AFTER_MAX_MS);
+    for (const bad of [null, "", "soon", "-5", "1.5"])
+      expect(retryAfterMs(bad, now)).toBeNull();
+  });
+
+  it("a create answered 429 carries MP's Retry-After as its wait (3.5 s without one)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response("{}", {
+            status: 429,
+            headers: {
+              "Content-Type": "application/json",
+              "Retry-After": "12",
+            },
+          }),
+      ),
+    );
+    const limited = (await createPointOrder(c, {
+      attemptId,
+      total: 23600,
+      terminalId: expected.deviceId,
+      expiration: "PT10M",
+      description: "Orden ficticia",
+    }).catch((e) => e)) as ProviderError;
+    expect([limited.code, limited.status, limited.retryable]).toEqual([
+      "payments_provider_rate_limited",
+      429,
+      true,
+    ]);
+    expect(limited.retryAfterMs).toBe(12_000);
   });
 });
 
