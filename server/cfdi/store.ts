@@ -44,6 +44,7 @@ import {
   type CardForm,
   DEFAULT_PLATFORM_FORM,
   type PlatformForm,
+  type SubstituteForm,
   type GlobalPeriodView,
   type Periodicity,
   type PendingSelfInvoice,
@@ -165,7 +166,7 @@ export type DocumentRow = {
   receptorRfc: string | null;
   cardPaymentForm: CardForm | null;
   /** A substitute credit note's FormaPago chosen by the manager (CFDI-SAT-2). */
-  paymentFormOverride: "01" | CardForm | null;
+  paymentFormOverride: SubstituteForm | null;
   /** A route-III credit note to a global for this ticket's net amount (CFDI-SAT-3). */
   creditTicketId: string | null;
   confirmPreStart: boolean;
@@ -1661,7 +1662,10 @@ export async function ticketView(
     eligibility: status,
     deadline,
     deadlineBound: window?.bound ?? null,
-    needsCardForm: needsCardForm(t.payload.payments),
+    needsCardForm: needsCardForm(
+      t.payload.payments,
+      settings?.platformPaymentForm ?? DEFAULT_PLATFORM_FORM,
+    ),
     cardPaymentForm: settings?.cardPaymentForm ?? "04",
     defaultUse: settings?.defaultUse ?? "G03",
     covering: covering

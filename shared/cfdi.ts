@@ -64,6 +64,13 @@ export const PLATFORM_PAYMENT_FORMS = ["31", "03", "04", "28"] as const;
 export type PlatformForm = (typeof PLATFORM_PAYMENT_FORMS)[number];
 export const DEFAULT_PLATFORM_FORM: PlatformForm = "31";
 export type PaymentFormCode = "01" | CardForm | PlatformForm;
+/**
+ * The forms a substitute credit note may carry (CFDI-SAT-2; PAYMENTS-FISCAL-1): cash, the card
+ * forms and the platform forms, so a platform refund's note (31 or 03) can be corrected to either.
+ * cfdi_documents.payment_form_override has the same list (037).
+ */
+export const SUBSTITUTE_PAYMENT_FORMS = ["01", "03", "04", "28", "31"] as const;
+export type SubstituteForm = (typeof SUBSTITUTE_PAYMENT_FORMS)[number];
 /** The forms that depend on settings: the card answer and the platform setting. */
 export type PaymentForms = { card: CardForm; platform?: PlatformForm };
 /** A tender as the CFDI sees it (fiscal ticket payload); the extras are optional (old tickets). */
@@ -127,11 +134,13 @@ export function paymentFormFor(
 
 /**
  * True when the forma de pago depends on a card answer (credit or debit): an external tender
- * without a known card type decides the form.
+ * without a known card type decides the form. `platform` is the restaurant's platform form
+ * (cfdi_settings.platform_payment_form), required so no caller silently assumes 31: with 04 or
+ * 28 the platform money joins a card sum and may change the answer (PAYMENTS-FISCAL-3).
  */
 export function needsCardForm(
   payments: readonly FormPayment[],
-  platform?: PlatformForm,
+  platform: PlatformForm,
 ): boolean {
   return (
     paymentFormFor(payments, { card: "04", platform }) !==
@@ -851,7 +860,7 @@ export const substituteInput = z
 export const egresoSubstituteInput = z
   .object({
     operationId: id,
-    paymentForm: z.enum(["01", ...CARD_PAYMENT_FORMS]),
+    paymentForm: z.enum(SUBSTITUTE_PAYMENT_FORMS),
     reason: z.string().trim().min(1).max(300),
   })
   .strict();

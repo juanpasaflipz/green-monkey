@@ -1179,7 +1179,7 @@ export async function substituteDocument(
       if (!claim) throw new DomainError("cfdi_not_valid", 409);
       const t = await ticketFacts(tx, claim.ticket_id, current.mode);
       if (
-        needsCardForm(t.payload.payments) &&
+        needsCardForm(t.payload.payments, state.settings.platformPaymentForm) &&
         !p.cardForm &&
         !current.cardPaymentForm
       )

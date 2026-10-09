@@ -46,6 +46,7 @@ import {
   type PaymentFormCode,
   type PlatformForm,
   type Receptor,
+  type SubstituteForm,
 } from "../../shared/cfdi.js";
 import {
   invoiceInput,
@@ -755,7 +756,7 @@ export type EgresoBuildInput = {
    * A substitute credit note (CFDI-SAT-2): the UUID of the credit note it replaces (relation 04,
    * next to the 01 relation to the parent) and the FormaPago the manager chose.
    */
-  replaces?: { uuid: string; paymentForm: "01" | CardForm } | null;
+  replaces?: { uuid: string; paymentForm: SubstituteForm } | null;
   /**
    * What the note credits: a refund (default), or a ticket's whole net amount in a global before
    * its nominative invoice (route III, CFDI-SAT-3), with the ticket's own FormaPago.
@@ -824,7 +825,12 @@ export function buildEgresoRequest(i: EgresoBuildInput): EgresoBuild {
         ? parent.paymentForm
         : i.cardForm
       : refund.method === "platform"
-        ? (i.platformForm ?? DEFAULT_PLATFORM_FORM)
+        ? // The note keeps its parent's platform form when the parent has one (31 and 03 only
+          // come from platform money), so a later change of the setting never splits the pair
+          // (PAYMENTS-FISCAL-2); otherwise the setting in force.
+          parent.paymentForm && ["31", "03"].includes(parent.paymentForm)
+          ? (parent.paymentForm as PlatformForm)
+          : (i.platformForm ?? DEFAULT_PLATFORM_FORM)
         : refund.method === "cash"
           ? "01"
           : (() => {

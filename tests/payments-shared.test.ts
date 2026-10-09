@@ -606,17 +606,49 @@ describe("CFDI FormaPago of platform and typed card tenders (§7.2, Q3/Q4)", () 
     );
   });
   it("needsCardForm only when an untyped card tender decides the form", () => {
-    expect(needsCardForm([{ method: "platform", amount: 500 }])).toBe(false);
+    expect(needsCardForm([{ method: "platform", amount: 500 }], "31")).toBe(
+      false,
+    );
     expect(
-      needsCardForm([{ method: "external", amount: 500, cardType: "credit" }]),
+      needsCardForm(
+        [{ method: "external", amount: 500, cardType: "credit" }],
+        "31",
+      ),
     ).toBe(false);
-    expect(needsCardForm([{ method: "external", amount: 500 }])).toBe(true);
+    expect(needsCardForm([{ method: "external", amount: 500 }], "31")).toBe(
+      true,
+    );
     expect(
-      needsCardForm([
-        { method: "platform", amount: 500 },
-        { method: "external", amount: 100 },
-      ]),
+      needsCardForm(
+        [
+          { method: "platform", amount: 500 },
+          { method: "external", amount: 100 },
+        ],
+        "31",
+      ),
     ).toBe(false);
+  });
+  it("needsCardForm counts the restaurant's platform form (PAYMENTS-FISCAL-3 / MONEY-9)", () => {
+    // cash 100, untyped card 60, platform 50: with 31 cash wins both ways; with 04 the platform
+    // joins credit (04: 110 > 01: 100) but not debit (01 wins), so the card answer decides.
+    const mixed = [
+      { method: "cash", amount: 100 },
+      { method: "external", amount: 60 },
+      { method: "platform", amount: 50 },
+    ];
+    expect(needsCardForm(mixed, "31")).toBe(false);
+    expect(needsCardForm(mixed, "04")).toBe(true);
+    // cash 60, card 40, DiDi 50 with 28: credit -> 01 (60), debit -> 28 (90).
+    expect(
+      needsCardForm(
+        [
+          { method: "cash", amount: 60 },
+          { method: "external", amount: 40 },
+          { method: "platform", amount: 50 },
+        ],
+        "28",
+      ),
+    ).toBe(true);
   });
   const platformTicket = (folio = "A-000123") =>
     cfdiPayload({
@@ -684,7 +716,11 @@ describe("CFDI FormaPago of platform and typed card tenders (§7.2, Q3/Q4)", () 
     expect(parts.map((p) => p.body.payment_form)).toEqual(["03"]);
   });
   it("the credit note of a platform refund uses the platform form, never 01", () => {
-    const egreso = (method: string, platformForm?: "31" | "03") =>
+    const egreso = (
+      method: string,
+      platformForm?: "31" | "03",
+      parentForm: string | null = "31",
+    ) =>
       buildEgresoRequest({
         docId: "0b6a1a8e-3f1e-4c55-9d1e-2f6d1c0a9b11",
         folio: "A-000123",
@@ -692,7 +728,7 @@ describe("CFDI FormaPago of platform and typed card tenders (§7.2, Q3/Q4)", () 
           kind: "invoice",
           uuid: "39c85a3f-275b-4341-b259-e8971d9f8a94",
           receptor: RECEPTOR_MORAL,
-          paymentForm: "31",
+          paymentForm: parentForm,
         },
         refund: {
           method,
@@ -703,7 +739,14 @@ describe("CFDI FormaPago of platform and typed card tenders (§7.2, Q3/Q4)", () 
         platformForm,
       }).body.payment_form;
     expect(egreso("platform")).toBe("31");
-    expect(egreso("platform", "03")).toBe("03");
+    // PAYMENTS-FISCAL-2: a parent stamped with a platform form keeps it on its credit note after
+    // the setting changes (31 -> 03 and 03 -> 31), so the income and its refund match.
+    expect(egreso("platform", "03")).toBe("31");
+    expect(egreso("platform", "31", "03")).toBe("03");
+    // A parent whose form is not a platform form (cash or card decided it) takes the setting.
+    expect(egreso("platform", "03", "01")).toBe("03");
+    expect(egreso("platform", "03", null)).toBe("03");
+    expect(egreso("platform", undefined, "04")).toBe("31");
     expect(egreso("cash")).toBe("01");
     expect(egreso("external")).toBe("04");
     expect(() => egreso("card")).toThrow("cfdi_payment_method_unknown");
