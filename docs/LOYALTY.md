@@ -125,8 +125,11 @@ club" panel (Mesas checks open in Vender, whose club control covers them). Clien
 shown only while the club is on). Configuración › Club de lealtad (after Privacidad y datos) with the
 pos-lite import. Finanzas › Club de lealtad. The receipt's club block prints through Receipt.tsx's
 `setReceiptExtra` slot (its own slot: it prints with or without a fiscal ticket and never replaces
-fiscal's or cfdi's lines): the member's counts with no name or phone, or the join QR. `/club#<token>`
-is the diner join page (no service worker). Everything is online-only: offline, the controls are
+fiscal's or cfdi's lines): the member's counts with no name or phone, or the join QR (not on a
+settled order whose stamp base earns nothing: platform-paid, fully comped or refunded). `/club#<token>`
+is the diner join page (no service worker). An order is claimable once: once it has a link, every
+phone (the claimant's included) gets `loyalty_order_linked` and the page shows "Esta compra ya sumó
+sellos.", so a receipt never tells whether a given phone claimed it. Everything is online-only: offline, the controls are
 disabled with "El club requiere conexión." and the sale proceeds.
 
 ## Privacy (LFPDPPP)

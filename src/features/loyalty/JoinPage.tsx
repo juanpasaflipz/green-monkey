@@ -16,7 +16,7 @@ import {
 } from "../../../shared/loyalty";
 import { errorText, strings } from "../../i18n";
 import { Button, Field } from "../../components/ui";
-import { dayText, fill } from "./format";
+import { dayText, fill, joinDoneText } from "./format";
 // Its own styles (loyalty.css), not public ordering's diner.css: a CSS file shared by two lazy
 // pages becomes a JS-less chunk the service worker's precache list would name but never find.
 import "./loyalty.css";
@@ -94,7 +94,10 @@ export function JoinPage() {
         }),
       );
     } catch (e) {
-      setError(message((e as Error).message, locale));
+      const code = (e as Error).message;
+      // An order already claimed answers every phone alike: "Esta compra ya sumó sellos."
+      if (code === "loyalty_order_linked") setView({ ...view!, linked: true });
+      else setError(message(code, locale));
     } finally {
       setBusy(false);
     }
@@ -125,13 +128,7 @@ export function JoinPage() {
       </p>
       {done ? (
         <p role="status" className="loyalty-join-done">
-          {done.pending
-            ? t.loyaltyJoinPending
-            : fill(t.loyaltyJoinDone, {
-                n: done.stampsAdded,
-                stamps: done.stamps,
-                required: done.required,
-              })}
+          {joinDoneText(done, locale)}
         </p>
       ) : view.linked ? (
         <p role="status">{t.loyaltyJoinAlready}</p>

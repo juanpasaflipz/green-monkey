@@ -28,6 +28,7 @@ import {
   isSettled,
   orderLoyaltyView,
   reconcileOrderHeld,
+  settledEarnsNothing,
 } from "./ledger.js";
 
 /** The members a link command may post for, read before the lock (plain reads). */
@@ -296,6 +297,7 @@ export async function receiptLoyalty(
     };
   if (!program.receiptJoinQr || view.member || !view.linkable)
     return { kind: "none" };
+  if (await settledEarnsNothing(tx, orderId, program)) return { kind: "none" };
   return {
     kind: "join",
     token: joinToken(s.tenantId, orderId, program),
@@ -326,6 +328,7 @@ export async function joinUrlForOrder(
   if (!program.enabled) return null;
   const view = await orderLoyaltyView(tx, orderId, program);
   if (view.member || !view.linkable) return null;
+  if (await settledEarnsNothing(tx, orderId, program)) return null;
   const [r] =
     await tx`select tenant_id from orders where id=${orderId}`;
   const base = (process.env.APP_URL ?? "").replace(/\/$/, "");

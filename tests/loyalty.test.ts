@@ -20,6 +20,7 @@ import {
 import { TENDER_METHODS } from "../shared/payments";
 import { planDiscount } from "../shared/discounts";
 import type { PayableUnit } from "../shared/settlement";
+import { joinDoneText } from "../src/features/loyalty/format";
 
 describe("parsePhone", () => {
   it("accepts Mexican numbers as +52 and 10 digits, with or without prefixes and separators", () => {
@@ -369,5 +370,23 @@ describe("rewardDiscountRequest (§2.6)", () => {
       discounts: [{ scope: "order", reversal: null } as never],
     };
     expect(() => rewardDiscountRequest(amount, withCheck)).toThrow("loyalty_reward_conflict");
+  });
+});
+
+describe("the /club result text (LOYALTY-UX-7, UX-8)", () => {
+  const done = { stampsAdded: 1, stamps: 4, required: 10, rewards: 0, completed: 0, pending: false };
+  it("one stamp is singular, several plural", () => {
+    expect(joinDoneText(done, "es")).toBe("¡Listo! Sumaste 1 sello. Llevas 4 de 10.");
+    expect(joinDoneText({ ...done, stampsAdded: 3, stamps: 6 }, "es")).toBe("¡Listo! Sumaste 3 sellos. Llevas 6 de 10.");
+    expect(joinDoneText(done, "en")).toBe("Done! You earned 1 stamp. You have 4 of 10.");
+  });
+  it("a completed card says so instead of 0 de 10", () => {
+    const full = { ...done, stamps: 0, rewards: 1, completed: 1 };
+    expect(joinDoneText(full, "es")).toBe("¡Completaste tu tarjeta! Tienes 1 premio disponible. Pídelo en caja.");
+    expect(joinDoneText({ ...full, rewards: 2 }, "en")).toBe("You completed your card! You have 2 rewards available. Ask for it at the counter.");
+  });
+  it("a purchase that earned nothing never says Sumaste 0 sellos; an unpaid one is pending", () => {
+    expect(joinDoneText({ ...done, stampsAdded: 0 }, "es")).toBe("Esta compra no suma sellos.");
+    expect(joinDoneText({ ...done, stampsAdded: 0, pending: true }, "es")).toBe("¡Listo! Tus sellos se sumarán cuando se pague esta orden.");
   });
 });

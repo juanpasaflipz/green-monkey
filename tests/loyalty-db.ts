@@ -1269,7 +1269,7 @@ try {
     await rejects(joinOrder(sql, token, { ...body(newPhone()), privacyAccepted: false }), "loyalty_consent_required");
     const phone = newPhone();
     const r = await joinOrder(sql, token, body(phone));
-    assert.deepEqual(r, { stampsAdded: 0, stamps: 0, required: 10, rewards: 0, pending: true });
+    assert.deepEqual(r, { stampsAdded: 0, stamps: 0, required: 10, rewards: 0, completed: 0, pending: true });
     const [m] = await asAdmin(f.tenantId, (tx) => tx`select m.joined_via,m.consent_channel,m.consent_notice_url,m.joined_by,l.via,l.linked_by
       from loyalty_members m join loyalty_order_links l on l.member_id=m.id where m.phone_e164=${"+52" + phone}`);
     assert.deepEqual({ ...m }, { joined_via: "join_qr", consent_channel: "self_service", consent_notice_url: "https://example.com/aviso-de-privacidad", joined_by: null, via: "join_qr", linked_by: null });
@@ -1277,8 +1277,11 @@ try {
     assert.equal((await joinView(sql, token)).linked, true);
     await pay(f, o.id, 15000);
     await runJobs(f, o.id);
-    const again = await joinOrder(sql, token, body(phone, "Otro nombre"));
-    assert.deepEqual(again, { stampsAdded: 1, stamps: 1, required: 10, rewards: 0, pending: false });
+    // The claimant's own phone gets the same answer as any other (LOYALTY-PRIVACY-2); the settle
+    // earned the stamp and the stored name stayed.
+    await rejects(joinOrder(sql, token, body(phone, "Otro nombre")), "loyalty_order_linked");
+    const [claimant] = await asAdmin(f.tenantId, (tx) => tx`select stamps,name from loyalty_members where phone_e164=${"+52" + phone}`);
+    assert.deepEqual([claimant.stamps, claimant.name], [1, "Diana"]);
     // An existing member's name is never overwritten from this page.
     const ana = await enroll(f, { name: "Ana Caja" });
     const p2 = await newOrder(f, [{ product: f.p.taco, quantity: 1 }]);
@@ -1296,6 +1299,67 @@ try {
     const qr = await run(f.s.cashier, (tx) => receiptLoyalty(tx, f.s.cashier, p3.id));
     assert.equal(qr.kind, "join");
     if (qr.kind === "join") assert.equal((await joinView(sql, qr.token)).orderNumber, p3.number);
+  });
+
+  await test("L23. join races and outcomes: a claim that commits while a join waits on the order's link key is loyalty_order_linked, not a 23505 (LOYALTY-CONCURRENCY-3); two phones at once, one wins (noRetries); a join that completes a card reports it; a settled order whose base earns nothing offers no join QR (LOYALTY-UX-7)", async () => {
+    const f = await clubTenant("carrera-qr");
+    const body = (phone: string) => ({ phone, country: "MX", name: "Diana", privacyAccepted: true, marketingOptIn: false });
+    const tokenOf = (orderId: string) => seal("loyalty-join", { t: f.tenantId, o: orderId }, { ttlSeconds: 3600 });
+    const outcome = (p: Promise<unknown>) => p.then(() => "joined", (e) => String(e.code ?? e.message));
+    // The cashier's "Usar" in flight: its link insert is uncommitted while the join passes its
+    // checks (a plain read sees no link) and then waits on the order's key.
+    const beto = await enroll(f, { name: "Beto Caja" });
+    const o = await newOrder(f, [{ product: f.p.taco, quantity: 1 }]);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let linked!: () => void;
+    const inFlight = new Promise<void>((r) => (linked = r));
+    const side = postgres(migration, { max: 1 }); // admin's single connection stays free for the poll
+    const cashier = side.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id',${f.tenantId},true)`;
+      await tx`insert into loyalty_order_links(tenant_id,order_id,member_id,via,linked_by)
+        values(${f.tenantId},${o.id},${beto.id},'pos',${f.ids.cashier})`;
+      linked();
+      await gate;
+    });
+    await inFlight;
+    const join = outcome(joinOrder(sql, tokenOf(o.id), body(newPhone())));
+    for (let i = 0; ; i++) {
+      const [w] = await admin`select count(*)::int as n from pg_locks l join pg_stat_activity a on a.pid=l.pid
+        where not l.granted and a.datname=current_database()`;
+      if (w.n > 0) break;
+      assert(i < 200, "the join never waited on the claim's key");
+      await new Promise((r) => setTimeout(r, 25));
+    }
+    release();
+    await cashier;
+    await side.end();
+    assert.equal(await join, "loyalty_order_linked");
+    // Two phones on one receipt at once: one link, the other is loyalty_order_linked.
+    for (let i = 0; i < 4; i++) {
+      const q = await newOrder(f, [{ product: f.p.taco, quantity: 1 }]);
+      const t = tokenOf(q.id);
+      const got = await noRetries(`L23 two phones ${i}`, () =>
+        Promise.all([outcome(joinOrder(sql, t, body(newPhone()))), outcome(joinOrder(sql, t, body(newPhone())))]),
+      );
+      assert.deepEqual(got.sort(), ["joined", "loyalty_order_linked"], `order ${i}`);
+    }
+    // A member at 9 of 10 joins a paid order: the card completes and the reply says so.
+    const carla = await enroll(f, { name: "Carla" });
+    await giveStamps(f, carla.id, 9);
+    const carlaPhone = (await asAdmin(f.tenantId, (tx) => tx`select phone_e164 from loyalty_members where id=${carla.id}`))[0].phone_e164.slice(3);
+    const paid = await newOrder(f, [{ product: f.p.taco, quantity: 1 }]);
+    await pay(f, paid.id, 4500);
+    assert.deepEqual(await joinOrder(sql, tokenOf(paid.id), body(carlaPhone)), {
+      stampsAdded: 1, stamps: 0, required: 10, rewards: 1, completed: 1, pending: false,
+    });
+    // A settled order whose stamp base is 0 (fully refunded) prints no join QR and the kiosk offers none.
+    const refunded = await newOrder(f, [{ product: f.p.taco, quantity: 1 }]);
+    await pay(f, refunded.id, 4500);
+    assert.equal((await run(f.s.cashier, (tx) => receiptLoyalty(tx, f.s.cashier, refunded.id))).kind, "join");
+    await refundAmount(f, refunded.id, 4500);
+    assert.deepEqual(await run(f.s.cashier, (tx) => receiptLoyalty(tx, f.s.cashier, refunded.id)), { kind: "none" });
+    assert.equal(await run(f.s.cashier, (tx) => joinUrlForOrder(tx, refunded.id)), null);
   });
 
   await test("L19. kiosk (R20–R23): config; a lookup returns counts and a masked phone only, with a member token bound to tenant and station; memberFromToken refuses another station, tenant or a deleted member; linkFromKiosk inside the order's transaction, then the settle earns; joinUrlForOrder", async () => {
@@ -1542,6 +1606,19 @@ try {
       const g = await call("GET", "/api/club/join", { token });
       assert.equal(g.status, 200);
       assert.equal(g.headers.get("cache-control"), "no-store");
+      // An order already claimed answers every phone alike (LOYALTY-PRIVACY-2): the claimant's own
+      // phone, another member's and a stranger's get the same status and body.
+      const claimed = await newOrder(f, [{ product: f.p.taco, quantity: 1 }]);
+      const ct = seal("loyalty-join", { t: f.tenantId, o: claimed.id }, { ttlSeconds: 3600 });
+      const joinBody = (p: string) => ({ phone: p, country: "MX", name: "Diana", privacyAccepted: true, marketingOptIn: false });
+      const claimant = newPhone();
+      assert.equal((await call("POST", "/api/club/join", { token: ct, body: joinBody(claimant) })).status, 200);
+      const replies = [];
+      for (const p of [claimant, phone, newPhone()]) {
+        const r = await call("POST", "/api/club/join", { token: ct, body: joinBody(p) });
+        replies.push([r.status, r.body.error, Object.keys(r.body).sort()]);
+      }
+      assert.deepEqual(replies, Array(3).fill([409, "loyalty_order_linked", ["error", "requestId"]]));
       const bad = await call("GET", "/api/club/join", { token: "not-a-token" });
       assert.deepEqual([bad.status, bad.body.error, bad.headers.get("cache-control")], [401, "unauthorized", "no-store"]);
       // Malformed tokens never reach the database: a router over a pool that throws.

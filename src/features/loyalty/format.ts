@@ -1,6 +1,10 @@
 /** Loyalty club labels and text helpers (038, specs/loyalty-w4.md §5.4). */
 import type { Locale } from "../../../shared/domain";
-import type { LedgerKind, MemberSummary } from "../../../shared/loyalty";
+import type {
+  JoinResult,
+  LedgerKind,
+  MemberSummary,
+} from "../../../shared/loyalty";
 import { strings, type Key } from "../../i18n";
 import { fill } from "../discounts/format";
 import { moneyFormatter } from "../Receipt";
@@ -42,6 +46,23 @@ export const consentChannelLabel = (channel: string, locale: Locale) =>
 export function rewardsText(n: number, locale: Locale) {
   const t = strings[locale];
   return n === 1 ? t.loyaltyRewardOne : fill(t.loyaltyRewardMany, { n });
+}
+
+/**
+ * The /club result (LOYALTY-UX-7, UX-8): pending payment, a completed card (never "0 de 10" alone),
+ * a purchase that earned nothing, or 1 / n stamps.
+ */
+export function joinDoneText(done: JoinResult, locale: Locale) {
+  const t = strings[locale];
+  if (done.pending) return t.loyaltyJoinPending;
+  if (done.completed > 0)
+    return fill(t.loyaltyJoinCompleted, { rewards: rewardsText(done.rewards, locale) });
+  if (done.stampsAdded <= 0) return t.loyaltyNoStamps;
+  return fill(done.stampsAdded === 1 ? t.loyaltyJoinDoneOne : t.loyaltyJoinDone, {
+    n: done.stampsAdded,
+    stamps: done.stamps,
+    required: done.required,
+  });
 }
 
 /** "7/10", or "−2 · Ajuste pendiente" for a negative card (never color alone). */

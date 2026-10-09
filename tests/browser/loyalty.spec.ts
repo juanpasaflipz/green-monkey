@@ -328,7 +328,7 @@ test("receipt QR: /club joins once with counts only; a second attempt says Esta 
     await expect(p.getByLabel(/Acepto recibir promociones/)).not.toBeChecked();
     await p.getByLabel(/Leí el aviso de privacidad de/).check();
     await p.getByRole("button", { name: "Sumar mis sellos", exact: true }).click();
-    await expect(p.getByRole("status")).toContainText("¡Listo! Sumaste 1 sellos. Llevas 1 de 10.");
+    await expect(p.getByRole("status")).toContainText("¡Listo! Sumaste 1 sello. Llevas 1 de 10.");
     await expect(p.locator("main")).not.toContainText("Diana");
     await p.reload();
     await expect(p.getByText("Esta compra ya sumó sellos.")).toBeVisible();

@@ -3,11 +3,14 @@
  * comes from the sealed "loyalty-join" token {t, o} (opaque ids only), which travels in the URL
  * fragment and the x-gm-join-token header, never in a path. GET never returns member data; POST
  * returns counts only, never the stored name, and never overwrites an existing member's name.
- * Each order is claimable once (the first phone wins; another gets loyalty_order_linked).
+ * Each order is claimable once: the first phone wins, and an order that already has a link answers
+ * loyalty_order_linked to every phone, the claimant's included, so a receipt never tells whether
+ * a given phone claimed it (LOYALTY-PRIVACY-2; "Esta compra ya sumó sellos.").
  *
  * Lock order (ARCHITECTURE row 47, join path; no once()): member insert-or-select → 3 (the members
- * of the order plus this one, sorted, FOR NO KEY UPDATE) → 5 (orders FOR SHARE) → link insert →
- * reconcile inline with the members held. Idempotent by state: the same phone again replays.
+ * of the order plus this one, sorted, FOR NO KEY UPDATE) → 5 (orders FOR SHARE) → link insert (ON
+ * CONFLICT: a concurrent claim that committed first is loyalty_order_linked, never a 23505) →
+ * reconcile inline with the members held.
  */
 import type postgres from "postgres";
 import { randomUUID } from "node:crypto";
@@ -27,7 +30,7 @@ import {
   type JoinView,
 } from "../../shared/loyalty.js";
 import { loadProgram, type Program } from "./settings.js";
-import { orderLoyaltyView, reconcileOrderHeld } from "./ledger.js";
+import { reconcileOrderHeld } from "./ledger.js";
 import {
   assertEligible,
   assertHeld,
@@ -129,23 +132,24 @@ export async function joinOrder(
     await lockMembers(tx, ids);
     const o = await shareOrder(tx, orderId);
     assertEligible(o);
-    const link = await assertHeld(tx, orderId, ids);
-    if (link && link.member_id !== member.id)
+    // Any link (this phone's, another's or a removed one) is the same answer for every phone.
+    if (await assertHeld(tx, orderId, ids))
       throw new DomainError("loyalty_order_linked", 409);
-    if (!link) {
-      if (windowClosed(o, p))
-        throw new DomainError("loyalty_join_expired", 410);
+    if (windowClosed(o, p)) throw new DomainError("loyalty_join_expired", 410);
+    // Two phones (or the cashier's "Usar") racing on one order hold disjoint members and share the
+    // order: the later insert waits on the first's key, then finds it (LOYALTY-CONCURRENCY-3).
+    const [inserted] =
       await tx`insert into loyalty_order_links(tenant_id,order_id,member_id,via,linked_by)
-        values(${tenantId},${orderId},${member.id},'join_qr',null)`;
-    }
-    const view = link
-      ? await orderLoyaltyView(tx, orderId, p)
-      : await reconcileOrderHeld(tx, tenantId, orderId, ids);
+        values(${tenantId},${orderId},${member.id},'join_qr',null)
+        on conflict (tenant_id,order_id) do nothing returning member_id`;
+    if (!inserted) throw new DomainError("loyalty_order_linked", 409);
+    const view = await reconcileOrderHeld(tx, tenantId, orderId, ids);
     return {
       stampsAdded: view.earned,
       stamps: view.member?.stamps ?? 0,
       required: p.stampsRequired,
       rewards: view.member?.rewards ?? 0,
+      completed: view.completed,
       pending: !view.settled,
     };
   });

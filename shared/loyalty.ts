@@ -624,6 +624,8 @@ export type JoinResult = {
   stamps: number;
   required: number;
   rewards: number;
+  /** Cards this order completed (the page says so instead of "0 de 10", LOYALTY-UX-7). */
+  completed: number;
   /** The order is not paid yet: its stamps post when it settles. */
   pending: boolean;
 };

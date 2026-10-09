@@ -18,6 +18,7 @@ import {
   maskPhone,
   planReconcile,
   stampBase,
+  stampsFor,
   type LedgerKind,
   type MemberSummary,
   type OrderLoyaltyView,
@@ -85,6 +86,27 @@ export async function orderStampBase(tx: Tx, orderId: string, total: number) {
       refunded: t.refunded as number,
     })),
   });
+}
+
+/**
+ * A settled order whose stamp base earns no stamp (paid by a platform, fully comped or refunded):
+ * its receipt and the kiosk offer no join QR, which would promise stamps (LOYALTY-UX-7).
+ */
+export async function settledEarnsNothing(
+  tx: Tx,
+  orderId: string,
+  program: Program,
+): Promise<boolean> {
+  const [o] =
+    await tx`select state,check_state,close_reason,total from orders where id=${orderId}`;
+  if (!o || !isSettled(o)) return false;
+  const base = await orderStampBase(tx, orderId, o.total);
+  return (
+    stampsFor(base, {
+      stampThreshold: program.stampThreshold,
+      maxStampsPerOrder: program.maxStampsPerOrder,
+    }) === 0
+  );
 }
 
 /**
