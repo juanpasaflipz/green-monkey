@@ -251,6 +251,14 @@ test("returning member with a reward: Canjear premio after Enviar productos prim
   // The reward is on the chip itself (LOYALTY-UX-16).
   await expect(page.locator(".loyalty-chip")).toContainText("1 premio");
   await product(page, "Agua de jamaica").click();
+  // On a portrait tablet the cart's action row (Guardar borrador, Descuento, Canjear premio, the
+  // saved note) wraps instead of pushing the page sideways (restaurant-day L6-redeem @768x1024).
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await expect(page.getByRole("button", { name: "Canjear premio", exact: true })).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth))
+    .toBe(true);
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.getByRole("button", { name: "Canjear premio", exact: true }).click();
   await page
     .getByRole("dialog", { name: "Enviar productos primero" })
