@@ -230,7 +230,7 @@ export function DrawerCorteDocument({
           <DocRule />
           <DocSection title={t.cashPlatforms}>
             {(doc.platforms ?? []).map((x) => (
-              <div key={x.platform}>
+              <div key={`${x.platform}:${x.label ?? ""}`}>
                 <DocRow
                   label={`${platformLabel(x.platform, x.label, locale)} (${x.count})`}
                   value={m(x.net)}

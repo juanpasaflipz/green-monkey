@@ -10,7 +10,8 @@
  */
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Order, Session } from "../shared/domain";
+import type { Order, Product, Session } from "../shared/domain";
+import { priceCart } from "../shared/service";
 import { fakeDb } from "./offline-fake-db";
 
 vi.mock("../src/offline", async () => ({
@@ -57,6 +58,7 @@ import {
   saveOfflineRound,
   serverLink,
   tablesKey,
+  targetOf,
   type LocalOrderView,
   type SaveContext,
 } from "../src/offline-records";
@@ -748,6 +750,85 @@ describe("projections (OFF-R3)", () => {
     expect((await cachedServerOpenOrders(s)).orders[0]).toMatchObject({
       paid: 130,
     });
+  });
+});
+
+describe("payments (037): a platform-priced order keeps its list offline (PAYMENTS-MONEY-1)", () => {
+  const product = (id: string): Product => ({
+    id,
+    name: { es: "Taco", en: "Taco" },
+    category: { es: "Tacos", en: "Tacos" },
+    price: 5000,
+    available: true,
+    station: "kitchen",
+    groups: [],
+    cost: null,
+    recipe: [],
+    version: 1,
+    platformPrices: { didi_food: 5900, uber_eats: 6100 },
+  });
+  /** Selling's next offline round on `current`: priced at the order's list, as the cart does. */
+  async function nextRound(s: Session, current: LocalOrderView, l = line(2)) {
+    const priceList = current.pricePlatform ?? null;
+    const cart = priceCart([l], [product(l.productId)], true, priceList);
+    return saveOfflineRound(ctxOf(s), {
+      target: targetOf(current),
+      lines: [l],
+      priced: cart.lines.map((x) => x.priced!),
+      total: cart.total,
+      operationId: crypto.randomUUID(),
+      autoPrint: false,
+    });
+  }
+  it("a local order rung at DiDi prices and its second offline round both price at DiDi's list", async () => {
+    const s = session();
+    const first = line();
+    await saveOfflineOrder(ctxOf(s), {
+      draft: {
+        ...draft([first]),
+        mode: "takeaway" as const,
+        pricePlatform: "didi_food",
+      } as never,
+      priced: [priced(first, 5900)],
+      total: 5900,
+      operationId: crypto.randomUUID(),
+      autoPrint: false,
+    });
+    const [local] = await localOpenOrders(s);
+    expect(local.pricePlatform).toBe("didi_food");
+    await nextRound(s, local);
+    const [after] = await localOpenOrders(s);
+    // Two tacos at DiDi's $59.00, never the counter's $50.00 (which the sync would refuse).
+    expect(after.total).toBe(5900 + 2 * 5900);
+    expect(after.pricePlatform).toBe("didi_food");
+  });
+  it("a cached server order and a copy Selling stored keep their list; a round on them prices at it", async () => {
+    const s = session();
+    const uber = uuid(72);
+    await cacheSnapshot(s, [
+      {
+        ...serverCopy(uber, { total: 6100 }),
+        pricePlatform: "uber_eats",
+      } as never,
+    ]);
+    const cached = (await cachedServerOpenOrders(s)).orders.find(
+      (o) => o.id === uber,
+    )!;
+    expect(cached.pricePlatform).toBe("uber_eats");
+    await nextRound(s, cached);
+    expect(
+      (await cachedServerOpenOrders(s)).orders.find((o) => o.id === uber)!
+        .total,
+    ).toBe(6100 + 2 * 6100);
+    const didi = uuid(73);
+    await rememberOpenOrder(s, {
+      ...serverOrder(didi),
+      pricePlatform: "didi_food",
+    });
+    expect(
+      ((await findOpenOrder(s, { orderId: didi })) as LocalOrderView)
+        .pricePlatform,
+    ).toBe("didi_food");
   });
 });
 

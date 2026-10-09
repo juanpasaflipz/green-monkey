@@ -117,7 +117,10 @@ export async function createInvoiceRequest(
     if (recent >= 5)
       throw new DomainError("cfdi_portal_too_many_attempts", 429);
   }
-  if (needsCardForm(t.payload.payments) && !r.cardForm)
+  if (
+    needsCardForm(t.payload.payments, settings.platformPaymentForm) &&
+    !r.cardForm
+  )
     throw new DomainError("cfdi_card_form_required", 400);
 
   const documentId = randomUUID();

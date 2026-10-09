@@ -14,9 +14,14 @@ export default defineArea({
     payTerminal: "Terminal",
     payUseAsDefault: "Usar siempre en este dispositivo",
     payDefaultSaved: "Terminal predeterminada guardada",
+    payDefaultTerminalIs: "Predeterminada en este dispositivo",
+    payDefaultFailed:
+      "No se pudo guardar la terminal predeterminada de este dispositivo.",
     payTerminalManualOnly: "solo manual",
     payPlatform: "Plataforma",
-    payPlatformOrderNumber: "Número de pedido de la plataforma (opcional)",
+    payPlatformOrderNumber: "Número de pedido de la plataforma",
+    payPlatformOrderNumberOptional:
+      "Número de pedido de la plataforma (opcional)",
     payPlatformConfirm: "La plataforma ya cobró este pedido",
     payPlatformPaidIn: "Pagado en {platform}",
     payPlatformOtherName: "Nombre de la plataforma",
@@ -76,10 +81,11 @@ export default defineArea({
     payCommissionHint: "Vacío: sin comisión registrada.",
     payPlatformPrices: "Precios por plataforma",
     payPlatformPricesHint:
-      "Precio de cada producto en cada plataforma. Vacío: se usa el precio del mostrador.",
+      "Precio de cada producto en cada plataforma. Vacío: se usa el precio del mostrador. Los extras y modificadores usan el precio del mostrador.",
     payPlatformPricesSearch: "Buscar producto",
     payPlatformPricesSaved: "Precios guardados",
     payPlatformPricesNone: "No hay plataformas activas.",
+    payPlatformPricesNoProducts: "Agrega productos al menú primero.",
     payPosPrice: "Mostrador",
     payInvalidPercent: "Escribe un porcentaje válido (por ejemplo 3.6).",
     payInvalidPrice: "Escribe un precio válido.",
@@ -89,6 +95,12 @@ export default defineArea({
     cashBatchDifference: "Diferencia del lote",
     cashPlatforms:
       "Pagado por plataformas (no cuenta como efectivo ni tarjeta)",
+    cashPlatformsNet: "Total plataformas",
+    payRecovered: "{label} (recuperado)",
+    payReviewPlatform: "Revisar pago por plataforma",
+    cashBatchRequired: "escribe su total del lote",
+    cashBatchAllOrNone:
+      "Escribe el total del lote de cada terminal que cobró, o deja todos en blanco.",
     cashUnresolvedAttempts:
       "Hay cobros en terminal sin resolver. Un gerente debe resolverlos antes de cerrar.",
     cashTerminalFees: "Comisiones estimadas",
@@ -114,7 +126,12 @@ export default defineArea({
     payReportsCommission: "Comisión estimada",
     payReportsMarginAfterFees: "Margen después de comisiones",
     payReportsPlatformSales: "Plataformas",
+    payCsvPlatformRefunds: "Reembolsos de plataformas",
+    payReportsNetBeforeCommission: "Ventas netas (antes de comisión)",
+    payReportsNetAfterCommission: "Neto después de comisión (estimado)",
     payRefundPlatform: "Reembolso por plataforma (sin efectivo)",
+    payRefundPlatformHint:
+      "La plataforma le devuelve el dinero al cliente: no sale efectivo de la caja.",
     payCsvProvider: "Proveedor",
     payCsvProviderReference: "Referencia del proveedor",
     payCsvCardBrand: "Marca de tarjeta",
@@ -132,6 +149,22 @@ export default defineArea({
       "El número de pedido admite hasta 40 caracteres.",
     payProblemPlatformConfirm:
       "Confirma que la plataforma ya cobró este pedido.",
+    payProblemPlatformReferenceRequired:
+      "Escribe el número de pedido de la plataforma (letras y números).",
+    payProblemTerminalRequired:
+      "Elige la terminal con la que se cobró (o «Otra terminal»).",
+    payProblemPlatformDineIn:
+      "Una orden de mesa o para comer aquí no se cobra con una plataforma.",
+    payProblemPlatformPriceList:
+      "La orden se registró con precios de {list}: cóbrala con esa plataforma.",
+    payProblemPlatformNeedsPriceList:
+      "Esta orden se registró con precios de mostrador y {platform} tiene precios propios. Regístrala con «Precios: {platform}» para cobrarla con la plataforma.",
+    payExKindPlatformTender: "Pago por plataforma a revisar",
+    payExPlatformOther: "Plataforma «Otra»",
+    payExPlatformNoPriceList: "Orden sin la lista de precios de la plataforma",
+    payExPlatformRuleSkipped: "Registrado sin conexión fuera de las reglas",
+    payExPlatformPriceList: "Precios: {list}",
+    payExPlatformCounterPrices: "Precios de mostrador",
     payOpTerminalSaved: "Terminal guardada",
     payOpTerminalArchived: "Terminal archivada",
     payOpPlatformsSaved: "Plataformas guardadas",
@@ -290,9 +323,12 @@ export default defineArea({
     payTerminal: "Terminal",
     payUseAsDefault: "Always use on this device",
     payDefaultSaved: "Default terminal saved",
+    payDefaultTerminalIs: "Default on this device",
+    payDefaultFailed: "Could not save this device's default terminal.",
     payTerminalManualOnly: "manual only",
     payPlatform: "Platform",
-    payPlatformOrderNumber: "Platform order number (optional)",
+    payPlatformOrderNumber: "Platform order number",
+    payPlatformOrderNumberOptional: "Platform order number (optional)",
     payPlatformConfirm: "The platform already charged this order",
     payPlatformPaidIn: "Paid on {platform}",
     payPlatformOtherName: "Platform name",
@@ -349,10 +385,11 @@ export default defineArea({
     payCommissionHint: "Empty: no commission recorded.",
     payPlatformPrices: "Prices by platform",
     payPlatformPricesHint:
-      "Each product's price on each platform. Empty: the counter price is used.",
+      "Each product's price on each platform. Empty: the counter price is used. Extras and modifiers use the counter price.",
     payPlatformPricesSearch: "Find a product",
     payPlatformPricesSaved: "Prices saved",
     payPlatformPricesNone: "No active platforms.",
+    payPlatformPricesNoProducts: "Add products to the menu first.",
     payPosPrice: "Counter",
     payInvalidPercent: "Enter a valid percentage (for example 3.6).",
     payInvalidPrice: "Enter a valid price.",
@@ -360,6 +397,12 @@ export default defineArea({
     cashBatchTotal: "Batch total",
     cashBatchDifference: "Batch difference",
     cashPlatforms: "Paid by platforms (not cash or card)",
+    cashPlatformsNet: "Platforms total",
+    payRecovered: "{label} (recovered)",
+    payReviewPlatform: "Review platform payment",
+    cashBatchRequired: "enter its batch total",
+    cashBatchAllOrNone:
+      "Enter the batch total of every terminal that took money, or leave them all blank.",
     cashUnresolvedAttempts:
       "There are unresolved terminal charges. A manager must resolve them before closing.",
     cashTerminalFees: "Estimated fees",
@@ -383,7 +426,12 @@ export default defineArea({
     payReportsCommission: "Estimated commission",
     payReportsMarginAfterFees: "Margin after fees",
     payReportsPlatformSales: "Platforms",
+    payCsvPlatformRefunds: "Platform refunds",
+    payReportsNetBeforeCommission: "Net sales (before commission)",
+    payReportsNetAfterCommission: "Net after commission (estimated)",
     payRefundPlatform: "Platform refund (no cash)",
+    payRefundPlatformHint:
+      "The platform refunds the customer: no cash leaves the drawer.",
     payCsvProvider: "Provider",
     payCsvProviderReference: "Provider reference",
     payCsvCardBrand: "Card brand",
@@ -400,6 +448,22 @@ export default defineArea({
     payProblemPlatformReference: "The order number takes up to 40 characters.",
     payProblemPlatformConfirm:
       "Confirm that the platform already charged this order.",
+    payProblemPlatformReferenceRequired:
+      "Enter the platform's order number (letters and digits).",
+    payProblemTerminalRequired:
+      "Choose the terminal that took the charge (or «Other terminal»).",
+    payProblemPlatformDineIn:
+      "A table or dine-in order is never charged to a platform.",
+    payProblemPlatformPriceList:
+      "The order was rung at {list} prices: charge it to that platform.",
+    payProblemPlatformNeedsPriceList:
+      "This order was rung at counter prices and {platform} has its own prices. Ring it with «Prices: {platform}» to charge it to the platform.",
+    payExKindPlatformTender: "Platform payment to review",
+    payExPlatformOther: "«Other» platform",
+    payExPlatformNoPriceList: "Order without the platform's price list",
+    payExPlatformRuleSkipped: "Recorded offline outside the rules",
+    payExPlatformPriceList: "Prices: {list}",
+    payExPlatformCounterPrices: "Counter prices",
     payOpTerminalSaved: "Terminal saved",
     payOpTerminalArchived: "Terminal archived",
     payOpPlatformsSaved: "Platforms saved",
@@ -672,6 +736,22 @@ export default defineArea({
     payments_platform_price_list: [
       "La orden se registró con precios de otra plataforma. Cóbrala con esa plataforma.",
       "The order was rung at another platform's prices. Charge it with that platform.",
+    ],
+    payments_batch_totals_incomplete: [
+      "Escribe el total del lote de cada terminal que cobró en esta caja, o de ninguna.",
+      "Enter the batch total of every terminal that took money in this drawer, or of none.",
+    ],
+    payments_platform_needs_price_list: [
+      "Esta orden se registró con precios de mostrador y esa plataforma tiene precios propios. Regístrala con «Precios» de la plataforma para cobrarla con ella.",
+      "This order was rung at counter prices and that platform has its own prices. Ring it with the platform's «Prices» to charge it to the platform.",
+    ],
+    payments_platform_dine_in: [
+      "Una orden de mesa o para comer aquí no se cobra ni se registra con una plataforma.",
+      "A table or dine-in order is never charged to or rung at a platform.",
+    ],
+    payments_platform_reference_required: [
+      "Escribe el número de pedido de la plataforma (letras y números, hasta 40).",
+      "Enter the platform's order number (letters and digits, up to 40).",
     ],
     payments_platform_refund_requires_batch: [
       "Reembolsa los pagos por plataforma desde Reembolsar en la orden.",

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   PAYMENTS_LIMITS,
+  platformReferenceProblem,
   type PlatformCode,
   type TenderMethod,
 } from "./payments.js";
@@ -282,7 +283,8 @@ export type PaymentProblem = {
     | "received"
     | "reference"
     | "confirmed"
-    | "platform";
+    | "platform"
+    | "terminal";
   key: string;
 };
 /** Pure validation used by PaymentDialog; `key` is an i18n key (service or payments area). */
@@ -297,11 +299,22 @@ export function validatePayment(input: {
   exponent: number;
   drawerOpen: boolean;
   online: boolean;
-  /** payments (037): card records may name a terminal. */
+  /**
+   * payments (037): card records may name a terminal; null = «Otra terminal» chosen, undefined
+   * = nothing chosen yet, refused when `terminalChoice` (PAYMENTS-UX-4: with several terminals and
+   * no device default, «Otra terminal» is always a deliberate choice).
+   */
   terminalId?: string | null;
+  terminalChoice?: boolean;
   /** payments (037): platform tenders name their platform ("Otra" with a name). */
   platform?: PlatformCode | null;
   platformLabel?: string;
+  /** LD-75: a table or dine-in order is never paid by a platform. */
+  dineIn?: boolean;
+  /** LD-72: the order's platform price list (null = counter prices). */
+  pricePlatform?: PlatformCode | null;
+  /** LD-75: the chosen platform has prices of its own (then only its list's orders). */
+  platformHasPrices?: boolean;
 }):
   { ok: true; values: PaymentValues } | { ok: false; problem: PaymentProblem } {
   const fail = (field: PaymentProblem["field"], key: string) =>
@@ -317,8 +330,15 @@ export function validatePayment(input: {
   if (amount === 0) return fail("amount", "servicePayAmountZero");
   if (amount > input.due) return fail("amount", "servicePayAmountExceeds");
   if (input.method === "platform") {
-    // Q6: the platform covers the whole balance, with no tip; the order number is optional.
+    // Q6: the platform covers the whole balance, with no tip. LD-75: never a table or dine-in
+    // order; a platform with its own prices pays only orders rung at its list; Uber Eats, Rappi
+    // and DiDi need their order number («Otra»'s stays optional).
     if (!input.platform) return fail("platform", "payProblemPlatformRequired");
+    if (input.dineIn) return fail("platform", "payProblemPlatformDineIn");
+    if (input.pricePlatform && input.pricePlatform !== input.platform)
+      return fail("platform", "payProblemPlatformPriceList");
+    if (!input.pricePlatform && input.platformHasPrices)
+      return fail("platform", "payProblemPlatformNeedsPriceList");
     const label = input.platformLabel?.trim() ?? "";
     if (input.platform === "other" && !label)
       return fail("platform", "payProblemPlatformName");
@@ -326,6 +346,8 @@ export function validatePayment(input: {
       return fail("amount", "payProblemPlatformFullBalance");
     if (input.reference.trim().length > PAYMENTS_LIMITS.platformReferenceMax)
       return fail("reference", "payProblemPlatformReference");
+    if (platformReferenceProblem(input.platform, input.reference))
+      return fail("reference", "payProblemPlatformReferenceRequired");
     if (!input.confirmed) return fail("confirmed", "payProblemPlatformConfirm");
     return {
       ok: true,
@@ -370,6 +392,8 @@ export function validatePayment(input: {
   }
   if (input.method !== "external")
     return fail("amount", "servicePayAmountInvalid");
+  if (input.terminalChoice && input.terminalId === undefined)
+    return fail("terminal", "payProblemTerminalRequired");
   if (!input.reference.trim())
     return fail("reference", "servicePayReferenceRequired");
   if (!input.confirmed) return fail("confirmed", "servicePayConfirmRequired");

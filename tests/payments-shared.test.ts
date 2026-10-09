@@ -17,6 +17,7 @@ import {
   percentToBp,
   PLATFORMS,
   platformLabel,
+  platformReferenceProblem,
   TENDER_METHODS,
 } from "../shared/payments";
 import { listPrice, orderInput, quote, type Product } from "../shared/domain";
@@ -242,7 +243,9 @@ describe("validatePayment (PaymentDialog) platform and terminal branches", () =>
       ok: false,
       problem: { field: "amount", key: "payProblemPlatformFullBalance" },
     });
-    expect(validatePayment({ ...platform, platform: "rappi" })).toMatchObject({
+    expect(
+      validatePayment({ ...platform, platform: "rappi", reference: "88123" }),
+    ).toMatchObject({
       ok: false,
       problem: { field: "confirmed", key: "payProblemPlatformConfirm" },
     });
@@ -288,6 +291,81 @@ describe("validatePayment (PaymentDialog) platform and terminal branches", () =>
       ok: true,
       values: { platform: "other", platformLabel: "Pedidos Ya" },
     });
+  });
+  it("LD-75 (PAYMENTS-SECURITY-1): Uber Eats, Rappi and DiDi need their order number; never a dine-in order; a platform with its own prices pays only its list's orders", () => {
+    const ok = {
+      ...base,
+      method: "platform" as const,
+      confirmed: true,
+      reference: "4F2A",
+    };
+    for (const platform of ["uber_eats", "rappi", "didi_food"] as const) {
+      for (const reference of ["", "  ", "x", "4F2A/3", "x".repeat(41)])
+        expect(validatePayment({ ...ok, platform, reference })).toMatchObject({
+          ok: false,
+          problem: { field: "reference" },
+        });
+      expect(
+        validatePayment({ ...ok, platform, reference: "#4F2A 1" }).ok,
+      ).toBe(true);
+    }
+    // «Otra»'s number stays optional.
+    expect(
+      validatePayment({
+        ...ok,
+        platform: "other",
+        platformLabel: "PedidosYa",
+        reference: "",
+      }).ok,
+    ).toBe(true);
+    expect(
+      validatePayment({ ...ok, platform: "rappi", dineIn: true }),
+    ).toMatchObject({
+      ok: false,
+      problem: { field: "platform", key: "payProblemPlatformDineIn" },
+    });
+    expect(
+      validatePayment({ ...ok, platform: "rappi", pricePlatform: "didi_food" }),
+    ).toMatchObject({
+      ok: false,
+      problem: { field: "platform", key: "payProblemPlatformPriceList" },
+    });
+    expect(
+      validatePayment({ ...ok, platform: "rappi", platformHasPrices: true }),
+    ).toMatchObject({
+      ok: false,
+      problem: { field: "platform", key: "payProblemPlatformNeedsPriceList" },
+    });
+    expect(
+      validatePayment({
+        ...ok,
+        platform: "rappi",
+        platformHasPrices: true,
+        pricePlatform: "rappi",
+      }).ok,
+    ).toBe(true);
+    expect(platformReferenceProblem("uber_eats", " 4F2A1 ")).toBeNull();
+    expect(platformReferenceProblem("didi_food", "")).toBe(
+      "payments_platform_reference_required",
+    );
+  });
+  it("PAYMENTS-UX-4: with terminals to choose from, a card record names one (or «Otra terminal») deliberately", () => {
+    const ext = {
+      ...base,
+      method: "external" as const,
+      reference: "AUT-1",
+      confirmed: true,
+      terminalChoice: true,
+    };
+    expect(validatePayment({ ...ext, terminalId: undefined })).toMatchObject({
+      ok: false,
+      problem: { field: "terminal", key: "payProblemTerminalRequired" },
+    });
+    expect(validatePayment({ ...ext, terminalId: null })).toMatchObject({
+      ok: true,
+      values: { method: "external" },
+    });
+    expect(validatePayment({ ...ext, terminalChoice: false }).ok).toBe(true);
   });
   it("an external record carries its named terminal; cash never does", () => {
     const ext = validatePayment({
@@ -606,17 +684,49 @@ describe("CFDI FormaPago of platform and typed card tenders (§7.2, Q3/Q4)", () 
     );
   });
   it("needsCardForm only when an untyped card tender decides the form", () => {
-    expect(needsCardForm([{ method: "platform", amount: 500 }])).toBe(false);
+    expect(needsCardForm([{ method: "platform", amount: 500 }], "31")).toBe(
+      false,
+    );
     expect(
-      needsCardForm([{ method: "external", amount: 500, cardType: "credit" }]),
+      needsCardForm(
+        [{ method: "external", amount: 500, cardType: "credit" }],
+        "31",
+      ),
     ).toBe(false);
-    expect(needsCardForm([{ method: "external", amount: 500 }])).toBe(true);
+    expect(needsCardForm([{ method: "external", amount: 500 }], "31")).toBe(
+      true,
+    );
     expect(
-      needsCardForm([
-        { method: "platform", amount: 500 },
-        { method: "external", amount: 100 },
-      ]),
+      needsCardForm(
+        [
+          { method: "platform", amount: 500 },
+          { method: "external", amount: 100 },
+        ],
+        "31",
+      ),
     ).toBe(false);
+  });
+  it("needsCardForm counts the restaurant's platform form (PAYMENTS-FISCAL-3 / MONEY-9)", () => {
+    // cash 100, untyped card 60, platform 50: with 31 cash wins both ways; with 04 the platform
+    // joins credit (04: 110 > 01: 100) but not debit (01 wins), so the card answer decides.
+    const mixed = [
+      { method: "cash", amount: 100 },
+      { method: "external", amount: 60 },
+      { method: "platform", amount: 50 },
+    ];
+    expect(needsCardForm(mixed, "31")).toBe(false);
+    expect(needsCardForm(mixed, "04")).toBe(true);
+    // cash 60, card 40, DiDi 50 with 28: credit -> 01 (60), debit -> 28 (90).
+    expect(
+      needsCardForm(
+        [
+          { method: "cash", amount: 60 },
+          { method: "external", amount: 40 },
+          { method: "platform", amount: 50 },
+        ],
+        "28",
+      ),
+    ).toBe(true);
   });
   const platformTicket = (folio = "A-000123") =>
     cfdiPayload({
@@ -684,7 +794,11 @@ describe("CFDI FormaPago of platform and typed card tenders (§7.2, Q3/Q4)", () 
     expect(parts.map((p) => p.body.payment_form)).toEqual(["03"]);
   });
   it("the credit note of a platform refund uses the platform form, never 01", () => {
-    const egreso = (method: string, platformForm?: "31" | "03") =>
+    const egreso = (
+      method: string,
+      platformForm?: "31" | "03",
+      parentForm: string | null = "31",
+    ) =>
       buildEgresoRequest({
         docId: "0b6a1a8e-3f1e-4c55-9d1e-2f6d1c0a9b11",
         folio: "A-000123",
@@ -692,7 +806,7 @@ describe("CFDI FormaPago of platform and typed card tenders (§7.2, Q3/Q4)", () 
           kind: "invoice",
           uuid: "39c85a3f-275b-4341-b259-e8971d9f8a94",
           receptor: RECEPTOR_MORAL,
-          paymentForm: "31",
+          paymentForm: parentForm,
         },
         refund: {
           method,
@@ -703,7 +817,14 @@ describe("CFDI FormaPago of platform and typed card tenders (§7.2, Q3/Q4)", () 
         platformForm,
       }).body.payment_form;
     expect(egreso("platform")).toBe("31");
-    expect(egreso("platform", "03")).toBe("03");
+    // PAYMENTS-FISCAL-2: a parent stamped with a platform form keeps it on its credit note after
+    // the setting changes (31 -> 03 and 03 -> 31), so the income and its refund match.
+    expect(egreso("platform", "03")).toBe("31");
+    expect(egreso("platform", "31", "03")).toBe("03");
+    // A parent whose form is not a platform form (cash or card decided it) takes the setting.
+    expect(egreso("platform", "03", "01")).toBe("03");
+    expect(egreso("platform", "03", null)).toBe("03");
+    expect(egreso("platform", undefined, "04")).toBe("31");
     expect(egreso("cash")).toBe("01");
     expect(egreso("external")).toBe("04");
     expect(() => egreso("card")).toThrow("cfdi_payment_method_unknown");

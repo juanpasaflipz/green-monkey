@@ -45,11 +45,12 @@ export async function paymentOptions(
 ): Promise<PaymentOptions> {
   permit(s, operators);
   const manager = managers.includes(s.role);
-  const [terminals, platforms, defaults, devices, integrated] =
+  const [terminals, platforms, priced, defaults, devices, integrated] =
     await Promise.all([
       tx`select id,name,kind,fee_bp,provider_device_id from payment_terminals
       where active and archived_at is null order by lower(name),id`,
       tx`select platform,enabled,commission_bp from payment_platforms`,
+      tx`select distinct platform from payment_platform_prices where price is not null`,
       tx`select terminal_id from payment_device_terminals where device_id=${s.deviceId}`,
       tx`select provider,device_id,status,seen_at from payment_provider_devices`,
       integratedProviders(tx),
@@ -64,13 +65,15 @@ export async function paymentOptions(
       integrated.accounts.get(provider)?.state === "active",
     );
   };
+  // LD-75 (PAYMENTS-SECURITY-1 / UX-9): no row means disabled; the owner opts in per platform.
   const enabled = PLATFORMS.flatMap((platform) => {
     const row = platforms.find((p) => p.platform === platform);
-    if (row && !row.enabled) return [];
+    if (!row?.enabled) return [];
     return [
       {
         platform,
-        ...(manager ? { commissionBp: row?.commission_bp ?? null } : {}),
+        hasPrices: priced.some((p) => p.platform === platform),
+        ...(manager ? { commissionBp: row.commission_bp ?? null } : {}),
       },
     ];
   });
@@ -136,7 +139,7 @@ export async function paymentSettingsView(
       const row = platforms.find((p) => p.platform === platform);
       return {
         platform,
-        enabled: row ? row.enabled : true,
+        enabled: row ? row.enabled : false,
         commissionBp: row?.commission_bp ?? null,
         version: row?.version ?? 0,
       };

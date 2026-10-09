@@ -17,17 +17,26 @@ const STATUS_KEYS: Record<TerminalStatus, Key> = {
 export function TerminalPicker({
   terminals,
   value,
+  chosen = true,
+  defaultTerminalId = null,
   onChange,
   useAsDefault,
   onUseAsDefault,
   canSetDefault,
   locale,
   disabled,
+  describedBy,
   online = true,
 }: {
   terminals: TerminalOption[];
   /** null = "Otra terminal". */
   value: string | null;
+  /** False while nothing is chosen (PAYMENTS-UX-4): no chip is pressed. */
+  chosen?: boolean;
+  /** This device's default terminal: its checkbox reads checked (PAYMENTS-UX-14). */
+  defaultTerminalId?: string | null;
+  /** The id of the "Elige la terminal" problem, when shown. */
+  describedBy?: string;
   onChange: (terminalId: string | null) => void;
   useAsDefault: boolean;
   onUseAsDefault: (on: boolean) => void;
@@ -44,8 +53,8 @@ export function TerminalPicker({
       key={id ?? "other"}
       type="button"
       disabled={disabled}
-      aria-pressed={value === id}
-      className={value === id ? "selected" : ""}
+      aria-pressed={chosen && value === id}
+      className={chosen && value === id ? "selected" : ""}
       onClick={() => onChange(id)}
     >
       {label}
@@ -59,6 +68,7 @@ export function TerminalPicker({
         className="service-tabs wrap"
         role="group"
         aria-label={t("payTerminal")}
+        aria-describedby={describedBy}
       >
         {[...terminals]
           .sort(
@@ -78,7 +88,10 @@ export function TerminalPicker({
           )}
         {chip(null, t("payOtherTerminal"))}
       </div>
-      {canSetDefault && value && (
+      {canSetDefault && value && value === defaultTerminalId && (
+        <p className="muted tiny">{t("payDefaultTerminalIs")}</p>
+      )}
+      {canSetDefault && value && value !== defaultTerminalId && (
         <label className="option">
           <input
             type="checkbox"

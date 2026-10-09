@@ -23,41 +23,52 @@ Area doc for migration 037 (Wave 4, LD-71 and LD-72). The spec is `specs/payment
   - Kinds: `manual`, `mercadopago_point` and `clip_pinpad`. An integrated kind needs an active provider account (P2). Without one (or offline, or with the provider down), an MP or Clip device is recorded like a manual terminal used in standalone mode.
   - Terminals are archived, never deleted. A tender keeps the terminal's name as a snapshot (`terminal_label`).
   - Each POS device may have a default terminal (`payment_device_terminals`). Operators set it for their own device; managers set it for any device.
+- **Platforms are off by default** (LD-75, PAYMENTS-SECURITY-1): no `payment_platforms` row means the platform is disabled, «Otra» included. The owner turns each one on in Configuración → «Plataformas de entrega». A disabled platform is not offered at payment or as a price list, and the server refuses it (`payments_platform_disabled`).
 - **Platform tender:**
   - It needs the platform, plus a name when the platform is "Otra", and the confirmation «La plataforma ya cobró este pedido».
-  - It covers the whole remaining balance, has no tip, and its `received` equals its amount. The platform's order number is optional (up to 40 characters).
+  - Uber Eats, Rappi and DiDi tenders need the platform's order number: 2 to 40 letters, digits, spaces, `#` or `-` (`payments_platform_reference_required`). «Otra»'s number is optional (up to 40 characters). The dialog prefills it from the order name («DiDi 4F2A» → «4F2A»).
+  - It covers the whole remaining balance, has no tip, and its `received` equals its amount.
+  - A table or dine-in order is never paid by a platform (`payments_platform_dine_in`).
   - It is recorded in this device's drawer but never counted in expected cash or card totals.
-  - Its estimated commission is the platform's rate (`payment_platforms.commission_bp`). No row means the platform is enabled and its commission is not tracked.
+  - Its estimated commission is the platform's rate (`payment_platforms.commission_bp`); NULL means the commission is not tracked.
 - **Platform prices** (LD-72, `payment_platform_prices`):
-  - A product may have a price per platform. When an order is rung with «Precios: Uber Eats», its products take that platform's price, or the counter price when none is set. Modifier prices stay the counter ones.
-  - The list is stored on the order (`orders.price_platform`) and set once. Later rounds use it, and a round naming another list is refused.
+  - A product may have a price per platform. When an order is rung with «Precios: Uber Eats», its products take that platform's price, or the counter price when none is set; the product tiles and the modifier preview show it too. Modifier prices stay the counter ones (the pilot keeps platform extras at the counter price, PILOT_SOP §8).
+  - The list is stored on the order (`orders.price_platform`) and set once. Later rounds use it, and a round naming another list is refused. Online, only an enabled platform's list is accepted, and never on a table or dine-in order.
   - A platform tender on such an order must be that platform (`payments_platform_price_list`).
+  - When a platform has any price configured, its tender is accepted only on an order rung at its list (`payments_platform_needs_price_list`). An order sent at counter prices is voided and rung again with «Precios: …»; the dialog says so before Confirm. Selling shows «Pedido con precios de …» in both layouts.
   - QR and kiosk orders never take a list.
+  - Offline, the order's list travels with the device's copy (the open-orders snapshot, local and cached views), so a second offline round prices at it (PAYMENTS-MONEY-1). The manager's review of an offline record prices it at the same list (PAYMENTS-MONEY-3).
   - Tickets, CFDI and reports read line prices, so they carry the charged platform price.
   - The staff catalog carries `platformPrices`; the diner catalog strips them. A price save bumps the menu revision so every POS reprices.
-- **Fees:** the tender stores an estimated fee: the terminal's rate on amount + tip, or the platform's commission on the amount. P2 stores provider fees (`fee_source='provider'`). Fees and commissions are manager figures: the order view never carries them, and staff drawer views strip them.
+- **Fees:** the tender stores an estimated fee: the terminal's rate on amount + tip, or the platform's commission on the amount. P2 stores provider fees (`fee_source='provider'`). Fees and commissions are manager figures: the order view never carries them, and staff drawer views and the staff corte X/Z strip them, even when the owner lets staff see expected cash (PAYMENTS-SECURITY-3).
 
 ## Commands and lock order
 
 These are rows 3, 13, 25, 26 and 41–46 of the ARCHITECTURE global lock order, with levels LO-2c, 933 and 934.
 
 - `recordPayment` takes `method` `platform` and an optional `terminalId` on `external`. It refuses while the order has a live terminal attempt (`payments_order_attempt_live`). That refusal is a plain read after the order lock, and the same guard runs in `voidLines`, `applyDiscount`, `closeCheck` and `recordSettlement`.
-  - Offline evidence (OFF-8) skips the guard and the online-only platform rules.
+  - Offline evidence (OFF-8) skips the guard and the online-only platform rules (enabled platform, full balance, dine-in, price list, order number), so the money is never lost. Each rule it broke is noted on the `payment.recorded` audit (`platformRulesSkipped`, PAYMENTS-SECURITY-4), and the tender is listed in Excepciones.
   - An archived terminal named in evidence is accepted. An unknown one is dropped, and the audit row notes `payments_terminal_unknown`.
+  - The `payment.recorded` audit names the tender (`tenderId`), which Excepciones uses for the actor.
+  - With several terminals and no device default, the card form preselects nothing and asks «Elige la terminal», so «Otra terminal» is always a deliberate choice; with one terminal it is preselected.
 - `insertTender` (`server/payments/tenders.ts`) is the only tender writer. Online payments, offline sale and payment sync, financial recovery, reconcile-into-order and payment-attempt resolution all write through it.
 - **Configuration** (managers with step-up; class 934): `saveTerminal`, `archiveTerminal` (refused while the terminal may show a charge), `savePlatforms`, `savePlatformPrices` and `setDeviceTerminal`.
-- **Drawer close:** it refuses while an attempt on the drawer is live (`payments_attempt_unresolved`), and there is no force-close. It accepts optional per-terminal batch totals («Total del lote», `drawer_terminal_counts`). `external_reported` stays their sum for older readers.
-- **Refunds:** a refund of a platform tender is a `platform` portion. It needs no drawer and no terminal confirmation, and the batch records `platform_amount`. The legacy `POST /refunds` refuses platform tenders (`payments_platform_refund_requires_batch`).
+- **Drawer close:** it refuses while an attempt on the drawer is live (`payments_attempt_unresolved`), and there is no force-close. It accepts optional per-terminal batch totals («Total del lote», `drawer_terminal_counts`): for every terminal that took money (non-zero net) or for none (`payments_batch_totals_incomplete`, PAYMENTS-SECURITY-2). `external_reported` stays their sum for older readers, so it always covers the same terminals as `external_expected`.
+- **Refunds:** a refund of a platform tender is a `platform` portion. It needs no drawer and no terminal confirmation, and the batch records `platform_amount`. The dialog's breakdown shows «Reembolso por plataforma (sin efectivo)» before Confirm. The legacy `POST /refunds` refuses platform tenders (`payments_platform_refund_requires_batch`).
 - **Public pay-first:** the accept's payment is a union on `method` (cash, or external with an optional `terminalId`) and never a platform. The kiosk (039) adds `{method: "attempt", attemptId}`.
 
 ## Reports and the corte
 
 - `byMethod` has a platform row.
 - `byTerminal` and `byPlatform` (statements S6 and S7) reconcile with it. The `methods_sum` check also fails when either split disagrees.
+- Platforms group by (platform, label): each «Otra» name is its own row (case and spaces ignored) in `byPlatform`, the drawer breakdown, the drawer list and the corte (LD-75, PAYMENTS-MONEY-8). «Por plataforma» shows «Ventas netas (antes de comisión)» and «Neto después de comisión (estimado)».
+- The per-day table and the day CSV have a «Plataformas» column; the drawers CSV has platform sales and refunds (PAYMENTS-MONEY-5).
+- A recovered tender keeps its method label: «Pagado en Uber Eats (recuperado)», «Tarjeta · BBVA (recuperado)»; only recovered cash reads «Efectivo recuperado».
 - The margin gains `processorFees`, `platformCommissions` and `marginAfterFees`.
 - Pagos lists terminal, provider, card, platform and fee columns. Its CSV is the managers' export.
 - The corte X and Z print card money by terminal (with batch totals, the kiosk sub-line from 039, and fees in the full variant) and «Pagado por plataformas» apart.
 - A batch difference typed per terminal is a `terminal_difference` exception naming its terminal.
+- **Excepciones kind `platform_tender`** (LD-75): a platform tender that is «Otra», or on an order not rung at that platform's price list, or offline evidence that broke an online platform rule. The row names the actor (the payment's, else the drawer's), the device (the drawer's), the platform («Otra» by its name), why it is listed, the order's price list and the order number. Managers review these against the platform's payout; a cash sale recorded as a platform tender shows up here.
 
 ## CFDI
 
@@ -67,7 +78,9 @@ These are rows 3, 13, 25, 26 and 41–46 of the ARCHITECTURE global lock order, 
   - a platform tender takes the platform form;
   - a card tender of known type takes 04 for credit and 28 for debit or prepaid;
   - otherwise a card tender takes the card form.
-- The credit note of a platform refund uses the platform form.
+- The credit note of a platform refund keeps its parent's form when that is a platform form (31 or 03), so a later change of the setting never splits the pair (PAYMENTS-FISCAL-2); otherwise it takes the platform form in force.
+- A credit note's substitute (CFDI-SAT-2) may carry 01, 03, 04, 28 or 31 (`cfdi_documents.payment_form_override`, widened in 037); the dialog preselects the note's own form (PAYMENTS-FISCAL-1).
+- `needsCardForm(payments, platformForm)` takes the restaurant's platform form at every caller, since with 04 or 28 the platform money joins a card sum (PAYMENTS-FISCAL-3).
 - The stamped global body is built by `freeze.ts` with the restaurant's platform form.
 
 ## Offline
@@ -92,6 +105,8 @@ P2 sends the card amount to the terminal and records the tender itself. The web 
 6. **Cancel** (`POST …/cancel`): `created` is cancelled at once; in flight, the worker reads first (a charge paid meanwhile stays approved and settles), then cancels at the provider. A refusal (Clip 400, MP 409) keeps the attempt `pending` with «La terminal ya tomó el cobro. Cancélalo en la terminal.» Only a confirmed cancel or a final status frees the order.
 
 Attempt states and who moves them (037 trigger, `ATTEMPT_TRANSITIONS`): the worker moves `created → sending → pending → approved | declined | cancelled | expired | unknown` (and `unknown` back to `pending` or to a final state); the web moves `created → cancelled`, `approved → settled | review`, `review → settled | dismissed` and `unknown → settled | dismissed`. Final rows never change.
+
+037 also guards inserts (PAYMENTS-CONCURRENCY-1): outside the worker an attempt is born `created`, version 1, with every provider-, worker-, settle- and resolution-owned column empty, and only the worker writes `actor='worker'` events. `provider_reference` is written once (null → value); outside the worker only in the UPDATE that settles the attempt with `resolution='recorded'` (PAYMENTS-CONCURRENCY-2). The attempt tables and `drawer_terminal_counts` refuse TRUNCATE. 037 takes its ACCESS EXCLUSIVE locks up front and must run outside service hours with the worker idle (PAYMENTS-CONCURRENCY-4).
 
 ### Resolution (`POST …/resolve`, critic R13)
 

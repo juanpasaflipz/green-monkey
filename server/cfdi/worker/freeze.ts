@@ -7,7 +7,7 @@
 import type { Tx } from "../../db.js";
 import { DomainError } from "../../../shared/domain.js";
 import { formatFolio, type TaxCategory } from "../../../shared/fiscal.js";
-import { paymentFormFor } from "../../../shared/cfdi.js";
+import { paymentFormFor, type SubstituteForm } from "../../../shared/cfdi.js";
 import {
   buildEgresoRequest,
   buildGlobalRequests,
@@ -213,7 +213,7 @@ async function freezeEgreso(
   }
   if (!groups.length) throw nothing();
   // A substitute credit note relates 04 to the one it replaces, which must still be valid.
-  let replaces: { uuid: string; paymentForm: "01" | "04" | "28" } | null = null;
+  let replaces: { uuid: string; paymentForm: SubstituteForm } | null = null;
   if (doc.replacesDocumentId) {
     const replaced = await loadDocument(tx, doc.replacesDocumentId);
     if (!replaced?.uuid || replaced.status !== "valid")

@@ -100,6 +100,7 @@ const EXCEPTION_KEYS: Record<ExceptionKind, Key> = {
   open_price: "reportsExKindOpenPrice",
   offline_archive: "reportsExKindOfflineArchive",
   offline_reconcile: "reportsExKindOfflineReconcile",
+  platform_tender: "payExKindPlatformTender",
   terminal_attempt_review: "payExKindAttemptReview",
   terminal_attempt_dismissed: "payExKindAttemptDismissed",
   terminal_attempt_unknown_open: "payExKindAttemptUnknown",

@@ -201,10 +201,30 @@ export function tenderMethodLabel(
   source: string | undefined,
   locale: Locale,
 ): string {
-  if (source === "offline_recovery")
-    return strings[locale].serviceTenderRecovered;
   // Unknown methods (a future integrated tender) never print as cash.
-  return strings[locale][tenderMethods[method] ?? "serviceTenderOther"];
+  const base = strings[locale][tenderMethods[method] ?? "serviceTenderOther"];
+  // PAYMENTS-MONEY-4: only recovered cash reads «Efectivo recuperado»; a recovered card or
+  // platform payment keeps its method, marked recovered.
+  if (source === "offline_recovery")
+    return method === "cash"
+      ? strings[locale].serviceTenderRecovered
+      : recovered(base, locale);
+  return base;
+}
+const recovered = (label: string, locale: Locale) =>
+  strings[locale].payRecovered.replace("{label}", label);
+/**
+ * The i18n key of a payment method in the offline review texts («efectivo», «terminal externa»,
+ * «Pagado por plataforma»): exhaustive, never cash for another method (PAYMENTS-MONEY-4).
+ */
+export function offlineMethodKey(method: string | undefined): Key {
+  return method === "cash"
+    ? "offlineMethodCash"
+    : method === "external"
+      ? "offlineMethodExternal"
+      : method === "platform"
+        ? "payMethodPlatform"
+        : "serviceTenderOther";
 }
 /**
  * payments (037): a tender as receipts and lists print it: "Pagado en Uber Eats", "Tarjeta ·
@@ -227,16 +247,24 @@ export function tenderLabel(
   },
   locale: Locale,
 ): string {
-  if (tender.source === "offline_recovery" || !tender.method)
+  if (
+    !tender.method ||
+    (tender.source === "offline_recovery" && tender.method === "cash")
+  )
     return tenderMethodLabel(tender.method, tender.source, locale);
   const s = strings[locale];
+  // PAYMENTS-MONEY-4: a recovered platform or card payment keeps its platform or terminal.
+  const mark = (label: string) =>
+    tender.source === "offline_recovery" ? recovered(label, locale) : label;
   if (tender.method === "platform" && tender.platform)
-    return s.payPlatformPaidIn.replace(
-      "{platform}",
-      platformLabel(
-        tender.platform,
-        tender.platform_label ?? tender.platformLabel ?? null,
-        locale,
+    return mark(
+      s.payPlatformPaidIn.replace(
+        "{platform}",
+        platformLabel(
+          tender.platform,
+          tender.platform_label ?? tender.platformLabel ?? null,
+          locale,
+        ),
       ),
     );
   const terminal =
@@ -246,9 +274,11 @@ export function tenderLabel(
     const brand = tender.card_brand ?? tender.cardBrand;
     const last4 = tender.card_last4 ?? tender.cardLast4;
     const card = s.payCardOnTerminal.replace("{terminal}", terminal);
-    return brand && last4
-      ? `${card} · ${s.payCardLast4.replace("{brand}", brand.toUpperCase()).replace("{last4}", last4)}`
-      : card;
+    return mark(
+      brand && last4
+        ? `${card} · ${s.payCardLast4.replace("{brand}", brand.toUpperCase()).replace("{last4}", last4)}`
+        : card,
+    );
   }
   return tenderMethodLabel(tender.method, tender.source, locale);
 }

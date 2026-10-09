@@ -101,6 +101,12 @@ export const dayColumns: CsvColumn<DayRow>[] = [
   { header: h("reportsColRefunds"), type: "m", value: (r) => r.refunds },
   { header: h("reportsColCash"), type: "m", value: (r) => r.cash },
   { header: h("reportsColTerminal"), type: "m", value: (r) => r.external },
+  // PAYMENTS-MONEY-5: platform money is its own column, so cash + terminal + platforms add up.
+  {
+    header: h("payReportsPlatformSales"),
+    type: "m",
+    value: (r) => r.platform,
+  },
   { header: h("reportsColTips"), type: "m", value: (r) => r.tips },
   { header: h("reportsColPaidOuts"), type: "m", value: (r) => r.paidOuts },
 ];
@@ -397,6 +403,17 @@ export const drawerColumns = (locale: Locale): CsvColumn<DrawerRow>[] => [
     header: h("reportsColTerminalDifference"),
     type: "m",
     value: (r) => r.terminalDifference,
+  },
+  // PAYMENTS-MONEY-5: paid by platforms in the drawer (never expected cash or card).
+  {
+    header: h("payReportsPlatformSales"),
+    type: "m",
+    value: (r) => r.platformSales,
+  },
+  {
+    header: h("payCsvPlatformRefunds"),
+    type: "m",
+    value: (r) => r.platformRefunds,
   },
   {
     header: h("reportsColReview"),

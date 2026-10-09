@@ -10,6 +10,12 @@
 .payment-platforms .field {
   max-width: 14rem;
 }
+/* PAYMENTS-UX-6: the price table scrolls inside its region, so the buttons and messages below it
+   stay near the sections above on a long menu. */
+.payment-prices {
+  max-height: min(60vh, 32rem);
+  overflow: auto;
+}
 .payment-prices input {
   width: 7rem;
   min-height: 44px;

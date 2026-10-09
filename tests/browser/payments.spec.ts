@@ -85,10 +85,26 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
   const row = panel.locator("tr").filter({ hasText: terminal });
   await expect(row).toContainText("1.75 %");
   await expect(row).toContainText("Manual");
-  // DiDi Food's estimated commission.
+  // Platforms are off until the owner turns them on (LD-75): Uber Eats on, and DiDi Food's
+  // estimated commission.
+  await expect(
+    panel.getByLabel("Uber Eats", { exact: true }),
+  ).not.toBeChecked();
+  await expect(panel.getByLabel("Otra", { exact: true })).not.toBeChecked();
+  await panel.getByLabel("Uber Eats", { exact: true }).check();
+  const didiCommission = panel.getByLabel("Comisión estimada (%) · DiDi Food", {
+    exact: true,
+  });
+  // PAYMENTS-UX-6: a bad percentage is named under «Guardar plataformas» and its field is marked.
+  await didiCommission.fill("treinta");
   await panel
-    .getByLabel("Comisión estimada (%) · DiDi Food", { exact: true })
-    .fill("25");
+    .getByRole("button", { name: "Guardar plataformas", exact: true })
+    .click();
+  await expect(panel.locator("#payments-platforms-error")).toContainText(
+    "Comisión estimada (%) · DiDi Food",
+  );
+  await expect(didiCommission).toHaveAttribute("aria-invalid", "true");
+  await didiCommission.fill("25");
   await panel
     .getByRole("button", { name: "Guardar plataformas", exact: true })
     .click();
@@ -97,13 +113,21 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
   await panel
     .getByLabel("Buscar producto", { exact: true })
     .fill("Taco de hongos");
+  const tacoUber = panel.getByLabel("Taco de hongos · Uber Eats", {
+    exact: true,
+  });
+  await tacoUber.fill("59");
+  // PAYMENTS-UX-5: saving another section keeps the typed, unsaved price.
   await panel
-    .getByLabel("Taco de hongos · Uber Eats", { exact: true })
-    .fill("59");
+    .getByRole("button", { name: "Guardar plataformas", exact: true })
+    .click();
+  await expect(panel.getByRole("status")).toContainText("Guardado");
+  await expect(tacoUber).toHaveValue("59");
   await panel
     .getByRole("button", { name: "Guardar precios", exact: true })
     .click();
   await expect(panel.getByRole("status")).toContainText("Guardado");
+  await expect(tacoUber).toHaveValue("59.00");
   for (const width of [1440, 1024, 768, 390]) {
     await page.setViewportSize({ width, height: 900 });
     await axe(page, "section.payment-settings");
@@ -119,11 +143,19 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
   await page
     .getByRole("combobox", { name: "Precios", exact: true })
     .selectOption({ label: "Uber Eats" });
+  // PAYMENTS-MONEY-7: the tile shows the list's price, as the cart line will.
+  await expect(
+    page.getByRole("button", { name: /Taco de hongos/ }).first(),
+  ).toContainText("$59.00");
   await page
     .getByRole("button", { name: /Taco de hongos/ })
     .first()
     .click();
   await expect(page.locator(".cart-lines")).toContainText("$59.00");
+  // PAYMENTS-UX-1: the price list is visible next to the cart's state.
+  await expect(page.locator(".cart-badges")).toContainText(
+    "Pedido con precios de Uber Eats",
+  );
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await expect(
@@ -133,11 +165,15 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
     "La plataforma cubre todo el saldo: $59.00. Sin propina.",
   );
   await expect(dialog.getByLabel("Propina", { exact: true })).toHaveCount(0);
+  // Uber Eats needs its order number (LD-75).
+  await dialog.getByLabel("La plataforma ya cobró este pedido").check();
+  await expect(
+    dialog.getByRole("button", { name: "Confirmar cobro", exact: true }),
+  ).toBeDisabled();
   await dialog
-    .getByLabel("Número de pedido de la plataforma (opcional)")
+    .getByLabel("Número de pedido de la plataforma", { exact: true })
     .fill("UE-1");
   await axe(page, "dialog");
-  await dialog.getByLabel("La plataforma ya cobró este pedido").check();
   await dialog
     .getByRole("button", { name: "Confirmar cobro", exact: true })
     .click();
@@ -147,7 +183,10 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
     .getByRole("button", { name: "Siguiente venta", exact: true })
     .click();
 
-  // A card sale recorded on the named terminal.
+  // A card sale recorded on the named terminal, on the pilot's iPad (1024×768, the compact
+  // layout; PAYMENTS-UX-18): the card form with its terminal chips never pushes Confirm below
+  // the fold (FOH-10).
+  await page.setViewportSize({ width: 1024, height: 768 });
   await page
     .getByRole("button", { name: /Taco de hongos/ })
     .first()
@@ -157,11 +196,15 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
   await dialog.getByRole("button", { name: terminal, exact: true }).click();
   await dialog.getByLabel("Referencia de aprobación").fill("4471");
   await dialog.getByLabel("Confirmo que la terminal aprobó este pago").check();
+  await expect(
+    dialog.getByRole("button", { name: "Confirmar cobro", exact: true }),
+  ).toBeInViewport();
   await axe(page, "dialog");
   await dialog
     .getByRole("button", { name: "Confirmar cobro", exact: true })
     .click();
   await expect(page.locator(".receipt")).toContainText(`Tarjeta · ${terminal}`);
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page
     .getByRole("button", { name: "Siguiente venta", exact: true })
     .click();
@@ -173,11 +216,17 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
     .filter({ hasText: "Pagado por plataformas" });
   await expect(platforms).toContainText("Uber Eats");
   await expect(platforms).toContainText("$59.00");
+  // PAYMENTS-UX-7: the platforms total is not a terminal net.
+  await expect(platforms).toContainText("Total plataformas");
+  await expect(platforms).not.toContainText("Neto en terminal");
   const byTerminal = page.locator("table").filter({ hasText: terminal });
   await expect(byTerminal).toContainText("Tarjeta por terminal");
   await expect(byTerminal).toContainText("$45.00");
+  // PAYMENTS-UX-13: refunds have their own column.
+  await expect(byTerminal.locator("thead")).toContainText("Reembolsos");
 
-  // Undo: archive the terminal, clear the price, restore DiDi's commission.
+  // Undo: archive the terminal, clear the price, turn Uber Eats off and clear DiDi's commission
+  // (both platforms back to their default: off).
   const view = await call(page, "/payments/settings");
   const created = view.terminals.find((t: any) => t.name === terminal);
   await call(page, `/payments/terminals/${created.id}/archive`, {
@@ -200,17 +249,15 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
       },
     ],
   });
-  const didi = view.platforms.find((p: any) => p.platform === "didi_food");
   await call(page, "/payments/platforms", {
     operationId: uuid(),
-    platforms: [
-      {
-        platform: "didi_food",
-        enabled: true,
-        commissionBp: null,
-        expectedVersion: didi.version,
-      },
-    ],
+    platforms: ["didi_food", "uber_eats"].map((code) => ({
+      platform: code,
+      enabled: false,
+      commissionBp: null,
+      expectedVersion: view.platforms.find((p: any) => p.platform === code)
+        .version,
+    })),
   });
   const after = await call<any[]>(page, "/catalog");
   expect(after.some((p) => p.platformPrices)).toBe(false);

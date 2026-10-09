@@ -244,6 +244,9 @@ export const EXCEPTION_KINDS = [
   "open_price",
   "offline_archive",
   "offline_reconcile",
+  // payments (037, LD-75): a platform tender that is «Otra», on an order not rung at that
+  // platform's price list, or offline evidence that broke an online platform rule.
+  "platform_tender",
   // payments (037 P2): terminal charges approved but unapplied, resolved by a manager, or
   // still unknown after 10 minutes (critic R13: the kiosk reuses them).
   "terminal_attempt_review",
@@ -2402,10 +2405,17 @@ export function buildCorteDocument(
       last: number;
       count: number;
     }[];
+    /**
+     * Processor fees and platform commissions (spec §2.2: owner and manager only). drawerCorte
+     * passes managers && full (PAYMENTS-SECURITY-3): a cashier allowed to see expected cash
+     * still never sees the negotiated rates. Absent: the full variant's default.
+     */
+    fees?: boolean;
   },
 ): CorteDocument {
   const closed = f.closedAt !== null;
   const blind = ctx.visibility === "blind";
+  const fees = !blind && (ctx.fees ?? true);
   if (!closed && blind) throw new RangeError("blind_corte_x");
   const platform = f.platform ?? NO_PLATFORM;
   const lateCount = closed
@@ -2469,8 +2479,8 @@ export function buildCorteDocument(
       reported: closed ? f.stored.externalReported : null,
       difference: terminalDifference(f),
     },
-    terminals: corteTerminals(f, closed, !blind),
-    platforms: cortePlatforms(f, closed, !blind),
+    terminals: corteTerminals(f, closed, fees),
+    platforms: cortePlatforms(f, closed, fees),
     payments:
       add(add(f.cash.count, f.external.count), platform.count) - lateCount,
     controls: blind ? null : ctx.controls,

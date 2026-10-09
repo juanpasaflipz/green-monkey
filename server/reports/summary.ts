@@ -286,8 +286,10 @@ export async function paymentSplits(
       coalesce(sum(u.fee) filter (where u.fee_source = 'provider'), 0)::int8 as fee_provider,
       coalesce(sum(u.fee) filter (where u.fee_source = 'estimated'), 0)::int8 as fee_estimated
     from u left join payment_terminals pt on pt.id = u.terminal_id
-    group by u.method, u.terminal_id, u.platform
-    order by u.method, max(pt.name) nulls last, u.terminal_id nulls last, u.platform`;
+    -- LD-75 / PAYMENTS-MONEY-8: each «Otra» name is its own row (case and spaces ignored).
+    group by u.method, u.terminal_id, u.platform, lower(btrim(u.platform_label))
+    order by u.method, max(pt.name) nulls last, u.terminal_id nulls last, u.platform,
+      lower(btrim(u.platform_label)) nulls first`;
   const terminals: TerminalAggregate[] = [];
   const platforms: PlatformAggregate[] = [];
   for (const r of rows) {

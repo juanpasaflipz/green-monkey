@@ -187,6 +187,51 @@ export function bpToPercent(bp: number | null | undefined): string {
   return frac ? `${whole}.${String(frac).padStart(2, "0")}` : String(whole);
 }
 
+/**
+ * LD-75 (PAYMENTS-SECURITY-1): Uber Eats, Rappi and DiDi tenders carry the platform's order
+ * number; «Otra» names its platform instead, and its number stays optional.
+ */
+export const PLATFORMS_WITH_ORDER_NUMBER: readonly PlatformCode[] = [
+  "uber_eats",
+  "rappi",
+  "didi_food",
+];
+/** A light format check of a platform order number: letters, digits, spaces, # and -. */
+const PLATFORM_ORDER_NUMBER = /^#?[\p{L}\p{N}][\p{L}\p{N} #-]*$/u;
+/**
+ * The problem with a platform tender's order number, or null: required (2 to 40 characters of
+ * the format above) for the platforms that issue one; for «Otra» only the 40-character limit.
+ */
+export function platformReferenceProblem(
+  platform: PlatformCode,
+  reference: string,
+): "payments_platform_reference_required" | null {
+  const value = reference.trim();
+  if (value.length > PAYMENTS_LIMITS.platformReferenceMax)
+    return "payments_platform_reference_required";
+  if (!PLATFORMS_WITH_ORDER_NUMBER.includes(platform)) return null;
+  return value.length >= 2 && PLATFORM_ORDER_NUMBER.test(value)
+    ? null
+    : "payments_platform_reference_required";
+}
+
+/**
+ * PAYMENTS-UX-15: the platform order number inside an order name such as «DiDi 4F2A» or
+ * «Uber #4F2A1» (the name the kitchen and the courier use): the name without the platform's
+ * word, when what is left reads as an order number; else "".
+ */
+export function referenceFromName(name: string): string {
+  const rest = name
+    .replace(/\b(uber\s*eats|uber|rappi|didi\s*food|didi)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return rest &&
+    rest !== name.trim() &&
+    !platformReferenceProblem("didi_food", rest)
+    ? rest
+    : "";
+}
+
 export const PLATFORM_NAMES: Record<PlatformCode, Label> = {
   uber_eats: { es: "Uber Eats", en: "Uber Eats" },
   rappi: { es: "Rappi", en: "Rappi" },
@@ -447,6 +492,11 @@ export type TerminalOption = {
 export type PlatformOption = {
   platform: PlatformCode;
   commissionBp?: number | null;
+  /**
+   * The platform has a price of its own for some product (LD-75): its tender is accepted only on
+   * an order rung at its price list. Absent on an options cache older than this field.
+   */
+  hasPrices?: boolean;
 };
 /** GET /payments/options: what PaymentDialog needs (cached per tenant for offline use). */
 export type PaymentOptions = {

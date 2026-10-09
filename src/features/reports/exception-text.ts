@@ -2,6 +2,7 @@ import type { Label, Locale } from "../../../shared/domain";
 import type { AuditRow, ExceptionRow } from "../../../shared/reports";
 import { strings, type Key } from "../../i18n";
 import { reasonLabel } from "../discounts/format";
+import { platformLabel } from "../../../shared/payments";
 import { differenceLabel, fill, pct } from "./format";
 
 /**
@@ -142,6 +143,34 @@ export function exceptionDetail(
       return d.path === "offline.payment_reconciled"
         ? t.reportsOfflinePaymentReconciled
         : t.reportsOfflineSaleRecovered;
+    case "platform_tender": {
+      // LD-75: which platform (an «Otra» shows its typed name), why it is listed, the order's
+      // price list and the platform's order number.
+      const why =
+        row.reasonCode === "payments_platform_rule_skipped"
+          ? t.payExPlatformRuleSkipped
+          : row.reasonCode === "payments_platform_other"
+            ? t.payExPlatformOther
+            : t.payExPlatformNoPriceList;
+      const list =
+        typeof d.priceList === "string"
+          ? fill(t.payExPlatformPriceList, {
+              list: platformLabel(d.priceList, null, locale),
+            })
+          : t.payExPlatformCounterPrices;
+      return [
+        platformLabel(
+          typeof d.platform === "string" ? d.platform : null,
+          typeof d.label === "string" ? d.label : null,
+          locale,
+        ),
+        why,
+        list,
+        typeof d.reference === "string" && d.reference ? "#" + d.reference : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    }
     case "terminal_attempt_review":
     case "terminal_attempt_unknown_open":
       // payments (037 P2): the terminal of the charge (a provider code never shows raw).

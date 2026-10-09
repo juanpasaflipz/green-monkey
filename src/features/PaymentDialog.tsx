@@ -20,6 +20,8 @@ import { moneyFormatter } from "./Receipt";
 import { currentBusinessDate, orderNumberLabel } from "../labels";
 import {
   isLiveForOrder,
+  platformLabel as platformName,
+  referenceFromName,
   type AttemptView,
   type PaymentOptions,
   type PlatformCode,
@@ -79,6 +81,8 @@ export function PaymentDialog({
   offline,
   paymentOptions = EMPTY_PAYMENT_OPTIONS,
   pricePlatform = null,
+  dineIn = false,
+  orderName = "",
   onSetDefaultTerminal,
   attempt = null,
   onSendToTerminal,
@@ -106,6 +110,10 @@ export function PaymentDialog({
   paymentOptions?: PaymentOptions;
   /** payments (037, LD-72): the order was rung at this platform's prices. */
   pricePlatform?: PlatformCode | null;
+  /** LD-75: a table or dine-in order (never paid by a platform). */
+  dineIn?: boolean;
+  /** The order's name, which prefills the platform order number (PAYMENTS-UX-15). */
+  orderName?: string;
   /** "Usar siempre en este dispositivo" (online only). */
   onSetDefaultTerminal?: (terminalId: string) => void;
   /** payments (037, P2): the integrated charge this dialog waits for (or its last outcome). */
@@ -121,24 +129,28 @@ export function PaymentDialog({
   const money = moneyFormatter(currency, locale);
   const text = (n: number) => (n / 10 ** exponent).toFixed(exponent);
   const ids = useId();
-  const [method, setMethod] = useState<TenderMethod>(
+  const [method, setMethodState] = useState<TenderMethod>(
     pricePlatform ? "platform" : "cash",
   );
-  // payments (037): the card record's terminal (null = "Otra terminal"), defaulting to
-  // this device's terminal once the options arrive, until the cashier picks one.
-  const [terminalId, setTerminalId] = useState<string | null>(
-    paymentOptions.defaultTerminalId,
-  );
-  const [terminalPicked, setTerminalPicked] = useState(false);
-  if (
-    !terminalPicked &&
-    terminalId === null &&
+  // payments (037): the card record's terminal (null = "Otra terminal", undefined = none
+  // chosen). PAYMENTS-UX-4: this device's default, else the only terminal; with several and no
+  // default nothing is preselected, so «Otra terminal» is always a deliberate choice. It follows
+  // the options as they arrive until the cashier picks one.
+  const suggestedTerminal = (): string | undefined =>
     paymentOptions.defaultTerminalId &&
     paymentOptions.terminals.some(
       (x) => x.id === paymentOptions.defaultTerminalId,
     )
-  )
-    setTerminalId(paymentOptions.defaultTerminalId);
+      ? paymentOptions.defaultTerminalId
+      : paymentOptions.terminals.length === 1
+        ? paymentOptions.terminals[0].id
+        : undefined;
+  const [terminalId, setTerminalId] = useState<string | null | undefined>(
+    suggestedTerminal,
+  );
+  const [terminalPicked, setTerminalPicked] = useState(false);
+  if (!terminalPicked && terminalId !== suggestedTerminal())
+    setTerminalId(suggestedTerminal());
   const [useAsDefault, setUseAsDefault] = useState(false);
   // P2 "Cobrar sin integración": the integrated terminal is recorded manually this time.
   const [manualFallback, setManualFallback] = useState(false);
@@ -162,8 +174,23 @@ export function PaymentDialog({
   const [dueChanged, setDueChanged] = useState(false);
   const [tipText, setTipText] = useState("");
   const [receivedInput, setReceivedInput] = useState<string | null>(null);
-  const [reference, setReference] = useState("");
+  const [reference, setReference] = useState(() =>
+    pricePlatform ? referenceFromName(orderName) : "",
+  );
   const [confirmed, setConfirmed] = useState(false);
+  /**
+   * PAYMENTS-UX-10: a method change into the card or platform form starts that form empty, so a
+   * number typed (and a box ticked) for the platform never completes a card record, or the other
+   * way round. PAYMENTS-UX-15: the platform's order number is prefilled from the order's name
+   * («DiDi 4F2A» → «4F2A»), still editable.
+   */
+  const setMethod = (next: TenderMethod) => {
+    if (next !== method && (next === "external" || next === "platform")) {
+      setConfirmed(false);
+      setReference(next === "platform" ? referenceFromName(orderName) : "");
+    }
+    setMethodState(next);
+  };
   const [splitItems, setSplitItems] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
   const [splitOrder, setSplitOrder] = useState<Order | null>(null);
@@ -220,8 +247,14 @@ export function PaymentDialog({
     drawerOpen,
     online,
     terminalId: method === "external" ? terminalId : null,
+    terminalChoice: paymentOptions.terminals.length > 0,
     platform: method === "platform" ? platform : null,
     platformLabel,
+    dineIn,
+    pricePlatform,
+    platformHasPrices: paymentOptions.platforms.some(
+      (p) => p.platform === platform && p.hasPrices,
+    ),
   });
   const waitingForItems = splitItems && !selected.length;
   const problem =
@@ -249,6 +282,7 @@ export function PaymentDialog({
   const platformAllowed =
     offeredPlatforms.length > 0 &&
     !splitItems &&
+    !dineIn &&
     (online || !!(slot?.allowPlatform ?? slot?.allowExternal));
   const canConfirm =
     !busy &&
@@ -350,7 +384,14 @@ export function PaymentDialog({
           <>
             <div className="row between">
               <span>{t("thisPayment")}</span>
-              <strong>{amount !== null ? money(amount) : "—"}</strong>
+              <strong>
+                {/* PAYMENTS-UX-11 / MONEY-10: a platform records the whole balance. */}
+                {method === "platform"
+                  ? money(due)
+                  : amount !== null
+                    ? money(amount)
+                    : "—"}
+              </strong>
             </div>
             <Button
               variant="primary"
@@ -449,10 +490,7 @@ export function PaymentDialog({
                 aria-pressed={method === "platform"}
                 disabled={!platformAllowed || !!attempt}
                 className={method === "platform" ? "selected" : ""}
-                onClick={() => {
-                  setMethod("platform");
-                  setConfirmed(false);
-                }}
+                onClick={() => setMethod("platform")}
               >
                 {t("payMethodPlatform")}
               </button>
@@ -593,6 +631,14 @@ export function PaymentDialog({
                     disabled={busy}
                     problem={problem}
                     errorIdOf={errorId}
+                    values={{
+                      platform: platform
+                        ? platformName(platform, null, locale)
+                        : "",
+                      list: pricePlatform
+                        ? platformName(pricePlatform, null, locale)
+                        : "",
+                    }}
                   />
                 </>
               ) : (
@@ -687,7 +733,9 @@ export function PaymentDialog({
                       )}
                       <TerminalPicker
                         terminals={paymentOptions.terminals}
-                        value={terminalId}
+                        value={terminalId ?? null}
+                        chosen={terminalId !== undefined}
+                        defaultTerminalId={paymentOptions.defaultTerminalId}
                         onChange={(id) => {
                           setTerminalId(id);
                           setTerminalPicked(true);
@@ -697,8 +745,10 @@ export function PaymentDialog({
                         canSetDefault={online && !!onSetDefaultTerminal}
                         locale={locale}
                         disabled={busy}
+                        describedBy={errorId("terminal")}
                         online={online}
                       />
+                      {inline("terminal")}
                       {!integrated && (
                         <>
                           <Field label={t("reference")}>

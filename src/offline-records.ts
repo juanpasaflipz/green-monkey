@@ -575,6 +575,11 @@ type CachedOrder = {
    */
   businessDate?: string;
   serviceVersion?: number;
+  /**
+   * payments (037, LD-72): the order's platform price list; an offline round prices at it, as the
+   * server's round does (PAYMENTS-MONEY-1). Absent in copies stored before it was kept.
+   */
+  pricePlatform?: PlatformCode | null;
   lines: {
     id: string;
     productId: string;
@@ -730,6 +735,7 @@ function cachedFrom(order: Order, receivedAt: number): CachedOrder {
     createdAt: order.createdAt,
     ...(order.businessDate ? { businessDate: order.businessDate } : {}),
     serviceVersion: order.serviceVersion,
+    pricePlatform: order.pricePlatform ?? null,
     lines: order.lines.map((line) => ({
       id: line.id,
       productId: line.productId,
@@ -945,6 +951,8 @@ async function localOrders(session: Session): Promise<LocalOrderView[]> {
       tableName: tableName(body.order.tableId),
       name: body.order.name,
       note: body.order.note,
+      // PAYMENTS-MONEY-1: the order record's price list prices its next offline rounds.
+      pricePlatform: body.order.pricePlatform ?? null,
       lines,
       total,
       paid,
@@ -1043,6 +1051,8 @@ export async function cachedServerOpenOrders(
       tableName: order.tableName,
       name: order.name,
       note: order.note ?? "",
+      // PAYMENTS-MONEY-1: a cached platform-priced order keeps its list offline.
+      pricePlatform: order.pricePlatform ?? null,
       lines,
       total,
       paid,

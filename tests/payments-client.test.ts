@@ -2,7 +2,11 @@
 // drawer totals, Excepciones text, the tender CSV and the corte of a drawer with terminals and
 // platforms. Pure: no database, no browser.
 import { describe, expect, it } from "vitest";
-import { tenderLabel, tenderMethodLabel } from "../src/labels";
+import {
+  offlineMethodKey,
+  tenderLabel,
+  tenderMethodLabel,
+} from "../src/labels";
 import { archivedDrawerAmounts } from "../src/features/offline/format";
 import { exceptionDetail } from "../src/features/reports/exception-text";
 import {
@@ -10,13 +14,20 @@ import {
   canRetrySettle,
   resolveOptions,
 } from "../src/features/payments/attempt-text";
-import type { AttemptView } from "../shared/payments";
-import { tenderColumns, toCsv } from "../src/features/reports/csv";
+import { referenceFromName, type AttemptView } from "../shared/payments";
+import {
+  dayColumns,
+  drawerColumns,
+  tenderColumns,
+  toCsv,
+} from "../src/features/reports/csv";
 import { exceptionKindLabel, money } from "../src/features/reports/format";
+import { refundParts } from "../src/features/RefundDialog";
 import {
   buildCorteDocument,
   drawerRow,
   otherDayDrawerCollections,
+  type DayRow,
   type DrawerFacts,
   type ExceptionRow,
   type TenderReportRow,
@@ -51,12 +62,36 @@ describe("tender labels (receipts, Órdenes, Caja)", () => {
       tenderMethodLabel("external", undefined, "es"),
     );
     expect(tenderLabel({ method: "cash" }, "es")).toBe("Efectivo");
+    // PAYMENTS-MONEY-4: a recovered platform or card payment keeps its method; only recovered
+    // cash reads «Efectivo recuperado».
     expect(
       tenderLabel(
         { method: "platform", platform: "rappi", source: "offline_recovery" },
         "es",
       ),
-    ).toBe(tenderMethodLabel("platform", "offline_recovery", "es"));
+    ).toBe("Pagado en Rappi (recuperado)");
+    expect(
+      tenderLabel(
+        {
+          method: "external",
+          terminal_label: "BBVA",
+          source: "offline_recovery",
+        },
+        "en",
+      ),
+    ).toBe("Card · BBVA (recovered)");
+    expect(
+      tenderLabel({ method: "cash", source: "offline_recovery" }, "es"),
+    ).toBe("Efectivo recuperado");
+    expect(tenderMethodLabel("platform", "offline_recovery", "es")).toBe(
+      "Plataforma (recuperado)",
+    );
+    expect(tenderMethodLabel("external", "offline_recovery", "es")).not.toMatch(
+      /Efectivo/,
+    );
+    expect(offlineMethodKey("platform")).toBe("payMethodPlatform");
+    expect(offlineMethodKey("cash")).toBe("offlineMethodCash");
+    expect(offlineMethodKey("card")).toBe("serviceTenderOther");
     // Never cash: an unknown method prints as "Otro".
     expect(tenderMethodLabel("platform", undefined, "es")).toBe("Plataforma");
     expect(tenderLabel({ method: "card" }, "es")).toBe(
@@ -134,6 +169,61 @@ describe("Excepciones and the tender CSV", () => {
         m,
       ),
     ).toContain("Reembolso por plataforma (sin efectivo) " + m(1500));
+  });
+  it("LD-75: a platform tender to review names the platform («Otra» by its name), why, the order's price list and its number", () => {
+    const pt = (reasonCode: string, detail: object) =>
+      ({
+        ...row("platform_tender", 38_000, detail),
+        reasonCode,
+      }) as ExceptionRow;
+    expect(
+      exceptionDetail(
+        pt("payments_platform_other", {
+          platform: "other",
+          label: "App",
+          priceList: null,
+          reference: null,
+        }),
+        "es",
+        m,
+      ),
+    ).toBe("App · Plataforma «Otra» · Precios de mostrador");
+    expect(
+      exceptionDetail(
+        pt("payments_platform_no_price_list", {
+          platform: "rappi",
+          label: null,
+          priceList: null,
+          reference: "88123",
+        }),
+        "en",
+        m,
+      ),
+    ).toBe(
+      "Rappi · Order without the platform's price list · Counter prices · #88123",
+    );
+    expect(
+      exceptionDetail(
+        pt("payments_platform_rule_skipped", {
+          platform: "didi_food",
+          label: null,
+          priceList: "didi_food",
+          reference: "4F2A",
+        }),
+        "es",
+        m,
+      ),
+    ).toBe(
+      "DiDi Food · Registrado sin conexión fuera de las reglas · Precios: DiDi Food · #4F2A",
+    );
+  });
+  it("PAYMENTS-UX-15: the order name prefills the platform order number", () => {
+    expect(referenceFromName("DiDi 4F2A")).toBe("4F2A");
+    expect(referenceFromName("Uber Eats #4F2A1")).toBe("#4F2A1");
+    expect(referenceFromName("rappi 88123")).toBe("88123");
+    expect(referenceFromName("Mesa 4")).toBe("");
+    expect(referenceFromName("DiDi")).toBe("");
+    expect(referenceFromName("")).toBe("");
   });
   it("terminal charges in Excepciones (P2): the terminal, and a manager's resolution in words; the kinds are labelled in both languages", () => {
     expect(
@@ -220,6 +310,51 @@ describe("Excepciones and the tender CSV", () => {
     expect(line).toContain("DiDi Food");
     expect(line).toContain("59.00");
     expect(line).toContain("estimadas");
+  });
+  it("PAYMENTS-MONEY-5: the day CSV has a Plataformas column, so cash + terminal + platforms add up; the drawers CSV carries platform sales and refunds", () => {
+    const day = {
+      date: "2026-10-09",
+      orders: 3,
+      grossSales: 300_000,
+      discounts: 0,
+      salesTotal: 300_000,
+      refunds: 0,
+      cash: 150_000,
+      external: 50_000,
+      platform: 100_000,
+      tips: 0,
+      paidOuts: 0,
+    } as unknown as DayRow;
+    const opts = {
+      locale: "es" as const,
+      currency: "MXN",
+      timezone: "America/Mexico_City",
+    };
+    const [header, line] = toCsv(dayColumns, [day], opts)
+      .replace(/^\uFEFF/, "")
+      .split(/\r\n/);
+    const cells = (row: string) => row.split(",");
+    const column = cells(header).indexOf("Plataformas");
+    expect(column).toBeGreaterThan(cells(header).indexOf("Terminal"));
+    expect(cells(line)[column]).toBe("1000.00");
+    const drawerHeader = toCsv(drawerColumns("es"), [], opts)
+      .replace(/^\uFEFF/, "")
+      .split(/\r\n/)[0];
+    expect(drawerHeader).toContain("Plataformas");
+    expect(drawerHeader).toContain("Reembolsos de plataformas");
+  });
+});
+
+describe("refund dialog breakdown (PAYMENTS-UX-8)", () => {
+  it("a platform portion is its own part, never cash", () => {
+    expect(
+      refundParts([
+        { method: "cash", amount: 1000 },
+        { method: "external", amount: 500 },
+        { method: "platform", amount: 12_900 },
+        { method: "card", amount: 7 },
+      ]),
+    ).toEqual({ cash: 1000, external: 500, platform: 12_900 });
   });
 });
 
@@ -377,6 +512,15 @@ describe("a drawer with named terminals and platforms (corte X/Z)", () => {
     const blind = buildCorteDocument(closed, ctx("blind"));
     expect(blind.terminals.every((x) => !("fees" in x))).toBe(true);
     expect(blind.platforms.every((x) => !("commission" in x))).toBe(true);
+    // PAYMENTS-SECURITY-3: a cashier who may see expected cash gets the full corte without
+    // fees or commissions (drawerCorte passes fees only for owners and managers).
+    const cashier = buildCorteDocument(facts(), {
+      ...ctx("full"),
+      fees: false,
+    });
+    expect(cashier.cash).not.toBeNull();
+    expect(cashier.terminals.every((x) => !("fees" in x))).toBe(true);
+    expect(cashier.platforms.every((x) => !("commission" in x))).toBe(true);
     // The day corte counts platform sales as collected by that day's drawers.
     expect(otherDayDrawerCollections(12_000, [row], "2026-10-09")).toBe(0);
   });

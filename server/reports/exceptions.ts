@@ -1,6 +1,7 @@
 // Reports (029): the loss-prevention exceptions report (GAP-3, spec §2.7): every void,
 // discount, discount removal, refund, cash paid-out, drawer and terminal difference, receipt and
-// corte Z reprint, open-price line, and archived or reconciled offline sale of a range, with
+// corte Z reprint, open-price line, archived or reconciled offline sale and reviewable platform
+// tender (payments 037, LD-75) of a range, with
 // actor, approver, amount, order, reason and device, newest first with keyset paging.
 import type { Tx } from "../db.js";
 import { permit, managers } from "../auth.js";
@@ -226,6 +227,33 @@ export function exceptionsCte(
       ${cfgOn("a.created_at")}
      where a.created_at >= ${w.ws} and a.created_at < ${w.we}
        and a.operation in ('offline.reconciled', 'offline.payment_reconciled')
+    union all
+    -- payments (037, LD-75, PAYMENTS-SECURITY-1): platform tenders a manager reviews: «Otra», an
+    -- order not rung at that platform's price list, or offline evidence that broke an online
+    -- rule. The actor is the one payment.recorded names for the tender, else the drawer's.
+    select 'platform_tender', t.id, t.created_at, coalesce(pa.actor_id, cs.employee_id), null, null,
+      t.amount::int8, t.order_id,
+      case when pa.detail ? 'platformRulesSkipped' then 'payments_platform_rule_skipped'
+           when t.platform = 'other' then 'payments_platform_other'
+           else 'payments_platform_no_price_list' end,
+      '', cs.device_id,
+      jsonb_build_object('platform', t.platform, 'label', t.platform_label, 'priceList', o.price_platform,
+        'reference', t.external_reference, 'source', t.source, 'rulesSkipped', pa.detail->'platformRulesSkipped'),
+      ${day("t.created_at")}
+      from tenders t
+      join orders o on o.tenant_id = t.tenant_id and o.id = t.order_id
+      left join cash_sessions cs on cs.tenant_id = t.tenant_id and cs.id = t.session_id
+      left join lateral (
+        select a.actor_id, a.detail from audit a
+         where a.tenant_id = t.tenant_id and a.operation = 'payment.recorded'
+           -- same transaction as the tender (both now()); the window keeps the time index.
+           and a.created_at >= t.created_at - interval '1 minute' and a.created_at <= t.created_at + interval '1 minute'
+           and a.entity_id = t.order_id::text and a.detail->>'tenderId' = t.id::text
+         limit 1) pa on true
+      ${cfgOn("t.created_at")}
+     where t.created_at >= ${w.ws} and t.created_at < ${w.we} and t.method = 'platform'
+       and (t.platform = 'other' or o.price_platform is distinct from t.platform
+            or pa.detail ? 'platformRulesSkipped')
     union all
     -- payments (037 P2): an approved terminal charge the order could not take (review), at the
     -- time it went to review; the actor is who started the charge.

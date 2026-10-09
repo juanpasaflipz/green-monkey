@@ -28,6 +28,8 @@ export type TenderPlatform = {
   platform: PlatformCode;
   enabled: boolean;
   commission_bp: number | null;
+  /** The platform has a price of its own for some product (LD-75). */
+  has_prices: boolean;
 };
 
 /**
@@ -53,14 +55,22 @@ export async function liveTerminal(
     throw new DomainError("payments_terminal_inactive", 409);
   return t;
 }
-/** A platform's row; no row means enabled with no commission (037 §3). */
+/**
+ * A platform's row; no row means DISABLED with no commission (LD-75, PAYMENTS-SECURITY-1: the
+ * owner opts in per platform). has_prices: any product has a price on its list.
+ */
 export async function tenderPlatform(
   tx: Tx,
   platform: PlatformCode,
 ): Promise<TenderPlatform> {
   const [p] = await tx<TenderPlatform[]>`
-    select platform,enabled,commission_bp from payment_platforms where platform=${platform}`;
-  return p ?? { platform, enabled: true, commission_bp: null };
+    select ${platform}::text as platform, coalesce(pp.enabled,false) as enabled,
+      pp.commission_bp,
+      exists(select 1 from payment_platform_prices x
+             where x.platform=${platform} and x.price is not null) as has_prices
+    from (select 1) one
+    left join payment_platforms pp on pp.platform=${platform}`;
+  return p;
 }
 
 export type TenderSpec = {

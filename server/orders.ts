@@ -27,6 +27,7 @@ import {
 import {
   PAYMENTS_LIMITS,
   paymentMethodInput,
+  platformReferenceProblem,
   tenderExtras,
 } from "../shared/payments.js";
 import { bumpKitchenFeed } from "./kitchen.js";
@@ -363,9 +364,17 @@ export async function createOrder(
   return once(tx, s, input.operationId, "create_order", input, async () => {
     if (["qr", "kiosk"].includes(input.channel)) await requirePro(tx);
     else if (!offline) await requireSelling(tx, s);
-    // payments (037, LD-72): only staff orders ring at a platform's prices.
+    // payments (037, LD-72): only staff orders ring at a platform's prices, and online only at an
+    // enabled platform's (PAYMENTS-SECURITY-5; offline sales already happened, OFF-8). A platform
+    // list is for delivery: never on a table or a dine-in order (LD-75).
     if (input.pricePlatform && ["qr", "kiosk"].includes(input.channel))
       throw new DomainError("invalid_input");
+    if (input.pricePlatform && !offline) {
+      if (input.tableId || input.mode === "dine_in")
+        throw new DomainError("payments_platform_dine_in", 409);
+      if (!(await tenderPlatform(tx, input.pricePlatform)).enabled)
+        throw new DomainError("payments_platform_disabled", 409);
+    }
     const lines = quote(
       input.lines,
       await catalog(tx),
@@ -522,7 +531,7 @@ export async function recordPayment(
   const p = paymentInput.parse(raw);
   return once(tx, s, p.operationId, "payment", { orderId, ...p }, async () => {
     const [row] =
-      await tx`select id,state,check_state,price_platform from orders where id=${orderId} for update`;
+      await tx`select id,state,check_state,price_platform,table_id,mode from orders where id=${orderId} for update`;
     if (!row) throw new DomainError("not_found", 404);
     assertCheckWritable(row as { check_state: string; state: string });
     // payments (037): no second payment while money may be in flight at a terminal.
@@ -542,6 +551,8 @@ export async function recordPayment(
     )
       throw new DomainError("external_confirmation");
     let platform: TenderSpec["platform"] = null;
+    /** Online platform rules offline evidence broke (PAYMENTS-SECURITY-4): noted, not refused. */
+    const skipped: string[] = [];
     if (p.method === "platform") {
       if (!p.platform) throw new DomainError("payments_platform_required");
       if ((p.platform === "other") !== Boolean(p.platformLabel))
@@ -553,15 +564,46 @@ export async function recordPayment(
       if (p.reference.trim().length > PAYMENTS_LIMITS.platformReferenceMax)
         throw new DomainError("invalid_input");
       const platformRow = await tenderPlatform(tx, p.platform);
-      if (!opts.evidence) {
+      // LD-75 (PAYMENTS-SECURITY-1): each rule names the online error it raises.
+      const rules: [string, boolean, string][] = [
         // Q6: a platform covers the whole remaining balance.
-        if (p.amount !== o.total - o.paid)
-          throw new DomainError("payments_platform_full_balance", 409);
-        if (!platformRow.enabled)
-          throw new DomainError("payments_platform_disabled", 409);
+        [
+          "full_balance",
+          p.amount !== o.total - o.paid,
+          "payments_platform_full_balance",
+        ],
+        // Disabled by default: the owner opts in per platform.
+        ["disabled", !platformRow.enabled, "payments_platform_disabled"],
+        // A platform pays a delivery or takeaway order, never a table or dine-in one.
+        [
+          "dine_in",
+          Boolean(row.table_id) || row.mode === "dine_in",
+          "payments_platform_dine_in",
+        ],
         // LD-72: an order rung at a platform's prices is paid by that platform.
-        if (row.price_platform && row.price_platform !== p.platform)
-          throw new DomainError("payments_platform_price_list", 409);
+        [
+          "price_list",
+          Boolean(row.price_platform) && row.price_platform !== p.platform,
+          "payments_platform_price_list",
+        ],
+        // LD-75: a platform with prices of its own pays only orders rung at its list.
+        [
+          "needs_price_list",
+          !row.price_platform && platformRow.has_prices,
+          "payments_platform_needs_price_list",
+        ],
+        // Uber Eats, Rappi and DiDi tenders carry the platform's order number.
+        [
+          "reference",
+          platformReferenceProblem(p.platform, p.reference) !== null,
+          "payments_platform_reference_required",
+        ],
+      ];
+      for (const [rule, broken, code] of rules) {
+        if (!broken) continue;
+        if (!opts.evidence)
+          throw new DomainError(code, rule === "reference" ? 400 : 409);
+        skipped.push(rule);
       }
       platform = { row: platformRow, label: p.platformLabel ?? null };
     }
@@ -606,12 +648,20 @@ export async function recordPayment(
       method: p.method,
       amount: p.amount,
       tip: p.tip,
+      // Excepciones joins a platform tender to its actor through this id (LD-75).
+      tenderId,
       ...(terminal ? { terminalId: terminal.id } : {}),
       ...(platform ? { platform: platform.row.platform } : {}),
       ...(opts.droppedTerminalId
         ? {
             droppedTerminalId: opts.droppedTerminalId,
             note: "payments_terminal_unknown",
+          }
+        : {}),
+      ...(skipped.length
+        ? {
+            platformRulesSkipped: skipped,
+            platformNote: "payments_platform_rule_skipped",
           }
         : {}),
     });

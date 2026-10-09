@@ -1013,6 +1013,21 @@ try {
       confirmed: true,
     }),
   );
+  // payments (037, LD-75): a platform tender to review, «Otra» recorded by Carlos yesterday on its
+  // own order with no drawer (so no figure asserted above or below moves).
+  const oPlatform = await order({
+    date: yesterday,
+    created: at(yesterday, "14:00:00"),
+    lines: [{ product: P.taco, qty: 1, unit: 4500, cost: 1500 }],
+  });
+  const platformTender = id();
+  await scoped(async (tx) => {
+    await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,platform,platform_label,created_at)
+      values(${T},${platformTender},${oPlatform.id},${null},'platform',4500,0,4500,'other','App',${at(yesterday, "14:05:00")})`;
+    await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail,created_at)
+      values(${T},${id()},${E.cashier},'payment.recorded',${oPlatform.id},
+        ${tx.json({ method: "platform", amount: 4500, tip: 0, tenderId: platformTender, platform: "other" })},${at(yesterday, "14:05:00")})`;
+  });
   const every = await read(owner, (tx: Tx) =>
     exceptionRows(tx, owner, { from: yesterday, to: today, limit: "500" }),
   );
@@ -1020,7 +1035,7 @@ try {
   assert.deepEqual(
     [...new Set(every.rows.map((r: any) => r.kind))].sort(),
     [...EXCEPTION_KINDS].sort(),
-    "all fifteen kinds",
+    "all sixteen kinds",
   );
   const view = (r: any) => ({
     kind: r.kind,
@@ -1047,6 +1062,13 @@ try {
     device: string | null,
     account: string | null = null,
   ) => ({ kind, amount, actor, approver, account, order, device });
+  assert.deepEqual(
+    { ...row("platform_tender"), reason: only("platform_tender").reasonCode },
+    {
+      ...expected("platform_tender", 4500, "Carlos", null, oPlatform.id, null),
+      reason: "payments_platform_other",
+    },
+  );
   assert.deepEqual(
     every.rows
       .filter((r: any) => r.kind === "void")
@@ -1315,7 +1337,7 @@ try {
     amount: 4500 + 4500 + 3000 + 4500 + 4500 + 500,
   });
   ok(
-    "19/21. exceptions: all fifteen kinds (void, discount and its reversal, refund, paid-out, drawer and terminal differences, receipt and corte Z reprints, open price, offline archive, both offline reconcile paths, terminal charges to review, resolved by a manager and unknown after 10 minutes) with amount, actor, approver, order and device; the summary equals the listed rows",
+    "19/21. exceptions: all sixteen kinds (void, discount and its reversal, refund, paid-out, drawer and terminal differences, receipt and corte Z reprints, open price, offline archive, both offline reconcile paths, platform tender to review, terminal charges to review, resolved by a manager and unknown after 10 minutes) with amount, actor, approver, order and device; the summary equals the listed rows",
   );
 
   // ---- corte del día and its print.
