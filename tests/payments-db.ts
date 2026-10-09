@@ -206,7 +206,7 @@ async function attempt(o: {
         terminal_id,provider,provider_device_id,terminal_label,amount,tip,currency,employee_id,device_id,
         session_id,cash_session_id,state)
       values(${o.tenantId ?? A},${attemptId},${randomUUID()},${randomUUID()},'order','pos',${o.orderId},
-        ${o.terminalId},'mercadopago','NEWLAND_N950__N950NCB801293324','MP Caja',${o.amount ?? 4500},0,'MXN',
+        ${o.terminalId},'mercadopago','NEWLAND_N950__N950TEST000001','MP Caja',${o.amount ?? 4500},0,'MXN',
         ${ids.cashier},${ids.device1},${randomUUID()},${o.drawerId},${o.state ?? "created"})`,
   );
   return attemptId;
@@ -306,7 +306,7 @@ try {
     A,
     (tx) =>
       tx`insert into payment_terminals(tenant_id,id,name,kind,provider_device_id,fee_bp,created_by,updated_by)
-      values(${A},${mpTerminal},'MP Caja','mercadopago_point','NEWLAND_N950__N950NCB801293324',418,${ids.manager},${ids.manager})`,
+      values(${A},${mpTerminal},'MP Caja','mercadopago_point','NEWLAND_N950__N950TEST000001',418,${ids.manager},${ids.manager})`,
   );
 
   await test("4. migration 037: the replaced checks keep their names and every tender check is validated", async () => {
@@ -581,7 +581,7 @@ try {
       order_id: o.id,
       terminal_id: mpTerminal,
       provider: "mercadopago",
-      provider_device_id: "NEWLAND_N950__N950NCB801293324",
+      provider_device_id: "NEWLAND_N950__N950TEST000001",
       terminal_label: "MP Caja",
       amount: 4500,
       tip: 0,
