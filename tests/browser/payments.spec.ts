@@ -409,7 +409,10 @@ test("integrated charging: the owner connects Mercado Pago and Clip (the URL sho
     await expect(panel).toContainText(
       "Cópiala ahora: se muestra una sola vez.",
     );
-    await expect(page.locator("input[type=password]")).toHaveCount(0);
+    // The provider form and its secret fields are gone. Scoped to the payments panel: CFDI's
+    // panel, above it, shows its own CSD password field whenever the shared demo restaurant's
+    // CFDI is waiting for a CSD (it depends on which specs ran before this one).
+    await expect(panel.locator("input[type=password]")).toHaveCount(0);
     // Clip takes the URL with every charge: the panel says there is nowhere to paste it.
     if (provider === "clip")
       await expect(panel).toContainText(

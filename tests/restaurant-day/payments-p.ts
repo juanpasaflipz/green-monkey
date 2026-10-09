@@ -183,11 +183,10 @@ async function connect(owner: Device, panel: Locator, key: "mp" | "clip") {
   );
   const value = await url.inputValue();
   hookTokens.push(value.split("/").at(-1)!);
-  record(
-    `${title} notification URL on the deployed origin`,
-    true,
+  expect(
     shown.test(value),
-  );
+    `${title}: the notification URL is on the deployed origin (APP_URL)`,
+  ).toBe(true);
   await expect(panel).toContainText("Cópiala ahora: se muestra una sola vez.");
   await expect(page.locator("input[type=password]")).toHaveCount(0);
   await panel.getByRole("button", { name: "Cerrar", exact: true }).click();
@@ -718,10 +717,16 @@ async function closeDrawer(caja: Device) {
   await expect(result).toBeVisible();
   const shown = (await result.innerText()).replace(/\s+/g, " ");
   record("P close result", z.cash, shown);
-  // A manager sees the figures once the count is saved: exact cash, terminals as reported.
-  if (shown.includes("Efectivo esperado"))
-    for (const s of [z.cash.expected, z.cash.counted, z.terminal.net])
-      expect(shown, `close result: ${s}`).toContain(s);
+  // The manager sees the figures once the count is saved: exact cash, terminals as reported.
+  for (const s of [
+    `Efectivo esperado ${z.cash.expected}`,
+    `Efectivo contado ${z.cash.counted}`,
+    `Diferencia ${z.cash.difference} · Cuadra`,
+    `Neto en terminal ${z.terminal.net}`,
+    `Total reportado de la terminal ${z.terminal.reported}`,
+    `Diferencia en terminal $0.00 · Cuadra`,
+  ])
+    expect(shown, `close result: ${s}`).toContain(s);
   await press(caja, result.getByRole("button", { name: "Listo", exact: true }));
   await expect(
     page.getByText("Caja cerrada", { exact: true }).first(),
