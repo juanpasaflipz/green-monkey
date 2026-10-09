@@ -175,3 +175,25 @@
   grid-template-columns: max-content 1fr;
   gap: 0.25rem 1rem;
 }
+.loyalty-join {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 1rem;
+  min-height: 100vh;
+  background: var(--bg, #fff);
+  color: var(--ink, #1d241c);
+}
+.loyalty-join-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.loyalty-join-place {
+  margin: 0;
+  font-weight: 600;
+}
+.loyalty-join-notice h1 {
+  font-size: 1.4rem;
+}

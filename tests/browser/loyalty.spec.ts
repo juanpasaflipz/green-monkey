@@ -135,7 +135,7 @@ test("settings: turning the club on waits for the privacy notice and the attesta
   await expect(panel).toContainText("Primero publica el aviso de privacidad del restaurante");
   await panel.getByLabel("Activar el club").check();
   await panel.getByLabel(/Mi aviso de privacidad incluye el club/).check();
-  await panel.getByRole("button", { name: "Guardar", exact: true }).click();
+  await panel.getByRole("button", { name: "Guardar club de lealtad", exact: true }).click();
   await expect(panel.getByRole("alert")).toContainText(
     "Publica el aviso de privacidad del restaurante antes de usar el club.",
   );
@@ -157,12 +157,12 @@ test("settings: turning the club on waits for the privacy notice and the attesta
   // Without the attestation the club stays off.
   await panel.getByLabel("Activar el club").check();
   await panel.getByLabel(/Mi aviso de privacidad incluye el club/).uncheck();
-  await panel.getByRole("button", { name: "Guardar", exact: true }).click();
+  await panel.getByRole("button", { name: "Guardar club de lealtad", exact: true }).click();
   await expect(panel.getByRole("alert")).toContainText(
     "Confirma que tu aviso de privacidad incluye el club.",
   );
   await panel.getByLabel(/Mi aviso de privacidad incluye el club/).check();
-  await panel.getByRole("button", { name: "Guardar", exact: true }).click();
+  await panel.getByRole("button", { name: "Guardar club de lealtad", exact: true }).click();
   await expect(panel.getByText("Configuración del club guardada.")).toBeVisible();
   await expect(panel.getByText(/Confirmado por/)).toBeVisible();
   for (const [width, height] of WIDTHS) {

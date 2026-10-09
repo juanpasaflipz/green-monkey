@@ -17,7 +17,8 @@ import {
 import { errorText, strings } from "../../i18n";
 import { Button, Field } from "../../components/ui";
 import { dayText, fill } from "./format";
-import "../public/diner.css";
+// Its own styles (loyalty.css), not public ordering's diner.css: a CSS file shared by two lazy
+// pages becomes a JS-less chunk the service worker's precache list would name but never find.
 import "./loyalty.css";
 
 const tokenOf = () => {
@@ -62,17 +63,17 @@ export function JoinPage() {
   }, [token]);
   if (!token)
     return (
-      <main className="diner diner-notice loyalty-join" lang={locale}>
+      <main className="loyalty-join loyalty-join-notice" lang={locale}>
         <h1>{t.loyaltyJoinNoToken}</h1>
       </main>
     );
   if (failure)
     return (
-      <main className="diner diner-notice loyalty-join" lang={locale}>
+      <main className="loyalty-join loyalty-join-notice" lang={locale}>
         <h1>{failure}</h1>
       </main>
     );
-  if (!view) return <main className="diner" lang={locale}><p role="status">…</p></main>;
+  if (!view) return <main className="loyalty-join" lang={locale}><p role="status">…</p></main>;
   const program = view.programName;
   async function submit() {
     setError("");
@@ -99,15 +100,15 @@ export function JoinPage() {
     }
   }
   return (
-    <main className="diner loyalty-join" lang={locale}>
-      <header className="diner-header">
+    <main className="loyalty-join" lang={locale}>
+      <header className="loyalty-join-header">
         <div>
-          <p className="diner-place">{view.restaurantName}</p>
+          <p className="loyalty-join-place">{view.restaurantName}</p>
           <h1>{fill(t.loyaltyJoinTitle, { program })}</h1>
         </div>
-        <div className="diner-header-actions">
+        <div>
           <Button
-            className="diner-language"
+            className="loyalty-join-language"
             onClick={() => setLocale(locale === "es" ? "en" : "es")}
             lang={locale === "es" ? "en" : "es"}
           >

@@ -263,7 +263,7 @@ export function LoyaltySettings({
           </label>
           <div className="row wrap">
             <Button type="submit" variant="primary" disabled={busy || !online}>
-              {t("loyaltySave")}
+              {t("loyaltySaveClub")}
             </Button>
             <span role="status" aria-live="polite" className="muted">
               {saved ? t("loyaltySaved") : ""}
