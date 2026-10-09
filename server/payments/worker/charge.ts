@@ -1219,6 +1219,14 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
     elapsed < PAYMENTS_LIMITS.pollFastForMs
       ? fastPollMs(a.provider)
       : PAYMENTS_LIMITS.pollSlowMs;
+  // Every branch below ends here: a Clip request past its deadline is withdrawn (or becomes a
+  // watched unknown) whatever the read said, including a failed read or a 404 (P2V-FIXES-1).
+  // Before, only a successful read reached the withdrawal, so a 5xx/429/timeout/404 on the first
+  // link past the deadline ended the chain with the attempt pending for good.
+  const finish = async (): Promise<JobOutcome> => {
+    if (withdraw) await clipDeadline(ctx, rt, loaded);
+    return { status: "done" };
+  };
   let read: Read | null;
   try {
     read = await readProvider(rt, loaded, ctx.signal);
@@ -1228,18 +1236,17 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
       await failIfRefused(ctx, rt, a.provider, loaded.account);
     // A read failure never changes the attempt: keep polling (429: MP's observed back-off).
     await next(e.retryAfterMs ?? Math.max(cadence, PAYMENTS_LIMITS.pollSlowMs));
-    return { status: "done" };
+    return finish();
   }
   if (!read) {
     await next(PAYMENTS_LIMITS.pollSlowMs);
-    return { status: "done" };
+    return finish();
   }
   const outcome = await ctx.tenant((tx) =>
     applyRead(tx, rt, tenantId, attemptId, read, "poll"),
   );
   if (outcome === "continue" || outcome === "restart") await next(cadence);
-  if (withdraw) await clipDeadline(ctx, rt, loaded);
-  return { status: "done" };
+  return finish();
 }
 
 /**

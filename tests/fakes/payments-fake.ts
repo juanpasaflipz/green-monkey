@@ -20,6 +20,8 @@
  *   fake.lateApproval(ref, ms, o?)                                 approve after ms
  *   fake.atTerminalUncancellable(ref)   MP status at_terminal with cancels refused; Clip DELETE 400
  *   fake.rateLimitReads(n)              the next n reads answer 429
+ *   fake.failClip(...statuses)          the next Clip reads and withdrawals answer these statuses
+ *                                       (503, 429, 404 …), one each: a Clip API outage
  *   fake.nextReplay(behaviour)          MP: the next re-POST of a known idempotency key answers
  *                                       "server5xx", "timeout" (lost again), "queued2205" or
  *                                       "idempotencyKeyUsed" (409) instead of the stored order
@@ -143,6 +145,8 @@ export async function startPaymentsFake(
   const requests: { method: string; path: string; idempotencyKey?: string }[] =
     [];
   let readLimit = 0;
+  /** Statuses the next Clip reads and withdrawals answer, one each (a Clip API outage). */
+  const clipFaults: number[] = [];
   const timers = new Set<NodeJS.Timeout>();
 
   const byRef = (ref: string) =>
@@ -532,6 +536,18 @@ export async function startPaymentsFake(
           serial_number_pos: c.device,
         });
       }
+      if (
+        clipFaults.length &&
+        ((req.method === "GET" && path === "/payment") ||
+          (req.method === "DELETE" && path.startsWith("/payment/")))
+      ) {
+        const status = clipFaults.shift()!;
+        return send(
+          res,
+          status,
+          status === 404 ? { code: "PAYMENT_NOT_FOUND" } : {},
+        );
+      }
       if (req.method === "GET" && path === "/payment") {
         const c = charges.get(url.searchParams.get("pinpadRequestId") ?? "");
         if (!c) return send(res, 404, { code: "PAYMENT_NOT_FOUND" });
@@ -717,6 +733,10 @@ export async function startPaymentsFake(
     },
     rateLimitReads(n: number) {
       readLimit = n;
+    },
+    /** The next Clip reads and withdrawals (not creates) answer these statuses, one each. */
+    failClip(...statuses: number[]) {
+      clipFaults.push(...statuses);
     },
     /** An MP notification signed with the account's secret (what MP would send). */
     signMp(dataId: string, requestId: string, ts = String(Date.now())) {

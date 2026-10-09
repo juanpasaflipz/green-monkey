@@ -1760,6 +1760,50 @@ try {
     );
   });
 
+  await test("Clip deadline during a Clip API outage (P2V-FIXES-1): the first poll past the deadline gets a 5xx, a 429 or a 404 (read and withdrawal alike); the attempt still becomes unknown (payments_attempt_timeout), alerted, with exactly one queued watch poll, never pending with no chain", async () => {
+    for (const status of [503, 429, 404]) {
+      const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+      const c = await pending(o, terminals.clip);
+      await asOwner(
+        A,
+        (tx) => tx`update payment_attempts set sent_at = now() - interval '11 minutes'
+          where id=${c.id}`,
+      );
+      alerts.length = 0;
+      // Clip answers this status to the read and to the withdrawal (DELETE /payment/{id}).
+      fake.failClip(status, status);
+      await round(A);
+      const row = await attemptRow(c.id);
+      assert.deepEqual(
+        [row.state, row.error_code],
+        ["unknown", "payments_attempt_timeout"],
+        `read ${status}`,
+      );
+      assert.equal(
+        await count(
+          A,
+          (
+            tx,
+          ) => tx`select count(*)::int as n from jobs where kind='payments_poll'
+            and state in ('queued','available','running') and payload->>'attemptId'=${c.id}`,
+        ),
+        1,
+        `read ${status}: one watch poll`,
+      );
+      assert.ok(
+        alerts.some(
+          (x) =>
+            x.key.startsWith("payments_attempt_unknown_") &&
+            /reason=no_final_status/.test(x.body),
+        ),
+        `read ${status}: alerted`,
+      );
+      // Clip is back and the reader shows it cancelled: the watch settles it by itself.
+      fake.cancelOnTerminal(c.ref);
+      assert.equal(await drive(c.id, ["cancelled"]), "cancelled");
+    }
+  });
+
   await test("13. MP create with a lost answer is retried with the same idempotency key (one order at MP); a 429 on create backs off and retries; «No se cobró» dismisses an unknown outcome only when MP never said paid", async () => {
     const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
     fake.next("mercadopago", "timeout");
