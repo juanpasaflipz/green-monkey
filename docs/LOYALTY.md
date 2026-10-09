@@ -2,8 +2,7 @@
 
 Migration 038 (`migrations/038_loyalty.sql`), LD-71 and LD-72, built from `specs/loyalty-w4.md` with the
 Wave 4 critic's binding changes (`specs/wave4-cross-track.md` R5, R15–R23, R26–R32, R35, R38, R40–R45).
-Status: built on `track/loyalty`; merges after payments P1 (037), then rebases on it (see "Payments P1
-stub" below).
+Status: built on `track/loyalty`, which has absorbed payments P1 (037; see "Payments P1" below).
 
 ## Concepts
 
@@ -173,29 +172,33 @@ disabled with "El club requiere conexión." and the sale proceeds.
   log: once() saves ids only for every club command, and a replay re-reads the member as it is now, so
   a deletion or the retention pass leaves no name or phone in `operations` (LOYALTY-PRIVACY-1).
 
-## Payments P1 stub
+## Payments P1
 
-`shared/payments.ts` on this branch is a stub (`TENDER_METHODS = ["cash", "external", "platform"]`,
-`OnPaymentSettled`, `paymentSettledNoop`). Payments P1 owns the file: its merge replaces it whole.
-Selling takes an `onPaymentSettled` prop (no-op by default) and calls it with the club's after-payment
-work from its single payment-settled exit; P1's own exit replaces that wiring at the rebase. Loyalty
-DB check L9 (a platform tender earns nothing) runs once P1's `tenders.method` constraint accepts
-`platform`; until then the unit tests cover the exclusion, and the DB suite's "L9 gate" check fails
-as soon as the constraint accepts `platform`, so the rebase writes L9 (LOYALTY-OPS-4).
+Payments P1 (037) is merged into this branch; its `shared/payments.ts` is the only one (the loyalty
+stub and its rebase checklist, LOYALTY-OPS-6, are done). Loyalty uses three P1 symbols and adds no
+call to payments, and payments adds none to loyalty (critic R16):
 
-**P1 rebase checklist (LOYALTY-OPS-6).**
+- **`TENDER_METHODS`** (R15): the stamp base (`stampBase`, `STAMP_TENDER_METHODS` in
+  `shared/loyalty.ts`, and the Finanzas › Club de lealtad query) counts every method but
+  `platform`. A platform tender covers the whole remaining balance (payments Q6), so a
+  platform-paid order earns nothing and its receipt offers no join QR, and cash plus platform earns
+  on the cash part only. DB check L9 asserts both.
+- **The payment-settled exit** (R18): Selling's `onPaymentSettled(order, cartOwn)` is the one place
+  the club's after-payment work starts, on every settled path (collect, the pending-attempt retry,
+  settlements by items, "Recuperar pago"). For the cart's own order (owned and the same context
+  epoch; in "Recuperar pago", the cart shows that check) it calls `loyalty.afterPayment(order)`
+  (link the cart's member if needed, reconcile) and shows the text in the receipt status. For an
+  order the cart moved on from (an empty new cart showing a recovered receipt included) it only
+  calls `POST /api/loyalty/orders/:id/reconcile` (`reconcileOnly`) and never links the cart's
+  current member to it. A charge that settles after its dialog closed (P2's integrated terminals)
+  takes no exit and shows no toast; the settle hook's job still stamps.
+- **The live-attempt guard** (R17): P1's `assertNoLiveAttempt` sits in `recordDiscount` right
+  after the order lock, so a reward redemption, like a staff discount, is refused with
+  `payments_order_attempt_live` while a terminal charge for the order is in flight (DB check L10).
 
-1. Take P1's `shared/payments.ts` whole. It has no `OnPaymentSettled` or `paymentSettledNoop`: delete
-   Selling's stub import and the `onPaymentSettled` prop this branch added.
-2. Call the club's work from P1's single internal payment-settled exit, on every settled path
-   (collect, the pending-attempt retry, "Recuperar pago", settlements). For the cart's own order
-   (owned, same context epoch) call `loyalty.afterPayment(order)` and show its text in the receipt
-   status; for an order whose cart moved on, only `POST /api/loyalty/orders/:id/reconcile` (never
-   link the cart's current member to it).
-3. The "L9 gate" DB check now fails: write L9 (link, a platform tender earns nothing; cash plus
-   platform earns on the cash part) and delete the gate.
-4. Re-run `test:db:loyalty` and `tests/browser/loyalty.spec.ts` (the receipt status, the walk-in QR
-   and the link-failure tests exercise this exit).
+The settle hooks reach every payment path through `refreshCheckState`, including payments'
+`settleAttempt` (row 43, phase P2). Once P2 is in, L16 adds `payments_settle` (job and sync) to its
+lock-order burst; payments' DB 15 adds loyalty-linked orders to its own (R16).
 
 Not written yet (a release gate, DELIVERY_STATUS): the restaurant-day branch L of spec §9.4 (link,
 pay, earn, redeem, refund reversal through the UI, reconciled in `tests/restaurant-day-db.ts`). Until

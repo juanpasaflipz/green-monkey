@@ -619,6 +619,11 @@ El club de Juanberto's pasa de POS Lite a Green Monkey el día de cambio
   salvo que el cliente lo pida. «Sin club» sigue la venta sin cliente.
 - **Premios.** «Canjear premio» junto a Descuento: elige el producto; el
   premio cubre un producto hasta el tope que fijó el propietario. No pide PIN.
+  Mientras un cobro con terminal de la orden está en curso, espera a que
+  termine para canjear.
+- **Pedidos de plataforma.** Lo que paga la plataforma (Uber Eats, Rappi,
+  DiDi) no suma sellos y su ticket no trae el QR del club. Si el cliente pagó
+  una parte en efectivo o con tarjeta, suma sellos solo por esa parte.
 - **Sin conexión.** El club no funciona sin conexión: la venta sigue igual y
   el cliente se agrega después desde Detalle de orden (hasta 7 días después
   del pago). Cuando vuelva la conexión, reimprime el ticket desde Detalle de
