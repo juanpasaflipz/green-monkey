@@ -143,6 +143,10 @@ test("Configuración: a terminal with its fee, a platform's commission and a pro
   await page
     .getByRole("combobox", { name: "Precios", exact: true })
     .selectOption({ label: "Uber Eats" });
+  // PAYMENTS-MONEY-7: the tile shows the list's price, as the cart line will.
+  await expect(
+    page.getByRole("button", { name: /Taco de hongos/ }).first(),
+  ).toContainText("$59.00");
   await page
     .getByRole("button", { name: /Taco de hongos/ })
     .first()

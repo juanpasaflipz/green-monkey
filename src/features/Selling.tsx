@@ -13,6 +13,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import {
+  listPrice,
   type Session,
   type Product,
   type Locale,
@@ -1895,7 +1896,10 @@ export function Selling({
               <span className="product-category">{p.category[locale]}</span>
               <strong>{p.name[locale]}</strong>
               <span className="product-price">
-                {p.openAmount ? t("menuOpenPriceBadge") : money(p.price)}
+                {p.openAmount
+                  ? t("menuOpenPriceBadge")
+                  : // PAYMENTS-MONEY-7: the tile shows the cart's list price.
+                    money(listPrice(p, priceList))}
               </span>
               {p.kind === "combo" && (
                 <span className="product-tag">{t("menuKindCombo")}</span>
@@ -1940,6 +1944,7 @@ export function Selling({
           locale={locale}
           currency={session.restaurant.currency}
           canOpen
+          priceList={priceList}
           onConfirm={(selection) => {
             add(picker, selection);
             setPicker(null);
