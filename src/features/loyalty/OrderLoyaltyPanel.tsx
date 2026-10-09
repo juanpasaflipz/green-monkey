@@ -16,7 +16,7 @@ import { Button } from "../../components/ui";
 import { forgetLoyaltyReceipt, loyaltyApi, prefetchLoyaltyReceipt } from "./loyaltyApi";
 import { LoyaltyLookupDialog } from "./LoyaltyLookupDialog";
 import { RedeemRewardButton } from "./RedeemReward";
-import { fill, rewardsText, stampsText, tr } from "./format";
+import { dateOnly, fill, rewardsText, stampsText, tr } from "./format";
 import "./loyalty.css";
 
 export function OrderLoyaltyPanel({
@@ -50,6 +50,9 @@ export function OrderLoyaltyPanel({
       .then((v) => {
         if (!live) return;
         setView(v);
+        // A payment or a change since the last read changes the counts the receipt prints
+        // (LOYALTY-OPS-7): read the block again, never the cached one.
+        forgetLoyaltyReceipt(order.id);
         void prefetchLoyaltyReceipt(order.id);
       })
       .catch(() => live && setView(null));
@@ -60,12 +63,12 @@ export function OrderLoyaltyPanel({
   if (!club) return null;
   const managers = ["owner", "manager"].includes(session.role);
   const canChange = view && (!view.settled || managers);
-  async function apply(m: MemberSummary | null) {
+  async function apply(m: MemberSummary | null, mode = picking) {
     setBusy(true);
     setError("");
     try {
       const next =
-        picking === "add" && m
+        mode === "add" && m
           ? await loyaltyApi.link(order.id, m.id)
           : await loyaltyApi.change(order.id, m?.id ?? null, view?.member?.id ?? null);
       setView(next);
@@ -97,7 +100,11 @@ export function OrderLoyaltyPanel({
             <p className="muted">{t("loyaltyOrderNone")}</p>
           )}
           {member && view.settled && (
-            <p>{fill(t("loyaltyOrderEarned"), { n: view.earned })}</p>
+            <p>
+              {view.earned === 1
+                ? t("loyaltyOrderEarnedOne")
+                : fill(t("loyaltyOrderEarned"), { n: view.earned })}
+            </p>
           )}
           {view.pending && <p className="muted">{t("loyaltyOrderPending")}</p>}
           {view.redemptions.map((r) => (
@@ -110,12 +117,10 @@ export function OrderLoyaltyPanel({
           {!view.linkable && view.settled && !member && (
             <p className="muted">
               {fill(t("loyaltyOrderWindowClosed"), {
-                days: Math.max(
-                  1,
-                  Math.round(
-                    (Date.now() - Date.parse(view.windowEndsAt ?? "")) / 86_400_000,
-                  ),
-                ),
+                // The window's real end (UX-9), not the days since it closed.
+                date: view.windowEndsAt
+                  ? dateOnly(view.windowEndsAt, session.restaurant.timezone, locale)
+                  : "—",
               })}
             </p>
           )}
@@ -133,10 +138,8 @@ export function OrderLoyaltyPanel({
                 <Button
                   variant="ghost"
                   disabled={busy}
-                  onClick={() => {
-                    setPicking("change");
-                    void apply(null);
-                  }}
+                  // Removal is busy on the panel, not the member lookup over the page (UX-13).
+                  onClick={() => void apply(null, "change")}
                 >
                   {t("loyaltyRemove")}
                 </Button>
@@ -152,9 +155,9 @@ export function OrderLoyaltyPanel({
                 locale={locale}
                 online={online}
                 money={money}
-                onApplied={(o) => {
+                onApplied={(o, loyalty) => {
                   onOrderChanged?.(o);
-                  void loyaltyApi.order(order.id).then(setView).catch(() => {});
+                  setView(loyalty);
                 }}
               />
             )}

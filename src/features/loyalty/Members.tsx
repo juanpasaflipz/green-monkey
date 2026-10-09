@@ -26,7 +26,9 @@ import {
   fill,
   ledgerKindLabel,
   money,
+  rewardsDelta,
   rewardsText,
+  stampsCount,
   stampsText,
   tr,
   viaLabel,
@@ -96,7 +98,7 @@ export function Members({
         <Field label={t("loyaltyMembersSearch")}>
           <input value={q} maxLength={60} onChange={(e) => setQ(e.target.value)} />
         </Field>
-        <Field label={t("loyaltyFilterAll")}>
+        <Field label={t("loyaltyFilterLabel")}>
           <select value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)}>
             <option value="">{t("loyaltyFilterAll")}</option>
             <option value="rewards">{t("loyaltyFilterRewards")}</option>
@@ -315,11 +317,7 @@ function MemberDetailView({
             <span>{dateTime(h.createdAt, tz, locale)}</span>{" "}
             <strong>{ledgerKindLabel(h.kind, locale)}</strong>{" "}
             {h.stampsDelta !== 0 && <span>{(h.stampsDelta > 0 ? "+" : "") + h.stampsDelta}</span>}{" "}
-            {h.rewardsDelta !== 0 && (
-              <span>
-                {(h.rewardsDelta > 0 ? "+" : "") + h.rewardsDelta} {t("loyaltyColRewards").toLowerCase()}
-              </span>
-            )}{" "}
+            {h.rewardsDelta !== 0 && <span>{rewardsDelta(h.rewardsDelta, locale)}</span>}{" "}
             {h.orderNumber !== null && (
               <span className="muted">
                 #{h.orderNumber} · {h.orderBusinessDate ? dayText(h.orderBusinessDate, locale) : ""}
@@ -338,7 +336,7 @@ function MemberDetailView({
               n: o.number,
               date: dayText(o.businessDate, locale),
               total: money(o.total, locale, currency),
-              stamps: o.stamps,
+              stamps: stampsCount(o.stamps, locale),
             })}
           </li>
         ))}
@@ -643,7 +641,7 @@ export function MemberSheet({
               n: o.number,
               date: dayText(o.businessDate, locale),
               total: money(o.total, locale, currency),
-              stamps: o.stamps,
+              stamps: stampsCount(o.stamps, locale),
             })}
           </li>
         ))}

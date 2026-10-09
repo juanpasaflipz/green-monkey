@@ -4,7 +4,7 @@
  * (the read-aloud script and the notice as a QR are on screen; the marketing opt-in starts
  * unchecked). Online only; "Sin club" closes without a member.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import type { Locale } from "../../../shared/domain";
 import {
@@ -45,6 +45,14 @@ export function LoyaltyLookupDialog({
   const [showQr, setShowQr] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // The phone field takes the focus once the dialog is open: React focuses autoFocus inputs
+  // during layout, before Modal's showModal(), which then focuses the close button
+  // (LOYALTY-UX-10). This parent effect runs after Modal's.
+  const phoneRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => phoneRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, []);
   const run = async (fn: () => Promise<void>) => {
     setBusy(true);
     setError("");
@@ -93,7 +101,12 @@ export function LoyaltyLookupDialog({
           {m.rewards > 0 ? ` · ${rewardsText(m.rewards, locale)}` : ""}
         </span>
       </div>
-      <Button variant="primary" onClick={() => onUse(m)} disabled={!online}>
+      <Button
+        variant="primary"
+        onClick={() => onUse(m)}
+        disabled={!online}
+        aria-label={fill(t("loyaltyUseMember"), { name: m.firstName, phone: m.maskedPhone })}
+      >
         {t("loyaltyUse")}
       </Button>
     </li>
@@ -135,9 +148,9 @@ export function LoyaltyLookupDialog({
         </fieldset>
         <Field label={t("loyaltyPhoneLabel")}>
           <input
+            ref={phoneRef}
             inputMode="numeric"
             autoComplete="off"
-            autoFocus
             value={phone}
             maxLength={20}
             onChange={(e) => {
@@ -147,7 +160,7 @@ export function LoyaltyLookupDialog({
           />
         </Field>
         <Button type="submit" variant="primary" disabled={busy || !online}>
-          {t("loyaltySearch")}
+          {t("loyaltySearchPhone")}
         </Button>
       </form>
       {result && <ul className="loyalty-results">{row(result)}</ul>}
@@ -222,7 +235,7 @@ export function LoyaltyLookupDialog({
           />
         </Field>
         <Button type="submit" disabled={busy || !online || query.trim().length < 3}>
-          {t("loyaltySearch")}
+          {t("loyaltySearchByName")}
         </Button>
         <p className="muted">{t("loyaltySearchNameHint")}</p>
       </form>

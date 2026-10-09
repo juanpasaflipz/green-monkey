@@ -299,6 +299,13 @@ export function LoyaltySettings({
             if (s.stampThreshold !== null) set("stampThreshold", pesos(s.stampThreshold));
             if (s.rewardDescription) set("rewardDescription", s.rewardDescription);
           }}
+          // The import may have created the settings row: take its version, keep the form.
+          onImported={() =>
+            void loyaltyApi
+              .settings()
+              .then((v) => setView(v as LoyaltySettingsView))
+              .catch(() => {})
+          }
         />
       )}
     </section>

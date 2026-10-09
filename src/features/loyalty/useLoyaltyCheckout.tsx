@@ -16,7 +16,7 @@ import {
   trackLoyaltyReceiptWork,
   useLoyaltyClub,
 } from "./loyaltyApi";
-import { fill, tr } from "./format";
+import { fill, rewardsText, tr } from "./format";
 
 const LINK_BUDGET_MS = 3000;
 
@@ -108,19 +108,16 @@ export function useLoyaltyCheckout({
       live = false;
     };
   }, [currentId, context, club?.enabled, online, lines === 0]);
-  // The automatic prompt: once per cart cycle, at the first line of a new cart with no member.
+  // The automatic prompt: once per cart cycle, at the first line of a new cart with no member,
+  // and only then: a first line rung offline or before the club loaded never brings the modal
+  // up mid-order when the connection or the club arrives (LOYALTY-UX-17).
+  const linesBefore = useRef(lines);
   useEffect(() => {
-    if (
-      club?.promptAtCheckout &&
-      online &&
-      !currentId &&
-      lines > 0 &&
-      !member &&
-      !prompted.current
-    ) {
-      prompted.current = true;
-      setPrompt(true);
-    }
+    const first = linesBefore.current === 0 && lines > 0;
+    linesBefore.current = lines;
+    if (!first || prompted.current || currentId) return;
+    prompted.current = true;
+    if (club?.promptAtCheckout && online && !member) setPrompt(true);
   }, [lines, currentId, member, club?.promptAtCheckout, online]);
 
   async function link(o: Order, m: MemberSummary, budget?: number) {
@@ -149,6 +146,10 @@ export function useLoyaltyCheckout({
       setPrompt(true);
     },
     closePrompt: () => setPrompt(false),
+    /** The cart's member as the server now counts it (after a redemption). */
+    refreshMember(m: MemberSummary) {
+      setMember((cur) => (cur && cur.id === m.id ? (m.deleted ? null : m) : cur));
+    },
     /** "Usar" / "Registrar": the cart's member. A sent order is linked now. */
     use(m: MemberSummary) {
       setMember(m);
@@ -156,10 +157,12 @@ export function useLoyaltyCheckout({
       if (currentId && current) void link(current, m, LINK_BUDGET_MS);
       else draftMembers.set(draftId, m);
     },
-    /** "Quitar cliente": before sending, just the cart; on an open check, the link too. */
+    /**
+     * "Quitar cliente": before sending, just the cart; on an open check, the link too, and the
+     * chip goes only once the server removed it (a settled check may need a manager, UX-13).
+     */
     remove() {
       const was = member;
-      setMember(null);
       draftMembers.delete(draftId);
       if (currentId && current && was && linked.current.get(currentId) === was.id) {
         const o = current;
@@ -168,11 +171,12 @@ export function useLoyaltyCheckout({
           .then(() => {
             linked.current.delete(currentId);
             resolved(currentId);
+            setMember((m) => (m?.id === was.id ? null : m));
           })
           .catch(() =>
             fail(currentId, fill(t("loyaltyUnlinkFailedOrder"), { order: orderLabel(o) })),
           );
-      }
+      } else setMember(null);
     },
     /** After a send created or reached the order (fire-and-forget, 3 s). */
     afterOrderExists(o: Order) {
@@ -207,7 +211,10 @@ export function useLoyaltyCheckout({
       const m = view.member;
       if (!m || !view.settled) return "";
       if (view.completed > 0)
-        return fill(t("loyaltyCardCompleted"), { name: m.firstName, rewards: m.rewards });
+        return fill(t("loyaltyCardCompleted"), {
+          name: m.firstName,
+          rewards: rewardsText(m.rewards, locale),
+        });
       if (view.earned <= 0) return t("loyaltyNoStamps");
       return fill(t(view.earned === 1 ? "loyaltyStampAddedOne" : "loyaltyStampAddedMany"), {
         name: m.firstName,

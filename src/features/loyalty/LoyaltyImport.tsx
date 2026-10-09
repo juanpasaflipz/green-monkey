@@ -55,12 +55,15 @@ export function LoyaltyImport({
   online,
   stampsRequired,
   onApplySettings,
+  onImported,
 }: {
   session: Session;
   locale: Locale;
   online: boolean;
   stampsRequired: number;
   onApplySettings: (s: ImportPreview["suggested"]) => void;
+  /** After a commit: the import creates the settings row (off) when absent, so its version moved. */
+  onImported?: () => void;
 }) {
   const t = tr(locale);
   const [file, setFile] = useState<{ data: PosLiteExport; hash: string } | null>(null);
@@ -116,6 +119,7 @@ export function LoyaltyImport({
         batchId = r.batchId;
       }
       setProgress({ done: preview.accepted.length, total: preview.accepted.length });
+      onImported?.();
       setVerdict(importVerified(preview, await loyaltyApi.importStatus(batchId)));
     } catch (e) {
       setProgress(null);

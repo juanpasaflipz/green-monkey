@@ -202,7 +202,10 @@ Arts. 28–34) arrive at `LEGAL_PRIVACY_CONTACT_EMAIL`:
   blanked at once and for good; ledger, links and sales stay). Clientes and
   these actions stay available on every plan and with the club off while any
   member's data is held (Ajustar alone needs Pro). Record each cancellation in
-  the cancellation register with the member id only. For a member imported
+  the cancellation register with the member id only. The call name on the
+  member's past orders (Vender fills it with the first name) stays as the
+  restaurant's sales record, as the delete dialog says; counsel confirms that
+  retention (LAUNCH_HANDOFF 1.12). For a member imported
   from pos-lite ("Importados de POS Lite"), until the pos-lite copy is purged
   after cutover (LOYALTY.md runbook), also delete the person in pos-lite (its
   `loyalty_customers` row for that phone) and note it in the register. Members

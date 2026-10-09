@@ -95,6 +95,19 @@ export function thresholdHint(typed: string, locale: Locale, currency: string) {
     : fill(t.loyaltyThresholdHint, { amount: money(value, locale, currency) });
 }
 
+/** "1 sello" / "{n} sellos" (never "1 sellos", LOYALTY-UX-8). */
+export function stampsCount(n: number, locale: Locale) {
+  const t = strings[locale];
+  return Math.abs(n) === 1
+    ? t.loyaltyStampsOne.replace("1", String(n))
+    : fill(t.loyaltyStampsMany, { n });
+}
+/** A ledger row's rewards change: "+1 premio", "−2 premios". */
+export function rewardsDelta(n: number, locale: Locale) {
+  const t = strings[locale];
+  return `${n > 0 ? "+" : ""}${n} ${Math.abs(n) === 1 ? t.loyaltyRewardWordOne : t.loyaltyRewardWordMany}`;
+}
+
 /** "1 premio disponible" / "{n} premios disponibles". */
 export function rewardsText(n: number, locale: Locale) {
   const t = strings[locale];

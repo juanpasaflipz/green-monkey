@@ -11,6 +11,7 @@ import {
   Pause,
   Printer,
   SlidersHorizontal,
+  Gift,
 } from "lucide-react";
 import {
   type Session,
@@ -1480,6 +1481,16 @@ export function Selling({
                 stamps: loyalty.member.stamps,
                 required: loyalty.member.required,
               })}
+              {loyalty.member.rewards > 0 && (
+                // A reward to use is on the chip itself, not only in Canjear premio (UX-16).
+                <strong className="loyalty-chip-reward">
+                  {" · "}
+                  <Gift size={14} aria-hidden="true" />{" "}
+                  {loyalty.member.rewards === 1
+                    ? t("loyaltyChipRewardOne")
+                    : fillText(t("loyaltyChipRewardMany"), { n: loyalty.member.rewards })}
+                </strong>
+              )}
               <button
                 type="button"
                 className="text-button"
@@ -1817,9 +1828,11 @@ export function Selling({
             locale={locale}
             online={online}
             money={money}
-            onApplied={(o) => {
+            onApplied={(o, view) => {
               if (currentRef.current?.id !== o.id) return;
               setCurrent(o);
+              // The chip and Canjear premio follow the rewards left (LOYALTY-UX-11).
+              if (view.member) loyalty.refreshMember(view.member);
               if (o.checkState === "closed") setReceipt(o);
             }}
           />

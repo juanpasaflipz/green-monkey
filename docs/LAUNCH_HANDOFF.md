@@ -341,7 +341,10 @@ keep where noted.
   Cloudflare, GitHub, Facturapi), the support-transfer and ARCO wording (LD-32) and the
   loyalty club paragraphs of version `2026-10-09` (privacy §5–§6, DPA §2, §6, §11;
   [ACCOUNT_AND_LEGAL.md](ACCOUNT_AND_LEGAL.md#the-loyalty-club-038)). No restaurant can
-  turn the club on until this set is published (`loyalty_legal_required`).
+  turn the club on until this set is published (`loyalty_legal_required`). Ask counsel
+  too about the club's two retention choices: an order's call name (a member's first
+  name) stays on past orders after an ARCO deletion as a sales record, and marketing
+  opt-ins are unverified until a double opt-in exists (LOYALTY.md "Privacy").
   The text is versioned code (`shared/legal.ts`); any change counsel asks for ships as
   a new version (set its `version`, `announcedAt` and `effectiveFrom` to the
   publication date: nothing is in force before it, so nothing needs 15 days' notice).

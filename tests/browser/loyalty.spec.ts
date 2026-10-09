@@ -185,6 +185,8 @@ test("cashier: the first item opens Cliente del club; enrollment with consent; a
   await product(page, "Taco de hongos").click();
   const dialog = page.getByRole("dialog", { name: "Cliente del club" });
   await expect(dialog).toBeVisible();
+  // The phone field has the focus, not the close button (LOYALTY-UX-10).
+  await expect(dialog.getByLabel("Teléfono (10 dígitos)")).toBeFocused();
   for (const [width, height] of WIDTHS) {
     await page.setViewportSize({ width, height });
     await axe(page, "dialog");
@@ -192,7 +194,7 @@ test("cashier: the first item opens Cliente del club; enrollment with consent; a
   await page.setViewportSize({ width: 1440, height: 900 });
   memberPhone = newPhone();
   await dialog.getByLabel("Teléfono (10 dígitos)").fill(memberPhone);
-  await dialog.getByRole("button", { name: "Buscar", exact: true }).first().click();
+  await dialog.getByRole("button", { name: "Buscar teléfono", exact: true }).click();
   await expect(dialog.getByText("No hay socio con ese teléfono.")).toBeVisible();
   await expect(dialog.getByText(/Guardamos tu nombre y teléfono/)).toBeVisible();
   await expect(dialog.getByLabel(/Acepta recibir promociones/)).not.toBeChecked();
@@ -238,10 +240,12 @@ test("returning member with a reward: Canjear premio after Enviar productos prim
   await product(page, "Taco de hongos").click();
   const dialog = page.getByRole("dialog", { name: "Cliente del club" });
   await dialog.getByLabel("Teléfono (10 dígitos)").fill(memberPhone);
-  await dialog.getByRole("button", { name: "Buscar", exact: true }).first().click();
+  await dialog.getByRole("button", { name: "Buscar teléfono", exact: true }).click();
   await expect(dialog.getByText("1 premio disponible")).toBeVisible();
-  await dialog.getByRole("button", { name: "Usar", exact: true }).click();
+  await dialog.getByRole("button", { name: /^Usar a Ana / }).click();
   await expect(page.locator(".loyalty-chip")).toContainText("Ana · 1/10");
+  // The reward is on the chip itself (LOYALTY-UX-16).
+  await expect(page.locator(".loyalty-chip")).toContainText("1 premio");
   await product(page, "Agua de jamaica").click();
   await page.getByRole("button", { name: "Canjear premio", exact: true }).click();
   await page
@@ -254,11 +258,16 @@ test("returning member with a reward: Canjear premio after Enviar productos prim
     .locator("option")
     .filter({ hasText: "Taco de hongos" })
     .getAttribute("value");
+  // The default unit is the one worth most to the customer, the taco, not the agua (LOYALTY-UX-11).
+  await expect(redeem.getByLabel("Elige el producto")).toHaveValue(option!);
   await redeem.getByLabel("Elige el producto").selectOption(option!);
   await expect(redeem.getByRole("status")).toContainText("Premio: −$45.00");
   await redeem.getByRole("button", { name: "Canjear", exact: true }).click();
   await expect(redeem).toBeHidden();
   await expect(page.locator(".existing")).toContainText("−$45.00");
+  // The chip and the button follow the rewards left (LOYALTY-UX-11).
+  await expect(page.locator(".loyalty-chip")).not.toContainText("premio");
+  await expect(page.getByRole("button", { name: "Canjear premio", exact: true })).toHaveCount(0);
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   await page.getByRole("button", { name: "Confirmar cobro", exact: true }).click();
   const receipt = page.locator(".receipt");
@@ -303,8 +312,8 @@ test("walk-in and moves: a Sin club sale's Vender receipt shows and prints the j
   await product(page, "Taco de hongos").click();
   const dialog = page.getByRole("dialog", { name: "Cliente del club" });
   await dialog.getByLabel("Teléfono (10 dígitos)").fill(memberPhone);
-  await dialog.getByRole("button", { name: "Buscar", exact: true }).first().click();
-  await dialog.getByRole("button", { name: "Usar", exact: true }).click();
+  await dialog.getByRole("button", { name: "Buscar teléfono", exact: true }).click();
+  await dialog.getByRole("button", { name: /^Usar a Ana / }).click();
   await expect(page.locator(".loyalty-chip")).toContainText("Ana");
   await page.getByRole("button", { name: "Órdenes", exact: true }).click();
   await page
@@ -340,8 +349,8 @@ test("link failures name their order, clear when a later link of it succeeds and
     await product(page, "Taco de hongos").click();
     const dialog = page.getByRole("dialog", { name: "Cliente del club" });
     await dialog.getByLabel("Teléfono (10 dígitos)").fill(memberPhone);
-    await dialog.getByRole("button", { name: "Buscar", exact: true }).first().click();
-    await dialog.getByRole("button", { name: "Usar", exact: true }).click();
+    await dialog.getByRole("button", { name: "Buscar teléfono", exact: true }).click();
+    await dialog.getByRole("button", { name: /^Usar a Ana / }).click();
     await expect(page.locator(".loyalty-chip")).toContainText("Ana");
   };
   const pay = async () => {

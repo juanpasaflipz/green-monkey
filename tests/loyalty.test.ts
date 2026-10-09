@@ -22,7 +22,17 @@ import { planDiscount } from "../shared/discounts";
 import type { PayableUnit } from "../shared/settlement";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { consentText, dateOnly, joinDoneText, thresholdHint } from "../src/features/loyalty/format";
+import {
+  consentText,
+  dateOnly,
+  joinDoneText,
+  rewardsDelta,
+  stampsCount,
+  thresholdHint,
+} from "../src/features/loyalty/format";
+import { rewardLineFor } from "../src/features/loyalty/RedeemReward";
+import type { Order } from "../shared/domain";
+import { CLUB_RATES, kioskMemberLimiter } from "../server/routes/loyalty";
 import { MemberSheet } from "../src/features/loyalty/Members";
 import { CLUB_REFRESH_MS, clubReadDue } from "../src/features/loyalty/loyaltyApi";
 import { customersVisible, type MemberDetail } from "../shared/loyalty";
@@ -549,5 +559,35 @@ describe("Vender re-reads the club (LOYALTY-UX-5)", () => {
     expect(clubReadDue({ tenant: "a", readAt: t0, failures: 2 }, "a", t0 + 9_999)).toBe(false);
     expect(clubReadDue({ tenant: "a", readAt: t0, failures: 3 }, "a", t0 + 20_000)).toBe(true);
     expect(clubReadDue({ tenant: "a", readAt: t0, failures: 30 }, "a", t0 + CLUB_REFRESH_MS)).toBe(true);
+  });
+});
+
+describe("counts read as Spanish (LOYALTY-UX-8)", () => {
+  it("1 sello, 3 sellos; +1 premio, −2 premios", () => {
+    expect(stampsCount(1, "es")).toBe("1 sello");
+    expect(stampsCount(3, "es")).toBe("3 sellos");
+    expect(stampsCount(-1, "es")).toBe("-1 sello");
+    expect(stampsCount(1, "en")).toBe("1 stamp");
+    expect(rewardsDelta(1, "es")).toBe("+1 premio");
+    expect(rewardsDelta(-2, "es")).toBe("-2 premios");
+  });
+});
+
+describe("the reward's default unit (LOYALTY-UX-11)", () => {
+  const order = (units: { lineId: string; due: number; lineDiscounted?: boolean }[]) =>
+    ({ paymentUnits: units.map((u) => ({ lineDiscounted: false, ...u })) }) as unknown as Order;
+  it("the unit worth most to the customer, its due capped at the reward's maximum", () => {
+    expect(rewardLineFor(order([{ lineId: "agua", due: 2500 }, { lineId: "burrito", due: 14000 }]), 15000)).toBe("burrito");
+    // Above the cap both are worth the cap: the ticket's order decides.
+    expect(rewardLineFor(order([{ lineId: "banquete", due: 90000 }, { lineId: "molcajete", due: 21000 }]), 15000)).toBe("banquete");
+    expect(rewardLineFor(order([{ lineId: "agua", due: 2500 }, { lineId: "burrito", due: 14000, lineDiscounted: true }]), 15000)).toBe("agua");
+    expect(rewardLineFor(order([]), 15000)).toBeNull();
+  });
+});
+
+describe("the kiosk's member lookups (critic R20, LOYALTY-PRIVACY-10)", () => {
+  it("loyalty exports the per-IP limiter kiosk's route mounts: 20 a minute", () => {
+    expect(CLUB_RATES.kioskLookupPerIp).toBe(20);
+    expect(typeof kioskMemberLimiter()).toBe("function");
   });
 });

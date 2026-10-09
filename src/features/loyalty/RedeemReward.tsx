@@ -18,6 +18,7 @@ import {
   rewardDiscountRequest,
   type LoyaltyClubView,
   type MemberSummary,
+  type OrderLoyaltyView,
 } from "../../../shared/loyalty";
 import { api } from "../../api";
 import { errorNotice, strings } from "../../i18n";
@@ -25,6 +26,20 @@ import { Button, Field, Modal } from "../../components/ui";
 import { loyaltyApi } from "./loyaltyApi";
 import { fill, tr } from "./format";
 import "./loyalty.css";
+
+/**
+ * The unit the reward goes to by default: the one worth most to the customer, its due capped at
+ * the reward's maximum (the burrito, not the agua, LOYALTY-UX-11); ties keep the ticket's order.
+ */
+export function rewardLineFor(order: Order, cap: number | null): string | null {
+  let best: { lineId: string; value: number } | null = null;
+  for (const u of order.paymentUnits ?? []) {
+    if (!(u.due > 0) || u.lineDiscounted) continue;
+    const value = cap === null ? u.due : Math.min(u.due, cap);
+    if (!best || value > best.value) best = { lineId: u.lineId, value };
+  }
+  return best?.lineId ?? null;
+}
 
 export function RedeemRewardButton({
   order,
@@ -45,7 +60,8 @@ export function RedeemRewardButton({
   locale: Locale;
   online: boolean;
   money: (n: number) => string;
-  onApplied: (o: Order) => void;
+  /** The redeemed order and its club view (the member's rewards left, LOYALTY-UX-11). */
+  onApplied: (o: Order, loyalty: OrderLoyaltyView) => void;
 }) {
   const t = tr(locale);
   const [confirming, setConfirming] = useState(false);
@@ -129,9 +145,9 @@ export function RedeemRewardButton({
           locale={locale}
           money={money}
           onClose={() => setTarget(null)}
-          onDone={(o) => {
+          onDone={(o, loyalty) => {
             setTarget(null);
-            onApplied(o);
+            onApplied(o, loyalty);
           }}
         />
       )}
@@ -154,7 +170,7 @@ export function RedeemRewardDialog({
   locale: Locale;
   money: (n: number) => string;
   onClose: () => void;
-  onDone: (o: Order) => void;
+  onDone: (o: Order, loyalty: OrderLoyaltyView) => void;
 }) {
   const t = tr(locale);
   const lines = useMemo(
@@ -166,7 +182,7 @@ export function RedeemRewardDialog({
       ),
     [order],
   );
-  const [lineId, setLineId] = useState(lines[0]?.id ?? "");
+  const [lineId, setLineId] = useState(() => rewardLineFor(order, club.rewardMaxAmount) ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const item = club.rewardKind === "item";
@@ -197,7 +213,7 @@ export function RedeemRewardDialog({
         ...(item ? { lineId } : {}),
         ...discountExpectation(order, plan),
       });
-      onDone(r.order);
+      onDone(r.order, r.loyalty);
     } catch (e) {
       setError(errorNotice(e, locale));
     } finally {

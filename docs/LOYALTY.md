@@ -116,7 +116,9 @@ id; no advisory class. Inside money transactions loyalty does one link read and 
 
 ### Kiosk interface (039; critic R20–R23, LD-72)
 
-Kiosk owns the screens and its device-bound route; loyalty provides:
+Kiosk owns the screens and its device-bound route, which mounts loyalty's `kioskMemberLimiter()`
+(`server/routes/loyalty.ts`: 20 lookups a minute per IP by clientIp, `CLUB_RATES.kioskLookupPerIp`,
+critic R20) beside its own per-device bucket (5 per 5 minutes); loyalty provides:
 `lookupMemberForKiosk(tx, {phone, country}, {stationId})` → `{found:false}` or `{found, memberToken,
 maskedPhone, stamps, required, rewards}` (no name, no enrolment at the kiosk);
 `issueKioskMemberToken(tenantId, memberId, stationId)` (`seal("loyalty-member", {t, m, s}, 900 s)`);
@@ -149,7 +151,14 @@ disabled with "El club requiere conexión." and the sale proceeds.
   `loyalty_legal_required`; ACCOUNT_AND_LEGAL "The loyalty club").
 - Consent per member: `consent_channel` (`staff_attested` at the counter, `self_service` on `/club`,
   `pos_lite_import`), `consent_at`, a snapshot of the notice URL. Marketing is separate and starts
-  unchecked; nothing sends messages in the pilot.
+  unchecked; nothing sends messages in the pilot. A marketing opt-in is not proof the person owns the
+  phone (`/club` and the counter take any number typed): the deferred messaging module must confirm
+  each number with a double opt-in (a first message asking to confirm) before any promotion, and
+  never treats `marketing_opt_in` alone, nor pos-lite's `legacy_sms_opt_in`, as consent
+  (LOYALTY-PRIVACY-7).
+- Call names: choosing a member fills the order's call name with the first name (§2.5); it is the
+  restaurant's sales record and stays after an ARCO deletion (the delete dialog says so; counsel
+  confirms, LOYALTY-PRIVACY-6).
 - ARCO: access ("Imprimir datos del cliente", the owner export), rectification ("Editar datos"),
   cancellation ("Eliminar datos del cliente": name, phone, notice snapshot and opt-in blanked; ledger,
   links and sales stay; irreversible), opposition (the marketing toggle). Clientes and these actions

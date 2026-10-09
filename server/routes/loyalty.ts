@@ -51,13 +51,22 @@ import {
 } from "../loyalty/import.js";
 import { loyaltyReport } from "../loyalty/reports.js";
 
-/** Requests per minute (§4.8). */
+/** Requests per minute (§4.8; kioskLookupPerIp: critic R20, binding). */
 export const CLUB_RATES = {
   viewPerIp: 60,
   malformedPerIp: 30,
   joinPerIp: 10,
   joinPerIpToken: 5,
+  kioskLookupPerIp: 20,
 } as const;
+
+/**
+ * Kiosk (039, R20): the per-IP limiter (clientIp) its member-lookup route mounts in front of
+ * lookupMemberForKiosk, beside its own 5-per-device-per-5-minutes bucket. A copied binding cookie
+ * behind rotating devices is still held to 20 lookups a minute per IP (LOYALTY-PRIVACY-10).
+ */
+export const kioskMemberLimiter = () =>
+  publicLimiter("club-kiosk", { limit: CLUB_RATES.kioskLookupPerIp });
 
 /** A 22-character digest of a well-formed join token: public-limits keys it per (IP, token). */
 const tokenScope = (v: string) =>
