@@ -784,10 +784,12 @@ As of October 9, 2026:
   rehearsed: the organizations provider (a restaurant's organization, CSD, going live),
   live cancellation acceptance, credit notes and substitution, the RESICO monthly close,
   real email, receptor-name validation, Base vs Importe rounding (1.13, 1.14).
-- **Wave 4 (LD-71, LD-72):** payments (migration 037: a "paid by platform" tender with
-  per-platform prices and named terminals, then integrated Clip and Mercado Pago Point),
-  loyalty (038) and the kiosk (039) are being built. None of it is merged or live; it
-  comes before the pilot.
+- **Wave 4 (LD-71, LD-72):** payments part 1 (migration 037: the "paid by platform"
+  tender with per-platform prices, named terminals and batch totals at close) and the
+  loyalty club (038) ship with the first Wave 4 release. Integrated Clip and Mercado
+  Pago Point charging (payments part 2) and the kiosk (039) are still being built and come
+  before the pilot; part 2 also needs the real-device rehearsal with you at both terminals
+  ([RUNBOOK.md](RUNBOOK.md), "R44a").
 - **Owner inputs not yet given:** legal values and counsel review (1.11, 1.12),
   accountant sign-off (1.13), the production R2 bucket and token (1.8), the alert topic
   (1.7), the Sentry decision (1.9), contacts (1.17). Housekeeping: revoke the temporary
@@ -805,10 +807,10 @@ pilot. This list comes from the parity review (LD-70) and your decisions (LD-71,
 It goes with section 2 step 12; it does not replace it. The restaurant-side procedures
 are in [PILOT_SOP.md](PILOT_SOP.md) (Spanish).
 
-**Wave 4 comes before the pilot.** Payments (migration 037: a "paid by platform" tender
-with per-platform prices and named terminals, then integrated Clip and Mercado Pago
-Point), loyalty (038) and the kiosk (039) are being built and are not live. Nothing below
-depends on them; this list is updated when they reach production.
+**Wave 4.** Payments part 1 (037) and the loyalty club (038) reach production with the
+first Wave 4 release; items 9 and 10 set them up. Integrated Clip and Mercado Pago
+Point charging and the kiosk (039) are not live yet and come before the pilot; this list
+is updated when they reach production.
 
 ### 4.1 Before day one
 
@@ -895,6 +897,34 @@ depends on them; this list is updated when they reach production.
 8. **Credentials.** Rotate at cutover every credential that passed through a chat: the
    Google client secret (1.5) and the Facturapi keys (1.14).
 
+9. **Terminals and delivery platforms (037).** In «Configuración → Pagos con tarjeta y
+   plataformas» ([PILOT_SOP.md §8](PILOT_SOP.md#8-terminales-y-plataformas),
+   [PAYMENTS.md](PAYMENTS.md)):
+   - name each card terminal with its fee, and choose each register tablet's default
+     terminal;
+   - platforms start **switched off**: turn on Uber Eats, Rappi and DiDi Food, with their
+     estimated commission; leave «Otra» off unless another platform really sends orders;
+   - where a platform's prices differ from the counter's, enter them in «Precios por
+     plataforma». A platform with its own prices accepts only orders rung at its list;
+     options always use the counter price;
+   - with the accountant, confirm the SAT payment form for platform-paid orders (31,
+     recommended) (1.13).
+
+   At payment, Uber Eats, Rappi and DiDi need the platform's order number, and a platform
+   payment is never accepted on a dine-in order. A drawer close with named terminals asks
+   for the batch total of every terminal that took money, or of none.
+10. **Loyalty club (038)**, in this order ([LOYALTY.md](LOYALTY.md), "Runbooks";
+    [PILOT_SOP.md §9](PILOT_SOP.md#9-club-de-lealtad)):
+    1. publish the legal set of version 2026-10-09 that covers the club (1.11, 1.12):
+       until it is published, the club cannot be turned on (`loyalty_legal_required`);
+    2. update Juanberto's own privacy notice to cover the club (counsel, 1.20);
+    3. save the club's settings: stamps per card as in pos-lite, and the reward (one free
+       product, capped at $150 by default; 1.20);
+    4. on the cutover day, run `scripts/loyalty/poslite-export.sql` against pos-lite and
+       import the file in «Configuración › Club de lealtad › Importar socios de POS
+       Lite», confirming the restaurant; check the counts, attest, then turn the club on;
+    5. purge pos-lite's copy of the members afterwards (1.20).
+
 ### 4.2 pos-lite after the cutover: running, read-only
 
 No one sells in pos-lite after the cutover, and its kiosk stays off: two order systems
@@ -905,7 +935,7 @@ would mean two kitchen queues. pos-lite stays up for:
   `/invoice/:token` links (72 h by default), handled in pos-lite or the Facturapi
   dashboard;
 - **wallet passes and `/gr` review links**, which pos-lite serves;
-- **loyalty, until Wave 4's import of pos-lite members:** stamp cards in pos-lite with
+- **loyalty, until the members are imported (4.1 item 10):** stamp cards in pos-lite with
   its manual stamp. Recommended (LD-70 B6): honor a completed card in Green Monkey as an
   audited discount with the reason "Cliente frecuente" or "Promoción";
 - **the Mercado Pago Point mode switch** (4.1 item 7), which needs its Mercado Pago
