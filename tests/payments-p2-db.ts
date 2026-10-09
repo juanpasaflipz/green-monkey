@@ -33,7 +33,10 @@ import { workerHandlers } from "../server/jobs/worker-registry.js";
 import "../server/jobs/handlers/payments.js";
 import "../server/payments/worker/register.js";
 import { publishPaymentsPlatform } from "../server/payments/worker/boot.js";
-import { setPaymentsRuntime } from "../server/payments/worker/runtime.js";
+import {
+  openAccount,
+  setPaymentsRuntime,
+} from "../server/payments/worker/runtime.js";
 import { parseCredentialKeyring } from "../server/cfdi/config.js";
 import { rekeyPaymentSecrets } from "../server/vault/rekey.js";
 import { createOrder, recordPayment } from "../server/orders.js";
@@ -2847,6 +2850,51 @@ try {
     const c = await pending(o2, terminals.clip);
     fake.approve(c.ref, { ...TEST_CARD });
     assert.equal(await drive(c.id, ["settled"]), "settled");
+  });
+
+  await test("re-seal race (P2-CONCURRENCY-2): two worker steps that open one restaurant's credentials under an older kid at the same time both succeed; one re-seals, the other's compare-and-set touches nothing", async () => {
+    // The first key active again (both keys stay known to every run's ring: the shared test
+    // database keeps earlier runs' restaurants, which vault:rekey lists).
+    runtime.ring = parseCredentialKeyring(`${keyOne},${keyTwo}`);
+    await publish(["mercadopago", "clip"]);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    // The first step opens (and re-seals) the MP box and keeps its transaction open.
+    const first = tenant(worker, A, async (tx) => {
+      const opened = await openAccount(tx, runtime, A, "mercadopago");
+      await gate;
+      return opened.credentials.provider;
+    });
+    await sleep(200);
+    // The second read the old kid (the first has not committed) and re-seals too: its UPDATE
+    // waits for the first, then finds the kid changed (before: 037 raised
+    // payment_secret_reseal_invalid and the step's transaction aborted).
+    const second = tenant(
+      worker,
+      A,
+      async (tx) =>
+        (await openAccount(tx, runtime, A, "mercadopago")).credentials.provider,
+    );
+    await sleep(200);
+    release();
+    assert.deepEqual(await Promise.all([first, second]), [
+      "mercadopago",
+      "mercadopago",
+    ]);
+    const [box] = await asOwner(
+      A,
+      (
+        tx,
+      ) => tx`select s.kid from payment_secrets s join payment_provider_accounts a
+        on a.tenant_id=s.tenant_id and a.credential_secret_id=s.id
+        where a.tenant_id=${A} and a.provider='mercadopago'`,
+    );
+    assert.equal(box.kid, "t1");
+    // Charging works under the new key.
+    const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const a = await pending(o, terminals.mp);
+    fake.approve(a.ref, { ...TEST_CARD });
+    assert.equal(await drive(a.id, ["settled"]), "settled");
   });
 
   await test("disconnect: refused while a charge is live; then the account is disabled, the worker wipes its credentials, /capabilities says not_connected and integrated starts stop", async () => {

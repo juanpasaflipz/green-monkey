@@ -41,10 +41,11 @@ export async function rekeyPaymentSecrets(
         const rows = await tx<
           {
             id: string;
+            kid: string;
             purpose: PaymentSecretPurpose;
             payload_secret: string;
           }[]
-        >`select id, purpose, payload_secret from payment_secrets
+        >`select id, kid, purpose, payload_secret from payment_secrets
           where purpose in ('mp_credentials','clip_credentials') and wiped_at is null
             and kid <> ${ring.active}
           order by id for update`;
@@ -56,8 +57,9 @@ export async function rekeyPaymentSecrets(
             binding,
           );
           const sealed = await paymentsVault.sealSecret(ring, plain, binding);
+          // Compare-and-set like openAccount's re-seal (the row is already locked here).
           await tx`update payment_secrets set kid = ${sealed.kid}, payload_secret = ${sealed.jwe}
-            where id = ${s.id}`;
+            where id = ${s.id} and kid = ${s.kid} and wiped_at is null`;
         }
         return rows.length;
       });

@@ -219,9 +219,13 @@ export async function openAccount(
     binding,
   );
   if (secret.kid !== rt.ring.active) {
+    // Compare-and-set (P2-CONCURRENCY-2): another transaction of this restaurant (a job of the
+    // same drain, or vault:rekey) may re-seal it first; this UPDATE then waits for it, re-checks
+    // the kid and touches nothing, instead of firing 037's payment_secret_reseal_invalid and
+    // aborting this step.
     const sealed = await paymentsVault.sealSecret(rt.ring, plain, binding);
     await tx`update payment_secrets set kid=${sealed.kid},payload_secret=${sealed.jwe}
-      where id=${secret.id}`;
+      where id=${secret.id} and kid=${secret.kid} and wiped_at is null`;
   }
   const credentials = parseCredentials(plain);
   if (!credentials || credentials.provider !== provider)
