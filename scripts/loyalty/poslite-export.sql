@@ -2,8 +2,9 @@
 -- green-monkey's "Importar socios de POS Lite" (specs/loyalty-w4.md §6, docs/LOYALTY.md runbook).
 --
 -- The operator runs it with psql against pos-lite's database, as pos-lite's admin login (its
--- adminSql bypasses RLS), in a READ ONLY transaction. It reads pos-lite's loyalty_customers,
--- stamp_cards and loyalty_config (pos-lite server/db/pg-schema.sql) and writes nothing:
+-- adminSql bypasses RLS), in a READ ONLY transaction. It reads pos-lite's tenants (the name),
+-- loyalty_customers, stamp_cards and loyalty_config (pos-lite server/db/pg-schema.sql) and writes
+-- nothing:
 --
 --   umask 077
 --   psql "$POSLITE_ADMIN_URL" -X -q -t -A -v ON_ERROR_STOP=1 \
@@ -12,9 +13,16 @@
 --
 -- The file holds personal data (names, phones): it stays in the operator's private scratchpad
 -- (mode 600), is uploaded only on the owner's import screen and is deleted after verification.
--- One JSON document: {source, sourceTenantId, targetTenantId, exportedAt, config, summary, members}.
+-- One JSON document: {source, sourceTenantId, sourceName, sourceSubdomain, targetTenantId,
+-- exportedAt, config, summary, members}. The owner's import screen shows sourceName and asks to
+-- confirm it is the right restaurant before Importar (LOYALTY-OPS-8). An unknown -v tenant fails
+-- the export ("pos-lite tenant not found") instead of writing an empty or foreign file.
 BEGIN READ ONLY;
-WITH customers AS (
+WITH source AS (
+  -- The count is a column, so the failing cast is never constant-folded at planning time.
+  SELECT CASE WHEN n = 1 THEN 1 ELSE ('pos-lite tenant not found: ' || n)::int END AS ok
+  FROM (SELECT count(*) AS n FROM tenants WHERE id = :'tenant') t
+), customers AS (
   SELECT c.* FROM loyalty_customers c WHERE c.tenant_id = :'tenant'
 ), cards AS (
   SELECT s.* FROM stamp_cards s JOIN customers c ON c.id = s.customer_id
@@ -47,6 +55,9 @@ WITH customers AS (
 SELECT json_build_object(
   'source', 'pos-lite-loyalty',
   'sourceTenantId', :'tenant',
+  'sourceName', (SELECT CASE WHEN source.ok = 1 THEN (SELECT name FROM tenants WHERE id = :'tenant') END
+                 FROM source),
+  'sourceSubdomain', (SELECT t.subdomain FROM tenants t WHERE t.id = :'tenant'),
   'targetTenantId', :'target',
   'exportedAt', to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
   'config', (SELECT coalesce(json_object_agg(key, value), '{}'::json) FROM loyalty_config

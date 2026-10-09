@@ -1396,6 +1396,8 @@ try {
         create temp table stamp_cards(id serial primary key, tenant_id text, customer_id int, stamps_earned int, stamps_required int,
           completed boolean, redeemed boolean, completed_at timestamptz) on commit drop;
         create temp table loyalty_config(tenant_id text, key text, value text) on commit drop;
+        create temp table tenants(id text primary key, name text not null, subdomain text) on commit drop;
+        insert into tenants values ('px','Restaurante Px','px'),('other','Otro restaurante','otro'),('py','Restaurante Py','py');
         insert into loyalty_customers(tenant_id,phone,country_code,name,sms_opt_in,created_at,last_visit,orders_count,total_spent) values
           ('px','5550002001','MX','Uno',true,'2025-01-01','2026-09-01',3,300.5),
           ('px','5550002002','MX','Dos',false,'2025-02-01','2026-09-30',12,1200),
@@ -1406,9 +1408,29 @@ try {
           ('other',3,5,10,false,false,null);
         insert into loyalty_config values ('px','stamps_required','10'),('px','stamp_bonus_threshold','400'),('px','sms_enabled','true');`);
       const [row] = await tx.unsafe(select);
+      // pos-lite's shape after a completed card: the next card it auto-creates (a higher id). Its
+      // stamps are the visits since; an empty one means none (LOYALTY-OPS-5, the card-id order).
+      await tx.unsafe(`insert into loyalty_customers(id,tenant_id,phone,country_code,name,sms_opt_in,created_at,last_visit,orders_count,total_spent) values
+          (11,'py','5550002011','MX','Once',false,'2025-01-01','2026-10-05',5,500),
+          (12,'py','5550002012','MX','Doce',false,'2025-01-01','2026-10-02',5,500);
+        insert into stamp_cards(id,tenant_id,customer_id,stamps_earned,stamps_required,completed,redeemed,completed_at) values
+          (21,'py',11,10,10,true,false,'2026-10-01'),
+          (22,'py',11,3,10,false,false,null),
+          (23,'py',12,10,10,true,false,'2026-10-02'),
+          (24,'py',12,0,10,false,false,null);`);
+      const [py] = await tx.unsafe(select.replaceAll("'px'", "'py'"));
+      const next = (posLiteExport.parse(Object.values(py)[0]).members).map((m) => [m.name, m.next_card_stamps]);
+      assert.deepEqual(next, [["Once", 3], ["Doce", 0]]);
+      // ...and a mistyped -v tenant fails the export instead of writing an empty file (OPS-8).
+      await assert.rejects(
+        tx.savepoint((sp: any) => sp.unsafe(select.replaceAll("'px'", "'nope'"))),
+        /pos-lite tenant not found/,
+      );
       return Object.values(row)[0];
     });
     const parsed = posLiteExport.parse(exported);
+    // The file names its restaurant (LOYALTY-OPS-8)...
+    assert.deepEqual([parsed.sourceName, parsed.sourceSubdomain], ["Restaurante Px", "px"]);
     assert.deepEqual(parsed.summary, { members: 2, activeCardStamps: 4, completedCards: 1, completedUnredeemed: 1 });
     assert.deepEqual(parsed.members.map((m) => [m.name, m.next_card_stamps, m.completed_cards.length]), [["Uno", 4, 0], ["Dos", 0, 1]]);
     assert.equal(parsed.targetTenantId, f.tenantId);

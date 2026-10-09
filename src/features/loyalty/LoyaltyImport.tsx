@@ -71,6 +71,8 @@ export function LoyaltyImport({
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   /** A page failed: Importar becomes Reintentar (committed pages replay, LOYALTY-OPS-10). */
   const [failed, setFailed] = useState(false);
+  /** The owner confirmed the pos-lite restaurant the file names (LOYALTY-OPS-8). */
+  const [confirmed, setConfirmed] = useState(false);
   const [verdict, setVerdict] = useState<string[] | null>(null);
   const [error, setError] = useState("");
   const preview = file
@@ -81,6 +83,7 @@ export function LoyaltyImport({
     setVerdict(null);
     setProgress(null);
     setFailed(false);
+    setConfirmed(false);
     try {
       const text = await f.text();
       const parsed = posLiteExport.safeParse(JSON.parse(text));
@@ -174,6 +177,21 @@ export function LoyaltyImport({
       </Field>
       {preview && (
         <>
+          <p>
+            <strong>
+              {fill(t("loyaltyImportSource"), {
+                name: preview.sourceName ?? t("loyaltyImportSourceUnknown"),
+              })}
+            </strong>
+          </p>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={confirmed}
+              onChange={(e) => setConfirmed(e.target.checked)}
+            />
+            {t("loyaltyImportConfirmSource")}
+          </label>
           <p role="status">
             {fill(t("loyaltyImportSummary"), {
               members: preview.expected.members,
@@ -234,7 +252,7 @@ export function LoyaltyImport({
             )}
             <Button
               variant="primary"
-              disabled={!online || !preview.accepted.length || !!progress || saveFirst}
+              disabled={!online || !preview.accepted.length || !!progress || saveFirst || !confirmed}
               onClick={() => void commit()}
             >
               {t(failed ? "loyaltyImportRetry" : "loyaltyImportCommit")}

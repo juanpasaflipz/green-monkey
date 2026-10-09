@@ -59,6 +59,9 @@ export const posLiteExport = z
   .object({
     source: z.literal(POS_LITE_SOURCE),
     sourceTenantId: z.string().min(1).max(100),
+    /** pos-lite's restaurant name and subdomain, shown before Importar (LOYALTY-OPS-8). */
+    sourceName: z.string().max(200).nullable().optional(),
+    sourceSubdomain: z.string().max(200).nullable().optional(),
     targetTenantId: z.string().uuid(),
     exportedAt: instant,
     config: z
@@ -142,6 +145,8 @@ export type ImportRejection = {
 };
 export type ImportPreview = {
   sourceTenantId: string;
+  /** The pos-lite restaurant the file came from ("Archivo de POS Lite: …"); null in old files. */
+  sourceName: string | null;
   targetTenantId: string;
   policy: ImportPolicy;
   accepted: ImportRow[];
@@ -279,6 +284,9 @@ export function previewLoyaltyImport(
   const threshold = file.config.stamp_bonus_threshold;
   return {
     sourceTenantId: file.sourceTenantId,
+    sourceName: file.sourceName
+      ? file.sourceName + (file.sourceSubdomain ? ` (${file.sourceSubdomain})` : "")
+      : null,
     targetTenantId: file.targetTenantId,
     policy: o.policy,
     accepted,

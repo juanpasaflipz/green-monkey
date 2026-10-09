@@ -183,6 +183,20 @@ DB check L9 (a platform tender earns nothing) runs once P1's `tenders.method` co
 `platform`; until then the unit tests cover the exclusion, and the DB suite's "L9 gate" check fails
 as soon as the constraint accepts `platform`, so the rebase writes L9 (LOYALTY-OPS-4).
 
+**P1 rebase checklist (LOYALTY-OPS-6).**
+
+1. Take P1's `shared/payments.ts` whole. It has no `OnPaymentSettled` or `paymentSettledNoop`: delete
+   Selling's stub import and the `onPaymentSettled` prop this branch added.
+2. Call the club's work from P1's single internal payment-settled exit, on every settled path
+   (collect, the pending-attempt retry, "Recuperar pago", settlements). For the cart's own order
+   (owned, same context epoch) call `loyalty.afterPayment(order)` and show its text in the receipt
+   status; for an order whose cart moved on, only `POST /api/loyalty/orders/:id/reconcile` (never
+   link the cart's current member to it).
+3. The "L9 gate" DB check now fails: write L9 (link, a platform tender earns nothing; cash plus
+   platform earns on the cash part) and delete the gate.
+4. Re-run `test:db:loyalty` and `tests/browser/loyalty.spec.ts` (the receipt status, the walk-in QR
+   and the link-failure tests exercise this exit).
+
 Not written yet (a release gate, DELIVERY_STATUS): the restaurant-day branch L of spec §9.4 (link,
 pay, earn, redeem, refund reversal through the UI, reconciled in `tests/restaurant-day-db.ts`). Until
 it lands, DB check L28 asserts acceptance criterion 5 (the reward in Excepciones with reason

@@ -239,6 +239,9 @@ export default defineArea({
     loyaltyImportApply: "Aplicar a la configuración",
     loyaltyImportCommit: "Importar",
     loyaltyImportRetry: "Reintentar",
+    loyaltyImportSource: "Archivo de POS Lite: {name}",
+    loyaltyImportSourceUnknown: "(el archivo no dice de qué restaurante es)",
+    loyaltyImportConfirmSource: "Confirmo que es el restaurante correcto",
     loyaltyImportSaveFirst:
       "POS Lite usa {n} sellos por tarjeta y el club {saved}. Guarda primero la configuración (Aplicar a la configuración y Guardar) y luego importa.",
     loyaltyImportPrint: "Imprimir listas para la bitácora",
@@ -495,6 +498,9 @@ export default defineArea({
     loyaltyImportApply: "Apply to settings",
     loyaltyImportCommit: "Import",
     loyaltyImportRetry: "Retry",
+    loyaltyImportSource: "POS Lite file: {name}",
+    loyaltyImportSourceUnknown: "(the file does not say which restaurant it is)",
+    loyaltyImportConfirmSource: "I confirm it is the right restaurant",
     loyaltyImportSaveFirst:
       "POS Lite uses {n} stamps per card and the club {saved}. Save the settings first (Apply to settings, then Save), then import.",
     loyaltyImportPrint: "Print the lists for the cutover log",

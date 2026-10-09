@@ -71,6 +71,32 @@ describe("previewLoyaltyImport", () => {
     expect(toConfirmNote(Array(20).fill("2026-01-10")).length).toBeLessThanOrEqual(200);
   });
 
+  it("policy 'recent' needs both conditions on their own: a card completed 10 days ago with a visit since, or one completed 200 days ago with none, grants nothing and is listed (LOYALTY-OPS-5)", () => {
+    const member = (id: number, completedAt: string, next: number) => ({
+      ...file.members[1]!,
+      id,
+      phone: "52155500019" + String(id).slice(-2),
+      name: "Socio " + id,
+      active_card: next ? { stamps_earned: next, stamps_required: 10 } : null,
+      completed_cards: [{ completed_at: completedAt, redeemed: false }],
+      next_card_stamps: next,
+    });
+    const extra = {
+      ...file,
+      members: [...file.members, member(191, "2026-09-29T19:00:00.000Z", 3), member(192, "2026-03-23T19:00:00.000Z", 0)],
+    };
+    const p = previewLoyaltyImport(extra, { policy: "recent", now, stampsRequired: 10 });
+    const rewards = Object.fromEntries(p.accepted.map((r) => [r.legacyId, r.rewards]));
+    expect([rewards["191"], rewards["192"]]).toEqual([0, 0]);
+    expect(p.toConfirm.map((c) => c.legacyId)).toEqual(["103", "191", "192"]);
+    // The same card with no visit since and within 90 days is granted.
+    const granted = previewLoyaltyImport(
+      { ...file, members: [...file.members, member(193, "2026-09-29T19:00:00.000Z", 0)] },
+      { policy: "recent", now, stampsRequired: 10 },
+    );
+    expect(granted.accepted.find((r) => r.legacyId === "193")!.rewards).toBe(1);
+  });
+
   it("policy 'all' grants every completed card not marked redeemed; 'none' grants nothing and lists them", () => {
     const all = preview("all");
     expect(all.accepted.reduce((a, r) => a + r.rewards, 0)).toBe(2);

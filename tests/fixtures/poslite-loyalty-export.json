@@ -1,6 +1,8 @@
 {
   "source": "pos-lite-loyalty",
   "sourceTenantId": "fixture-pos-lite-tenant",
+  "sourceName": "Taquería Ficticia",
+  "sourceSubdomain": "ficticia",
   "targetTenantId": "10000000-0000-4000-8000-000000000001",
   "exportedAt": "2026-10-09T15:00:00.000Z",
   "config": {

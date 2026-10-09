@@ -156,6 +156,10 @@ test("settings: turning the club on waits for the privacy notice and the attesta
   );
   await expect(panel.locator(".loyalty-import")).toContainText(/6 socios · 17 sellos en tarjetas/);
   await expect(panel.locator(".loyalty-import")).toContainText("4 filas rechazadas");
+  // The file names its pos-lite restaurant; Importar waits for the owner to confirm it (OPS-8).
+  await expect(panel.locator(".loyalty-import")).toContainText("Archivo de POS Lite: Taquería Ficticia (ficticia)");
+  await expect(panel.getByRole("button", { name: "Importar", exact: true })).toBeDisabled();
+  await panel.getByLabel("Confirmo que es el restaurante correcto").check();
   await panel.getByRole("button", { name: "Importar", exact: true }).click();
   await expect(panel.getByText("Verificado: los totales coinciden con POS Lite.")).toBeVisible();
   // Without the attestation the club stays off.
