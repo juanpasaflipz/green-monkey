@@ -1053,7 +1053,9 @@ try {
     }
     assert.ok(waited, "the second pairing waits on the first");
     release();
-    const [p1, p2] = await Promise.all([first, second]);
+    const [p1, p2] = await noRetries("K3-race pairings", () =>
+      Promise.all([first, second]),
+    );
     assert.notEqual(p1.deviceId, p2.deviceId);
     const live = await one(
       A,
