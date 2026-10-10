@@ -130,6 +130,41 @@ export function providerMayStillCharge(a: AttemptRow, now = Date.now()) {
   return a.provider_status !== "serial_clear";
 }
 
+/** Codes of an unknown attempt the worker could not read at all (no usable account, no provider). */
+const NO_READ_CODES = new Set([
+  "payments_provider_not_configured",
+  "payments_provider_unavailable",
+]);
+/**
+ * A Clip charge with a request id while Clip's API cannot read it (P2V-FIXES-3): «No se cobró»
+ * has no provider answer to wait for, so after a bounded wait it takes the manager's attestation
+ * that the request was cancelled on the reader. Eligible when its deadline passed
+ * PAYMENTS_LIMITS.clipUnreadableWaitMs ago and either the worker could not read it at all (no
+ * usable account, no provider: NO_READ_CODES) or its last clipUnreadableReads reads all failed
+ * (provider_status `unreadable`, one `provider_unreadable` event per failed read since the last
+ * answer). A charge Clip reads as waiting on the reader is never eligible: the reader holds it.
+ */
+async function clipUnreadableDismissal(
+  tx: Tx,
+  a: AttemptRow,
+  now = Date.now(),
+): Promise<boolean> {
+  if (a.provider !== "clip" || !a.provider_reference || a.state !== "unknown")
+    return false;
+  const deadline =
+    new Date(a.sent_at ?? a.created_at).getTime() +
+    PAYMENTS_LIMITS.clipDeadlineMs[a.origin];
+  if (now < deadline + PAYMENTS_LIMITS.clipUnreadableWaitMs) return false;
+  if (a.error_code !== null && NO_READ_CODES.has(a.error_code)) return true;
+  if (a.provider_status !== "unreadable") return false;
+  const [r] = await tx`select count(*)::int as n from payment_attempt_events e
+    where e.attempt_id=${a.id} and e.kind='provider_unreadable'
+      and e.created_at > coalesce((select max(x.created_at) from payment_attempt_events x
+        where x.attempt_id=${a.id} and x.kind in ('provider_status','provider_status_undocumented')),
+        '-infinity'::timestamptz)`;
+  return Number(r.n) >= PAYMENTS_LIMITS.clipUnreadableReads;
+}
+
 /** The attempt as the dialog, banner and resolve dialog see it (never secrets or raw data). */
 export function attemptView(
   a: AttemptRow,
@@ -828,7 +863,9 @@ export function settleAttemptEntry(
  * - record (managers, step-up): from unknown or review; from unknown without a provider reference
  *   the typed reference is required. The tender takes the estimate as its fee.
  * - not_charged (managers, step-up): unknown → dismissed; refused if the provider last said paid,
- *   or while it may still take the charge (providerMayStillCharge).
+ *   or while it may still take the charge (providerMayStillCharge), except a Clip charge Clip
+ *   cannot read after a bounded wait, with the manager's attestation (clipUnreadableDismissal,
+ *   P2V-FIXES-3). A dismissal with a provider reference stays under the late watch.
  * - refunded_at_provider (managers, step-up): review → dismissed; the note names the refund.
  * Record and retry run the settle sequence under the settle key (no second operation key).
  */
@@ -935,6 +972,7 @@ export async function resolveAttempt(
       }
       if (a.order_id)
         await tx`select id from orders where id=${a.order_id} for update`;
+      let attested = false;
       if (p.outcome === "not_charged") {
         if (a.state !== "unknown")
           throw new DomainError("payments_not_approved", 409);
@@ -947,8 +985,13 @@ export async function resolveAttempt(
           a.error_code === "payments_provider_mismatch"
         )
           throw new DomainError("payments_provider_says_paid", 409);
-        if (providerMayStillCharge(a))
-          throw new DomainError("payments_provider_may_charge", 409);
+        if (providerMayStillCharge(a)) {
+          if (!(await clipUnreadableDismissal(tx, a)))
+            throw new DomainError("payments_provider_may_charge", 409);
+          if (!p.readerCleared)
+            throw new DomainError("payments_reader_attestation_required", 409);
+          attested = true;
+        }
       } else if (a.state !== "review")
         throw new DomainError("payments_not_approved", 409);
       const resolution =
@@ -959,6 +1002,7 @@ export async function resolveAttempt(
         where id=${attemptId} returning *`;
       await event(tx, s, attemptId, "resolved", s.employeeId, {
         outcome: resolution,
+        ...(attested ? { attested: "reader_cleared" } : {}),
       });
       // The late watch (P2V-FIXES-2/-3): the worker keeps reading a dismissed charge that has a
       // provider reference, so a payment the provider takes later is alerted and listed in
@@ -974,6 +1018,7 @@ export async function resolveAttempt(
         attemptId,
         outcome: resolution,
         note: p.note,
+        ...(attested ? { attested: "reader_cleared" } : {}),
       });
       return { attempt: await viewOf(tx, row) };
     },

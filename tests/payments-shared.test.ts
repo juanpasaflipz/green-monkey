@@ -232,6 +232,8 @@ describe("shared/payments constants and helpers", () => {
       "payments_reference_taken",
       "payments_charged_required",
       "payments_charged_mismatch",
+      // P2 verification fix round (P2V-FIXES-3)
+      "payments_reader_attestation_required",
     ];
     for (const code of codes) {
       expect(errorText[code]?.[0]?.trim(), code).toBeTruthy();

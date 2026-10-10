@@ -2000,6 +2000,102 @@ try {
     assert.equal(await stateOf(c2.id), "dismissed");
   });
 
+  await test("a Clip charge with a request id during a Clip API outage (P2V-FIXES-3): «No se cobró» is refused while the reader may hold it; once Clip has failed every read for a while after the deadline, a manager may dismiss it attesting the cancel on the reader (audited); Clip answering «pending» again makes it ineligible; the dismissed charge stays under the late watch, which catches a payment the reader took after all", async () => {
+    const mgr = fresh(A, ids.manager, "manager");
+    const notCharged = (extra: Record<string, unknown> = {}) =>
+      resolve(mgr, c.id, {
+        outcome: "not_charged",
+        note: NOTE,
+        confirmed: true,
+        ...extra,
+      });
+    const failedReads = async () =>
+      (await eventsOf(c.id)).filter((e) => e.kind === "provider_unreadable")
+        .length;
+    const age = (minutes: number) =>
+      asOwner(
+        A,
+        (tx) => tx`update payment_attempts
+          set sent_at = now() - ${minutes} * interval '1 minute' where id=${c.id}`,
+      );
+    const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const c = await pending(o, terminals.clip);
+    // The outage starts as the deadline passes: the read and the withdrawal fail.
+    await age(11);
+    fake.failClip(503, 503);
+    await round(A);
+    assert.deepEqual(
+      [(await attemptRow(c.id)).state, (await attemptRow(c.id)).error_code],
+      ["unknown", "payments_attempt_timeout"],
+    );
+    // Every watch read fails too.
+    for (let i = 0; i < 3; i++) {
+      fake.failClip(503);
+      await round(A);
+    }
+    assert.equal((await attemptRow(c.id)).provider_status, "unreadable");
+    assert.equal(await failedReads(), 3);
+    // Ten minutes after the deadline have not passed yet: still refused, attestation or not.
+    await rejects(
+      notCharged({ readerCleared: true }),
+      "payments_provider_may_charge",
+    );
+    await age(21);
+    await rejects(notCharged(), "payments_reader_attestation_required");
+    // Clip answers again: the request still waits on the reader. Never eligible then.
+    await round(A);
+    assert.equal((await attemptRow(c.id)).provider_status, "pending");
+    await rejects(
+      notCharged({ readerCleared: true }),
+      "payments_provider_may_charge",
+    );
+    // Down again for three reads: the cashier cancels on the reader, the manager attests it.
+    for (let i = 0; i < 3; i++) {
+      fake.failClip(503);
+      await round(A);
+    }
+    const done = await notCharged({ readerCleared: true });
+    assert.equal(done.attempt.state, "dismissed");
+    const resolved = (await eventsOf(c.id)).filter(
+      (e) => e.kind === "resolved",
+    );
+    assert.deepEqual(
+      resolved.map((e) => [e.detail.outcome, e.detail.attested]),
+      [["not_charged", "reader_cleared"]],
+    );
+    const [audited] = await asOwner(
+      A,
+      (tx) => tx`select actor_id, detail from audit
+        where operation='payment.terminal_resolved' and detail->>'attemptId'=${c.id}`,
+    );
+    assert.deepEqual(
+      [audited.actor_id, audited.detail.outcome, audited.detail.attested],
+      [ids.manager, "not_charged", "reader_cleared"],
+    );
+    // The order is free: cash is accepted.
+    await write(cashier, (tx) =>
+      recordPayment(tx, cashier, o.id, {
+        operationId: randomUUID(),
+        amount: o.total,
+        tip: 0,
+        received: o.total,
+        method: "cash",
+      }),
+    );
+    // Clip is back, and the reader had taken it after all: the late watch catches the payment.
+    fake.approve(c.ref, { ...TEST_CARD });
+    alerts.length = 0;
+    await round(A, { late: true });
+    assert.equal(
+      (await eventsOf(c.id)).filter((e) => e.kind === "late_approval").length,
+      1,
+    );
+    assert.ok(
+      alerts.some((x) => x.key === `payments_late_approval_${A.slice(0, 8)}`),
+    );
+    assert.equal(await stateOf(c.id), "dismissed");
+  });
+
   await test("an unknown charge later read as paid with no usable amount (P2V-FIXES-5): the attempt takes the provider's status and payments_provider_mismatch, «No se cobró» is refused (payments_provider_says_paid), and a manager records it", async () => {
     const mgr = fresh(A, ids.manager, "manager");
     const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);

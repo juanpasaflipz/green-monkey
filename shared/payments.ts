@@ -84,6 +84,15 @@ export const PAYMENTS_LIMITS = {
   lateWatchMs: 300_000,
   lateWatchForMs: 86_400_000,
   /**
+   * A Clip charge with a request id that Clip's API cannot read (P2V-FIXES-3: an outage, or an
+   * account that cannot be used): a manager may dismiss it as «No se cobró», attesting that the
+   * request was cancelled on the reader, once this long has passed after its deadline and
+   * (outage) the worker's last clipUnreadableReads reads all failed. The late watch keeps reading
+   * it afterwards.
+   */
+  clipUnreadableWaitMs: 600_000,
+  clipUnreadableReads: 3,
+  /**
    * A worker that serves no provider (PAYMENTS_PROVIDERS unset while charges are live) still
    * carries each pending charge to its deadline, one poll link this often (P2V-GATE-4).
    */
@@ -341,6 +350,9 @@ export const resolveAttemptInput = z
     /** record from unknown: the amount the provider's history shows (minor units, tip included);
      *  it must equal the attempt's amount + tip (spec §4.3 step 3). */
     charged: z.number().int().min(1).max(100_000_000).optional(),
+    /** not_charged of a Clip charge Clip cannot read (P2V-FIXES-3): the manager attests that
+     *  the request was cancelled on the reader and it shows no pending charge. */
+    readerCleared: z.literal(true).optional(),
   })
   .strict();
 

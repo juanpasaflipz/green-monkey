@@ -46,10 +46,17 @@ export function ResolveDialog({
   const [charged, setCharged] = useState("");
   const [note, setNote] = useState("");
   const [confirmed, setConfirmed] = useState(false);
+  const [readerCleared, setReaderCleared] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
   const needsReference = outcome === "record" && !attempt.providerReference;
+  // «No se cobró» of a Clip request with an id while Clip cannot be read (P2V-FIXES-3): the
+  // server accepts it only after a bounded wait and with this attestation.
+  const offersReaderCleared =
+    outcome === "not_charged" &&
+    attempt.provider === "clip" &&
+    !!attempt.providerReference;
   const referenceOk =
     !needsReference || /^[A-Za-z0-9_-]{1,100}$/.test(reference.trim());
   // No amount from the provider: the manager types the one its history shows (spec §4.3; the
@@ -110,6 +117,9 @@ export function ResolveDialog({
                 confirmed: true,
                 ...(needsReference ? { reference: reference.trim() } : {}),
                 ...(needsCharged ? { charged: chargedMinor } : {}),
+                ...(offersReaderCleared && readerCleared
+                  ? { readerCleared: true }
+                  : {}),
               })
             }
           >
@@ -225,6 +235,17 @@ export function ResolveDialog({
             />
             {t("payResolveConfirm")}
           </label>
+          {offersReaderCleared && (
+            <label className="option">
+              <input
+                type="checkbox"
+                checked={readerCleared}
+                disabled={busy}
+                onChange={(e) => setReaderCleared(e.target.checked)}
+              />
+              {t("payResolveReaderCleared")}
+            </label>
+          )}
         </>
       ) : (
         !canRetrySettle(attempt) &&

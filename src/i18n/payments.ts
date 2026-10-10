@@ -237,6 +237,8 @@ export default defineArea({
     payResolveRefundNote:
       "Motivo con la referencia del reembolso en el proveedor (mínimo 10 caracteres)",
     payResolveConfirm: "Revisé el historial del proveedor",
+    payResolveReaderCleared:
+      "Cancelé la solicitud en la lectora Clip y no muestra ningún cobro pendiente (solo si Clip no responde)",
     payResolveSubmit: "Resolver",
     payResolveDone: "Cobro resuelto",
     // P2: provider accounts in Configuración
@@ -551,6 +553,8 @@ export default defineArea({
     payResolveRefundNote:
       "Reason with the provider's refund reference (at least 10 characters)",
     payResolveConfirm: "I checked the provider's history",
+    payResolveReaderCleared:
+      "I cancelled the request on the Clip reader and it shows no pending charge (only while Clip does not answer)",
     payResolveSubmit: "Resolve",
     payResolveDone: "Charge resolved",
     payProviders: "Integrated Mercado Pago and Clip",
@@ -848,6 +852,10 @@ export default defineArea({
     payments_provider_may_charge: [
       "La terminal todavía puede cobrar este cargo. Cancélalo en la terminal y vuelve a consultar; en Mercado Pago también puedes esperar a que venza (unos minutos).",
       "The terminal may still take this charge. Cancel it on the terminal and check again; with Mercado Pago you can also wait for it to expire (a few minutes).",
+    ],
+    payments_reader_attestation_required: [
+      "Clip no responde: para marcarlo como no cobrado, cancela la solicitud en la lectora y confírmalo.",
+      "Clip is not answering: to mark it not charged, cancel the request on the reader and confirm it.",
     ],
     payments_terminal_not_linked: [
       "Mercado Pago dice que esta terminal no pertenece a la cuenta conectada. Revisa la terminal en Configuración.",

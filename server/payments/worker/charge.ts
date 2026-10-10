@@ -1358,6 +1358,32 @@ async function pollWithoutProviders(
   return { status: "done" };
 }
 
+/**
+ * A failed read of an unknown Clip charge (P2V-FIXES-3; a watched one past its deadline):
+ * provider_status `unreadable` (a same-state update; the next answer from Clip writes its own
+ * status back) and one `provider_unreadable` event per failed read, so «No se cobró» can tell a
+ * Clip outage from a request the reader holds (resolveAttempt's clipUnreadableDismissal). A
+ * pending charge is left untouched: a failed read never changes it.
+ */
+async function unreadable(
+  ctx: JobContext,
+  attemptId: string,
+  code: string,
+  httpStatus: number | null,
+) {
+  await ctx.tenant(async (tx) => {
+    const a = await lockAttempt(tx, attemptId);
+    if (a?.provider !== "clip" || a.state !== "unknown") return;
+    if (a.provider_status !== "unreadable")
+      await tx`update payment_attempts set provider_status='unreadable',version=version+1
+        where id=${attemptId}`;
+    await workerEvent(tx, ctx.job.tenantId, attemptId, "provider_unreadable", {
+      code,
+      httpStatus,
+    });
+  });
+}
+
 /** payments_poll: one read of a pending attempt, then the next link of its chain. */
 export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
   const rt = paymentsRuntime();
@@ -1380,8 +1406,12 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
   const loaded = await load(ctx, rt, attemptId);
   const a = loaded?.attempt;
   if (!loaded || !a || !a.provider_reference) return { status: "done" };
+  // A dismissed charge is read only by its own late watch (an older chain, such as a Clip
+  // watch, ends here).
   if (a.state === "dismissed")
-    return lateWatchLink(ctx, rt, loaded, chain, seq);
+    return chain === "late"
+      ? lateWatchLink(ctx, rt, loaded, chain, seq)
+      : { status: "done" };
   if (a.state !== "pending" && !clipWatch(a)) return { status: "done" };
   let withdraw = false;
   /** The chain's next link, or `unknown` once the deadline passed (the only pending → unknown). */
@@ -1460,6 +1490,7 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
     if (!(e instanceof ProviderError)) throw e;
     if (e.code === "payments_credentials_rejected")
       await failIfRefused(ctx, rt, a.provider, loaded.account);
+    await unreadable(ctx, attemptId, e.code, e.status);
     // A read failure never changes the attempt: keep polling, never sooner than the slow
     // cadence (P2V-FIXES-4: MP's 429 limit is per access token, shared by every live charge of
     // the restaurant, so a 3.5 s default back-off read faster than the 5 s fresh cadence), or
@@ -1470,6 +1501,7 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
     return finish();
   }
   if (!read) {
+    await unreadable(ctx, attemptId, "payments_provider_not_found", 404);
     await next(PAYMENTS_LIMITS.pollSlowMs);
     return finish();
   }

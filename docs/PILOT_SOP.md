@@ -619,7 +619,14 @@ entonces usa el registro manual.
    y se reembolsó en la terminal», con el motivo. «No se cobró» espera a que el proveedor ya
    no pueda cobrarlo: en Mercado Pago, hasta que vence (unos 12 minutos desde el envío); en
    Clip, cancela primero el cobro en el lector y toca «Volver a consultar» (si el lector lo
-   canceló, la orden queda libre sola). La caja no cierra mientras tenga un cobro en
+   canceló, la orden queda libre sola). Si Clip no responde (caída de Clip o cuenta con
+   error), la orden sigue bloqueada hasta unos 20 minutos después del envío; entonces el
+   gerente puede elegir «No se cobró» marcando además «Cancelé la solicitud en la lectora
+   Clip y no muestra ningún cobro pendiente» (solo después de cancelarla en la lectora). El
+   sistema sigue consultando ese cobro 24 horas: si Clip o Mercado Pago lo reportan cobrado
+   después, avisa y aparece en Excepciones («Cobro en terminal aprobado después de
+   cerrarse»); el gerente reembolsa el cobro con tarjeta en la app del proveedor o devuelve
+   el efectivo. La caja no cierra mientras tenga un cobro en
    terminal en curso o sin resolver. Si la cuenta del proveedor dice «Error» con cobros en
    curso, el propietario la reconecta con «Reemplazar credenciales» (se permite con cobros
    en curso) y los cobros se vuelven a consultar solos.

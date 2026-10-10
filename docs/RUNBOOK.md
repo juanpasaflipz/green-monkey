@@ -515,8 +515,23 @@ completó»). Money may or may not have been taken. Nothing retries on its own.
      paid, and while it may still take the charge («La terminal todavía puede cobrar este
      cargo…»): MP until its order expires plus 2 minutes, counted from the last send; Clip with
      a request id until a cancel or a read ends it (cancel it on the reader, then **Volver a
-     consultar**); Clip without one until the delete by serial number found nothing of it on
-     the reader.
+     consultar**); Clip without one until a delete by serial number sent at least a minute
+     after the send found nothing of it on the reader (an earlier one proves nothing: a slow
+     create can still land; the worker repeats it a minute after the send by itself).
+   - Clip with a request id while Clip's API does not answer (an outage, or a Clip account
+     that cannot be used): no read can end it, so **No se cobró** is accepted once 10 minutes
+     have passed after the charge's deadline (about 20 minutes after the send) and either the
+     worker's last 3 reads of it all failed or the account cannot be used, and only with the
+     manager's second confirmation «Cancelé la solicitud en la lectora Clip y no muestra
+     ningún cobro pendiente» (otherwise «Clip no responde: … cancela la solicitud en la lectora
+     y confírmalo»). The event and the audit row record `attested: reader_cleared`. While Clip
+     reads the request as waiting on the reader it is never accepted.
+   - After any **No se cobró** of a charge with a provider reference, the worker keeps reading
+     it every 5 minutes for 24 hours, and a provider notification about a «No se cobró» of the
+     last 24 hours is read too: a payment the provider took after all raises
+     `payments_late_approval_<tenant>` (critical) and is listed in Excepciones («Cobro en
+     terminal aprobado después de cerrarse»); the attempt stays closed. The manager refunds the
+     card payment in the provider's app, or returns the cash the cashier took instead.
 3. `review` («El cobro se aprobó pero la orden cambió»): the customer paid but the order no
    longer takes it (paid another way, changed, or the approval was flagged). If the order can
    take it now, anyone presses **Registrar el cobro aprobado**; otherwise a manager refunds it in
@@ -539,8 +554,14 @@ completó»). Money may or may not have been taken. Nothing retries on its own.
    «Independiente», then restarts the terminal; Clip: charge from the Clip app), charge on the
    device, type its approval reference and confirm.
 2. Each blocked order is resolved as an unknown outcome (above): «No se cobró» is accepted once
-   MP's order has expired (about 12 minutes after the last send); for Clip, cancel the request
-   on the reader and press **Volver a consultar**, which frees the order by itself.
+   MP's order has expired (about 12 minutes after the last send). For Clip, cancel the request
+   on the reader. **Volver a consultar** frees the order by itself only once Clip answers
+   again; while Clip's API is down, a Clip charge with a request id stays blocked until about
+   20 minutes after its send (its deadline plus 10 minutes, with the worker's reads failing),
+   and then a manager's «No se cobró» with the second confirmation «Cancelé la solicitud en la
+   lectora Clip…» frees it; the worker keeps reading it for 24 hours and alerts if Clip
+   reports it paid after all. Meanwhile the floor charges that order another way only after
+   that dismissal, never while it is blocked.
 3. When the provider is back: switch MP devices back to «Integrado (PDV)» (restart), and
    charge one small order per terminal (**Cobro de prueba**) before relying on it.
 4. MP rate limiting is not this kind of outage (P2-PROVIDERS-8): a create answered 429 on
