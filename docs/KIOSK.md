@@ -131,7 +131,10 @@ an order links the member right after createOrder (`linkFromKiosk`, inside `crea
 card settle, the zero-total accept, and staff's accepts of a «Pagar en caja» hold («Cobrar y
 enviar», a plain accept, a manager's exception, «Aceptar con el pago del kiosco»). Loyalty stamps
 on payment through its own hook, once. The counter screen says «Tu sello se suma al pagar en
-caja» when the order carries a member (KIOSK-UX-01). A non-member's
+caja» when the order carries a member (KIOSK-UX-01). The token travels only in the one submit
+(R20 has no route that attaches a member to a placed hold), so «Soy del club» shows on the menu
+and at «¿Para aquí o para llevar?» and is hidden once the hold is placed; after a lookup the cart
+shows a «Club · ···· 4521» chip with the masked phone (KIOSK-UX-02). A non-member's
 paid order offers loyalty's join QR. The checkout's member reference is blanked at 30 days
 (retention).
 

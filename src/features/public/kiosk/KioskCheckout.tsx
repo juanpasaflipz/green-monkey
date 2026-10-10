@@ -68,6 +68,20 @@ export function cancelsOnReset(
   );
 }
 
+/**
+ * Whether «Soy del club» is offered (KIOSK-UX-02; pure, tests/kiosk.test.ts). The member token
+ * travels only in the body of the one submit (critic R20: one kiosk member route, no attach to a
+ * placed hold), so the button shows on the menu and on «¿Para aquí o para llevar?», never once
+ * the hold is placed: a lookup there would succeed and never reach the order.
+ */
+export function memberLookupOpen(
+  view: "menu" | "status" | "kiosk-done" | "checkout",
+  step: KioskStep | null,
+): boolean {
+  if (view === "menu") return true;
+  return view === "checkout" && step === "fulfillment";
+}
+
 type Props = {
   token: string;
   locale: Locale;
@@ -79,6 +93,8 @@ type Props = {
   /** A domain refusal of the order (price changed, unavailable, closed): back to the cart. */
   onRefused: (message: string, code: string) => void;
   announce: (text: string) => void;
+  /** The current screen, for the header's «Soy del club» (memberLookupOpen). */
+  onStep?: (step: KioskStep) => void;
 };
 
 export function KioskCheckout(p: Props) {
@@ -105,6 +121,8 @@ export function KioskCheckout(p: Props) {
     },
     [],
   );
+  const onStep = p.onStep;
+  useEffect(() => onStep?.(step), [step, onStep]);
   const say = (text: string) => p.announce(text);
   const label = view?.label ?? hold?.label ?? "";
   // The latest checkout read, for the idle reset (its effect runs per screen, not per poll).

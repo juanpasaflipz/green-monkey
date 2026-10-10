@@ -67,6 +67,7 @@ export default defineArea({
     kioskMemberStamps: "Llevas {n} de {required} sellos.",
     kioskMemberNotFound: "No encontramos ese número. Puedes unirte al pagar.",
     kioskMemberLimit: "Pide ayuda en caja.",
+    kioskMemberChip: "Club · {phone}",
     kioskStampEarned: "Sumaste {earned} sello(s) · {n} de {required}",
     kioskStampAtCounter: "Tu sello se suma al pagar en caja.",
     kioskJoinPitch: "Únete al club y gana este sello: escanea con tu celular.",
@@ -215,6 +216,7 @@ export default defineArea({
     kioskMemberNotFound:
       "We couldn't find that number. You can join after paying.",
     kioskMemberLimit: "Please ask for help at the counter.",
+    kioskMemberChip: "Club · {phone}",
     kioskStampEarned: "You earned {earned} stamp(s) · {n} of {required}",
     kioskStampAtCounter: "Your stamp is added when you pay at the counter.",
     kioskJoinPitch: "Join the club and get this stamp: scan with your phone.",

@@ -42,7 +42,11 @@ import {
 } from "../../../shared/kiosk";
 import { orderable } from "../../../shared/menu";
 import { kioskApi } from "./kiosk/kioskApi";
-import { KioskCheckout } from "./kiosk/KioskCheckout";
+import {
+  KioskCheckout,
+  memberLookupOpen,
+  type KioskStep,
+} from "./kiosk/KioskCheckout";
 import {
   KioskAccessibility,
   KioskMember,
@@ -169,7 +173,13 @@ export function DinerApp({
   const [welcome, setWelcome] = useState(false);
   const [setup, setSetup] = useState(false);
   const [memberOpen, setMemberOpen] = useState(false);
-  const [memberToken, setMemberToken] = useState<string | null>(null);
+  // The member the guest identified (KIOSK-UX-02: the token and the masked phone of the chip).
+  const [member, setMember] = useState<{
+    token: string;
+    maskedPhone: string;
+  } | null>(null);
+  const memberToken = member?.token ?? null;
+  const [checkoutStep, setCheckoutStep] = useState<KioskStep | null>(null);
   const [a11yOpen, setA11yOpen] = useState(false);
   const [a11y, setA11y] = useState<KioskA11y>({ large: false, reach: false });
   const [sheet, setSheet] = useState<Product | null>(null);
@@ -499,7 +509,8 @@ export function DinerApp({
     setSheet(null);
     setSetup(false);
     setMemberOpen(false);
-    setMemberToken(null);
+    setMember(null);
+    setCheckoutStep(null);
     setA11yOpen(false);
     setA11y({ large: false, reach: false });
     setWelcome(bound);
@@ -655,11 +666,13 @@ export function DinerApp({
             {t("kioskAccessibility")}
           </Button>
         )}
-        {kiosk && kioskState?.loyalty && (
-          <Button onClick={() => setMemberOpen(true)}>
-            {t("kioskMember")}
-          </Button>
-        )}
+        {kiosk &&
+          kioskState?.loyalty &&
+          memberLookupOpen(view, view === "checkout" ? checkoutStep : null) && (
+            <Button onClick={() => setMemberOpen(true)}>
+              {t("kioskMember")}
+            </Button>
+          )}
         <Button
           className="diner-language"
           onClick={() => setLocale(locale === "es" ? "en" : "es")}
@@ -732,6 +745,7 @@ export function DinerApp({
             ...(memberToken ? { memberToken } : {}),
           }}
           announce={setAnnounce}
+          onStep={setCheckoutStep}
           onDone={resetKiosk}
           onBack={() => setView("menu")}
           onRefused={(message, code) => {
@@ -792,21 +806,28 @@ export function DinerApp({
               setError("");
             }}
             extra={
-              kiosk && kioskState?.suggestions && draft.lines.length > 0 ? (
-                <SuggestionStrip
-                  title={
-                    kioskState.suggestions.cart.length
-                      ? t("kioskAnythingElse")
-                      : t("kioskPopularNow")
-                  }
-                  products={cartSuggestions}
-                  locale={locale}
-                  currency={menu.restaurant.currency}
-                  onAdd={(p) =>
-                    pickerNeeded(p) ? setPicker(p) : add(p, [], "suggestion")
-                  }
-                />
-              ) : null
+              <>
+                {kiosk && member && (
+                  <p className="kiosk-member-chip" role="status">
+                    {t("kioskMemberChip", { phone: member.maskedPhone })}
+                  </p>
+                )}
+                {kiosk && kioskState?.suggestions && draft.lines.length > 0 ? (
+                  <SuggestionStrip
+                    title={
+                      kioskState.suggestions.cart.length
+                        ? t("kioskAnythingElse")
+                        : t("kioskPopularNow")
+                    }
+                    products={cartSuggestions}
+                    locale={locale}
+                    currency={menu.restaurant.currency}
+                    onAdd={(p) =>
+                      pickerNeeded(p) ? setPicker(p) : add(p, [], "suggestion")
+                    }
+                  />
+                ) : null}
+              </>
             }
           />
         </div>
@@ -879,7 +900,9 @@ export function DinerApp({
         <KioskMember
           token={token}
           locale={locale}
-          onFound={(m) => setMemberToken(m)}
+          onFound={(token, found) =>
+            setMember({ token, maskedPhone: found.maskedPhone })
+          }
           onClose={() => setMemberOpen(false)}
         />
       )}

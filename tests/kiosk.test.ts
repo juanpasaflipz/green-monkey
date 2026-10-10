@@ -21,7 +21,9 @@ import {
 } from "../shared/kiosk";
 import {
   cancelsOnReset,
+  memberLookupOpen,
   stepFor,
+  type KioskStep,
 } from "../src/features/public/kiosk/KioskCheckout";
 import { cartInputs } from "../src/features/public/DinerApp";
 import { priceCart } from "../shared/service";
@@ -281,6 +283,30 @@ describe("the checkout's next step while charging", () => {
       expect(cancelsOnReset(step, view({ state: "declined" })), step).toBe(
         false,
       );
+  });
+});
+
+describe("«Soy del club» only while the member token still travels (KIOSK-UX-02, critic R20)", () => {
+  it("on the menu and at «¿Para aquí o para llevar?»; never once the hold is placed", () => {
+    expect(memberLookupOpen("menu", null)).toBe(true);
+    expect(memberLookupOpen("checkout", "fulfillment")).toBe(true);
+    for (const step of [
+      "submitting",
+      "pay",
+      "charging",
+      "declined",
+      "unavailable",
+      "still",
+      "askCounter",
+      "paid",
+      "paidNoOrder",
+      "counter",
+    ] satisfies KioskStep[])
+      expect(memberLookupOpen("checkout", step), step).toBe(false);
+    // Before the checkout reports its first screen, and on the other views.
+    expect(memberLookupOpen("checkout", null)).toBe(false);
+    expect(memberLookupOpen("kiosk-done", null)).toBe(false);
+    expect(memberLookupOpen("status", null)).toBe(false);
   });
 });
 
