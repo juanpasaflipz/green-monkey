@@ -87,7 +87,7 @@ No historical payment is migrated: only configuration moves, by hand, through Co
 4. **Platform commissions:** `select name, display_name, commission_percent, active from delivery_platforms where tenant_id = $1`: «Plataformas de entrega» (Uber Eats, Rappi, DiDi Food), enabled only for the platforms the restaurant uses.
 5. **Credentials:** the owner's own Mercado Pago application (Tus integraciones → Credenciales de producción: access token and the Webhooks secret) and Clip's API key and secret (dashboard.clip.mx → Desarrolladores). pos-lite connected MP through its own OAuth application, so its grant cannot be reused.
 
-**Día de cambio, payments steps** (critic R43; the kiosk track folds these into the single cutover runbook, with a pointer from PILOT_SOP):
+**Día de cambio, payments steps** (critic R43; their place in the day is the single runbook, [«Día de cambio»](#día-de-cambio-cutover-runbook-critic-r43) below, steps 1, 3, 5, 6 and 10):
 
 - Before go-live (R43 steps 3, 5 and 6):
   1. Stop charging from pos-lite. Two integrations must never drive one PDV terminal (MP answers 2205 «queued intent»).
@@ -103,29 +103,115 @@ No historical payment is migrated: only configuration moves, by hand, through Co
 
 ## Día de cambio (cutover runbook, critic R43)
 
-One runbook for the day Juanberto's moves from pos-lite to Green Monkey. Payments' and loyalty's
-detailed steps are in their sections above; this is the order. PILOT_SOP §10 points here.
+The one runbook for the day Juanberto's moves from pos-lite to Green Monkey. It puts payments'
+(«Pagos» above), loyalty's ([LOYALTY.md](LOYALTY.md) "Runbooks") and the kiosk's
+([KIOSK.md](KIOSK.md) §4, §7) steps in their order; those documents keep the details. PILOT_SOP
+points here. Who: the owner, with the operator; the cashier only where a step says so.
 
-1. **Stop pos-lite**: counter charging, the kiosk APK and club stamping. Never run the pos-lite kiosk
-   in parallel with Green Monkey's (two kiosks would sell from two menus and two drawers).
-2. **Settle pending pos-lite kiosk orders** (`draft_kiosk`, `fired_unpaid`) in pos-lite before
-   switching.
-3. **Cancel pending intents** on each Mercado Pago device.
-4. **Loyalty**: export, preview and commit the members, then «Verificado» and the 10-member spot
-   check (LOYALTY.md).
-5. **Payments configuration**: manual terminals, platforms, Mercado Pago and Clip credentials, the
-   webhook URL, «Buscar terminales» (MP in PDV mode), device defaults (payments steps above).
-6. **One low-value real charge per terminal**, then cancel or refund it.
-7. **Kiosk** (KIOSK.md §4): uninstall the APK; add the kiosk link and its station (terminal and
-   receiving till); pair the tablet; the field checks (LAUNCH_HANDOFF); set «Cobro en el kiosco».
-   Photos: the operator downloads pos-lite's product photos and writes the `gm-menu-media-v1`
-   manifest (KIOSK.md §7); the owner runs **Importar fotos**, reviews the mapping and imports
-   (critic R42/Q7; re-running it is safe). Descriptions are typed in the product editor. Curated
-   suggestions per product
-   and for the cart (pos-lite's last curated set was Orden Papas, Brownie con crema, Refresco,
-   Cerveza and CHELA 3X2).
-8. **Club settings**: attestation, enable.
-9. **Go live.**
-10. **After go-live**: revoke pos-lite's MP OAuth grant; rotate the Clip keys; delete pos-lite's
-    `tenant_credentials` for MP and Clip; the final pos-lite wallet-pass update; delete the export
-    files; post the counter sign.
+**Before the day** ([LAUNCH_HANDOFF.md §4.1](LAUNCH_HANDOFF.md#41-before-day-one) and §4.3): the
+menu re-keyed and price-checked, staff and PINs, devices paired, the printer tests and the outage
+drill passed, the money defaults written down, the CFDI ranges agreed with the accountant, the
+club's legal texts published, and the integrated charging device rehearsal (critic R44) passed on
+staging. Keep a **cutover log** (a private document, never in Git): time, step, who, and what
+each check showed. Choose a quiet hour; pos-lite stays reachable read-only afterwards
+(LAUNCH_HANDOFF §4.2).
+
+### 1. Stop pos-lite
+
+1. **Counter charging.** No sale, charge or refund in pos-lite from now on. Two integrations must
+   never drive one Mercado Pago PDV terminal (MP answers 2205 «queued intent»).
+2. **The pos-lite kiosk APK.** Close it on the tablet and keep the tablet off the kiosk link. Never
+   run the pos-lite kiosk in parallel with Green Monkey's: two kiosks would sell from two menus into
+   two drawers and two kitchen queues.
+3. **Club stamping.** No manual stamps or redemptions in pos-lite from now on; a completed card
+   shown from here to step 8 is honored as an audited discount (LAUNCH_HANDOFF §4.2).
+Check: pos-lite's Órdenes shows no order created after the stop time; log the time.
+
+### 2. Settle pending pos-lite kiosk orders
+
+In pos-lite, settle every kiosk order still open (`draft_kiosk`, `fired_unpaid`): charge and close
+it, or cancel it with the guest. Check: pos-lite lists no open kiosk order; log the count settled.
+
+### 3. Cancel pending intents on the Mercado Pago devices
+
+On each MP Point (or from pos-lite's last screen) cancel any pending payment intent, so the first
+Green Monkey charge is not refused as queued. Check: each terminal shows its idle screen.
+
+### 4. Loyalty members: export, preview, commit, verify
+
+In this order (LOYALTY.md "Runbooks"; PILOT_SOP §9):
+
+1. Configuración › Club de lealtad: save the club's settings first (stamps per card as in
+   pos-lite, the reward and its cap), because balances convert at the saved stamps per card.
+2. Run `scripts/loyalty/poslite-export.sql` with psql against pos-lite as its admin login
+   (read-only transaction; `-v tenant=<pos-lite tenant> -v target=<green-monkey restaurant>`).
+   Keep the file in a private folder (mode 600).
+3. «Importar socios de POS Lite»: upload it, confirm the restaurant, choose the rewards policy
+   (default "recent"), print «Imprimir listas para la bitácora» into the cutover log, then
+   **Importar** (a failed page shows Reintentar; committed pages replay).
+4. Require «Verificado»; spot-check 10 members against pos-lite's Loyalty y CRM screen (the active
+   card's dots against Tarjeta). Log it and delete the export file.
+
+The club stays off until step 8.
+
+### 5. Payments configuration
+
+Configuración › «Pagos con tarjeta y plataformas» («Pagos» above; PILOT_SOP §8):
+
+1. Manual terminals with their fees; delivery platforms with their commissions, switched on only
+   for the platforms the restaurant uses, and their price lists where they differ.
+2. Connect Mercado Pago (the owner's application: access token and webhook secret) and Clip (API
+   key and secret); paste the MP notification URL (shown once; event **Órdenes**).
+3. **Buscar terminales** (the MP Point in PDV mode; restart it after a mode change) and **Buscar
+   lectores** (Clip); add the integrated terminals with their fees.
+4. Each register tablet's default terminal.
+
+Check: «Pagos con tarjeta y plataformas» shows both providers connected and each integrated
+terminal «Integrado (PDV)».
+
+### 6. One low-value real charge per terminal
+
+On each terminal, integrated and manual, a real low-value sale (**Cobro de prueba**: at least
+$5.00 on MP) with «Enviar a {terminal}», then cancel it on the terminal or refund it in the
+provider's app. Check that the charge and its outcome show in Cobros en terminal and Excepciones as
+expected; log each terminal.
+
+### 7. Kiosk
+
+KIOSK.md §4 and PILOT_SOP §10:
+
+1. On the tablet: uninstall the pos-lite kiosk APK, update Chrome, screen lock with a PIN, app
+   pinning with «Solicitar PIN para quitar la fijación», battery protection.
+2. Configuración › Pedidos en línea: **Agregar kiosco** (the link and its station); on the station,
+   the **Terminal** (an integrated reader) and the **Caja que recibe los cobros**; «Cobro en el
+   kiosco»; «Preguntar para aquí o para llevar»; «Sugerencias».
+3. **Vincular tableta**: type the 8-digit code on the tablet (long-press the restaurant name);
+   «Kiosco vinculado» appears. Tap «Toca para ordenar» once and pin Chrome.
+4. **Photos**: the operator downloads pos-lite's product photos and writes the
+   `gm-menu-media-v1` manifest (KIOSK.md §7); the owner runs Menú e inventario › **Importar
+   fotos**, reviews the mapping and imports; the report lists what was not imported (re-running
+   is safe). Descriptions are typed in the product editor. Curated suggestions: per product
+   («Sugerir con este producto») and for the cart (Configuración › Kiosco de autoservicio).
+5. Field checks (LAUNCH_HANDOFF, kiosk §8.4): one card sale, one declined card cancelled on the
+   reader, one «Pagar en caja», the idle reset, and a tablet restart (re-pin). Log each.
+
+### 8. Club settings, attestation, enable
+
+Configuración › Club de lealtad: check the settings, the attestation, then turn the club on
+(PILOT_SOP §9). «Club en el kiosco» on the kiosk settings when the restaurant wants it.
+
+### 9. Go live
+
+The first Green Monkey sale at the counter and the first kiosk order; log their numbers and times.
+Watch Cobros en terminal and the inbox for the first hour.
+
+### 10. After go-live (the same week)
+
+1. Revoke pos-lite's MP OAuth grant (Mercado Pago account → Seguridad → Aplicaciones conectadas).
+2. Rotate the Clip keys (pos-lite stored them in plain text), then **Reemplazar credenciales** in
+   Configuración with the new ones.
+3. Delete pos-lite's `tenant_credentials` rows for MP and Clip.
+4. The final pos-lite wallet-pass update (the members now live in Green Monkey), then delete or
+   anonymise that tenant's `loyalty_customers` rows in pos-lite and log it.
+5. Delete the export files (members, photos manifest) from every machine they touched.
+6. Post the counter sign (the club and the kiosk now live in Green Monkey).

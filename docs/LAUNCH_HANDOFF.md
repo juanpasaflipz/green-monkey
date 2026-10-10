@@ -830,7 +830,11 @@ As of October 9, 2026:
 Juanberto's moves from pos-lite (`juanbertos.desktop.kitchen`) to Green Monkey for the
 pilot. This list comes from the parity review (LD-70) and your decisions (LD-71, LD-72).
 It goes with section 2 step 12; it does not replace it. The restaurant-side procedures
-are in [PILOT_SOP.md](PILOT_SOP.md) (Spanish).
+are in [PILOT_SOP.md](PILOT_SOP.md) (Spanish). The cutover day itself, in order (stop
+pos-lite, settle its kiosk orders, MP intents, the club import, payments, test charges, the
+kiosk, the club, go live, and the follow-ups), is the one runbook in
+[MIGRATION.md, «Día de cambio»](MIGRATION.md#día-de-cambio-cutover-runbook-critic-r43)
+(critic R43); this list holds what must be ready before it.
 
 **Wave 4.** Payments part 1 (037) and the loyalty club (038) reach production with the
 first Wave 4 release; items 9 and 10 set them up. Integrated Clip and Mercado Pago

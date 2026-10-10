@@ -13,7 +13,9 @@ probado todavía con la impresora real, tablets reales ni una caída real de int
 pruebas son condición para el piloto
 ([recuperación sin conexión, "Verification"](OFFLINE_RECOVERY.md#verification)). La lista
 del cambio desde pos-lite está en
-[la entrega de lanzamiento](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos).
+[la entrega de lanzamiento](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos), y el
+orden del día del cambio (detener pos-lite, socios del club, terminales, kiosco, salir en
+vivo) en [el «Día de cambio»](MIGRATION.md#día-de-cambio-cutover-runbook-critic-r43).
 
 **Lo que llega antes del piloto (ola 4).** Está en construcción y **no está en
 producción**: cobro con terminales Clip y Mercado Pago Point integradas, terminales con
@@ -663,7 +665,8 @@ historial del proveedor.
 ## 9. Club de lealtad
 
 El club de Juanberto's pasa de POS Lite a Green Monkey el día de cambio
-([Loyalty](LOYALTY.md); los pasos de la migración en [Migration](MIGRATION.md)).
+([Loyalty](LOYALTY.md); los pasos de la migración en el
+[«Día de cambio»](MIGRATION.md#día-de-cambio-cutover-runbook-critic-r43), pasos 4 y 8).
 
 - **Antes de activarlo.** El propietario publica el aviso de privacidad del
   restaurante (Configuración › Privacidad y datos) y confirma que menciona el
@@ -708,7 +711,9 @@ El club de Juanberto's pasa de POS Lite a Green Monkey el día de cambio
 
 El «Kiosco de autoservicio» es la tableta donde el cliente pide y paga solo. No es el «modo
 kiosco» de §1.3 (imprimir sin el diálogo del navegador en la caja). Guía completa:
-[KIOSK.md](KIOSK.md).
+[KIOSK.md](KIOSK.md). El día del cambio se configura en el paso 7 del
+[«Día de cambio»](MIGRATION.md#día-de-cambio-cutover-runbook-critic-r43), después de detener el
+kiosco de POS Lite (paso 1).
 
 - **Configurarlo (dueño o gerente, unos 15 minutos).** En la tableta: desinstala la app del kiosco
   de POS Lite, actualiza Chrome, pon bloqueo de pantalla con PIN y activa «Fijar aplicaciones» con
@@ -729,7 +734,15 @@ kiosco» de §1.3 (imprimir sin el diálogo del navegador en la caja). Guía com
 - **«Pagando en el kiosco…».** Ese pedido no se puede aceptar ni rechazar mientras el cliente paga.
   Si se quedó atorado, un gerente toca **Cancelar cobro en curso**.
 - **Tarjeta roja «pagó … y no se pudo enviar a cocina».** El cliente pagó pero un producto se
-  acabó o cambió de precio. Toca **Resolver cobro del kiosco**: si el producto ya está, **Reintentar**
-  crea el pedido; si no, el gerente reembolsa en la app de Clip o Mercado Pago, lo registra como
-  «Se reembolsó» y luego rechaza el pedido. La caja no cierra mientras haya una tarjeta roja.
+  acabó o cambió de precio. Toca **Resolver cobro del kiosco**:
+  - si el producto ya está y el precio es el cobrado, cualquiera toca **Reintentar** y se crea el
+    pedido;
+  - un gerente puede **Aceptar con el pago del kiosco** con el pedido como está en su tarjeta
+    (sin lo agotado, con el precio de hoy). Si el total es mayor que lo cobrado, cobra la
+    diferencia en efectivo o terminal en ese momento. Si es menor, no se puede (no hay reembolsos
+    parciales): incluye productos hasta igualar el cobro, o
+  - **Rechazar y reembolsar**: el gerente reembolsa el cobro completo en la app de Clip o
+    Mercado Pago, escribe la nota con el folio del reembolso y confirma; el pedido queda rechazado.
+
+  La caja no cierra mientras haya una tarjeta roja.
 - **Cerrar el día.** El corte muestra «Del kiosco: n · $» bajo cada terminal.
