@@ -45,7 +45,7 @@ import { createLink, revokeLink, rotateLink } from "../server/public-links.js";
 import { acceptHold, inbox, rejectHold } from "../server/public-holds.js";
 import { closeCash } from "../server/cash.js";
 import { saveFiscalProfile } from "../server/fiscal.js";
-import { getOrder } from "../server/orders.js";
+import { getOrder, recordPayment } from "../server/orders.js";
 import {
   createPairing,
   kioskSettingsView,
@@ -62,6 +62,7 @@ import {
   saveLoyaltySettings,
 } from "../server/loyalty/settings.js";
 import { enrollMember } from "../server/loyalty/members.js";
+import { reconcileOrder } from "../server/loyalty/ledger.js";
 import type { LoyaltySettingsView } from "../shared/loyalty.js";
 import { runRetention } from "../server/ops/retention.js";
 import {
@@ -437,7 +438,11 @@ async function order(
   assert.equal(r.status, 200, JSON.stringify(r.body));
   return {
     key,
-    ...(r.body as { checkout: KioskCheckoutView; counterOnly: string | null }),
+    ...(r.body as {
+      checkout: KioskCheckoutView;
+      counterOnly: string | null;
+      member: boolean;
+    }),
   };
 }
 async function charge(k: Kiosk, key: string, operationId = randomUUID()) {
@@ -1657,6 +1662,115 @@ try {
     const done2 = (await sync(k, o2.key)).body as KioskCheckoutView;
     assert.equal(done2.loyalty, null);
     assert.match(done2.joinOffer!.url, /\/club#/);
+    // KIOSK-UX-01: a member's kiosk hold paid at the counter is linked by staff's accept too
+    // (createOrder → linkFromKiosk before the tender), and the club stamps it once.
+    const earns = async (orderId: string) =>
+      (await one(
+        A,
+        (
+          tx,
+        ) => tx`select count(*)::int as n,coalesce(sum(stamps_delta),0)::int as stamps
+            from loyalty_ledger where order_id=${orderId} and kind='earn'`,
+      )) as { n: number; stamps: number };
+    const stampsOf = async () =>
+      (
+        await one(
+          A,
+          (tx) => tx`select stamps from loyalty_members where id=${member.id}`,
+        )
+      ).stamps as number;
+    const linkOf = async (orderId: string) =>
+      one(
+        A,
+        (tx) =>
+          tx`select member_id,via from loyalty_order_links where order_id=${orderId}`,
+      );
+    const settleLoyalty = async (orderId: string) => {
+      await webRunner.drainTenant(A);
+      while (webRunner.running() > 0) await sleep(10);
+      // Vender's and the kiosk sync's reconcile on top of the hook's job: still one earn.
+      await write(owner, (tx) => reconcileOrder(tx, A, orderId));
+    };
+    const toCounter = (key: string) =>
+      call("POST", "/kiosk/counter", {
+        link: k.link,
+        tablet: k.tablet,
+        body: { statusKey: key },
+      });
+    // (a) «Pagar en caja», then «Cobrar y enviar a cocina» with cash.
+    let stamps = await stampsOf();
+    const c1 = await order(k, [line(ids.taco)], 4500, {
+      memberToken: found.body.memberToken,
+    });
+    assert.equal(c1.member, true, "the counter screen's stamp line");
+    assert.equal((await toCounter(c1.key)).status, 200);
+    const c1h = await holdOf(c1.key);
+    const c1a = await write(cashier, (tx) =>
+      acceptHold(tx, cashier, c1h.id, {
+        operationId: randomUUID(),
+        target: { kind: "new" },
+        payment: { method: "cash", amount: 4500, tip: 0, received: 5000 },
+      }),
+    );
+    assert.deepEqual(
+      { ...(await linkOf(c1a.order.id)) },
+      { member_id: member.id, via: "kiosk" },
+    );
+    await settleLoyalty(c1a.order.id);
+    assert.deepEqual(await earns(c1a.order.id), { n: 1, stamps: 1 });
+    assert.equal(await stampsOf(), stamps + 1);
+    // (b) «Pagar en caja», a plain accept (the counter policy), paid later at the counter.
+    stamps = await stampsOf();
+    const c2 = await order(k, [line(ids.taco)], 4500, {
+      memberToken: found.body.memberToken,
+    });
+    assert.equal((await toCounter(c2.key)).status, 200);
+    const c2h = await holdOf(c2.key);
+    const c2a = await write(cashier, (tx) =>
+      acceptHold(tx, cashier, c2h.id, {
+        operationId: randomUUID(),
+        target: { kind: "new" },
+      }),
+    );
+    assert.equal(c2a.order.paid, 0);
+    assert.equal((await linkOf(c2a.order.id)).member_id, member.id);
+    assert.deepEqual(await earns(c2a.order.id), { n: 0, stamps: 0 });
+    await write(cashier, (tx) =>
+      recordPayment(tx, cashier, c2a.order.id, {
+        operationId: randomUUID(),
+        method: "cash",
+        amount: 4500,
+        tip: 0,
+        received: 5000,
+      }),
+    );
+    await settleLoyalty(c2a.order.id);
+    assert.deepEqual(await earns(c2a.order.id), { n: 1, stamps: 1 });
+    assert.equal(await stampsOf(), stamps + 1);
+    // (c) A manager's exception on a hold still at the kiosk (fresh PIN, policy_override).
+    const c3 = await order(k, [line(ids.taco)], 4500, {
+      memberToken: found.body.memberToken,
+    });
+    const c3h = await holdOf(c3.key);
+    const freshManager = session(A, ids.manager, "manager", ids.till, {});
+    const c3a = await write(freshManager, (tx) =>
+      acceptHold(tx, freshManager, c3h.id, {
+        operationId: randomUUID(),
+        target: { kind: "new" },
+      }),
+    );
+    assert.equal((await holdOf(c3.key)).policy_override, true);
+    assert.equal((await linkOf(c3a.order.id)).member_id, member.id);
+    // A non-member's order says nothing about a stamp at the counter.
+    const c4 = await order(k, [line(ids.taco)], 4500);
+    assert.equal(c4.member, false);
+    const c4h = await holdOf(c4.key);
+    await write(manager, (tx) =>
+      rejectHold(tx, manager, c4h.id, {
+        operationId: randomUUID(),
+        reason: "other",
+      }),
+    );
     // Retention: the member reference is blanked 30 days after the checkout, nothing else changes.
     await admin.begin(async (tx) => {
       await tx`alter table kiosk_checkouts disable trigger kiosk_checkouts_transition`;

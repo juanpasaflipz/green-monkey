@@ -363,12 +363,8 @@ export async function acceptHold(
           await tx`select id from payment_attempts where hold_id=${holdId} and id<>${a.id}
             and state in ('created','sending','pending','unknown','approved','review') limit 1`;
         if (other) throw new DomainError("kiosk_charge_in_progress", 409);
+        // createHoldOrder links the member the guest identified at the kiosk (critic R23).
         const r = await createHoldOrder(tx, s, h, p, true);
-        // The member the guest identified at the kiosk (critic R23), as the hold settle does.
-        const [c] =
-          await tx`select loyalty_member_id from kiosk_checkouts where hold_id=${holdId}`;
-        if (c?.loyalty_member_id)
-          await linkFromKiosk(tx, s, r.order.id, c.loyalty_member_id as string);
         const due = r.order.total - r.order.paid;
         if (due < a.amount)
           throw new DomainError("kiosk_charge_above_total", 409);
@@ -505,7 +501,8 @@ export type HoldOrder = {
  * spec §7.3: shared by acceptHold and the kiosk's own accepts): checks, then createOrder or
  * addRound on the hold's own order key, and the round it charged. `paid` says the caller records
  * the payment before finishHoldAccept (staff: recordPayment; kiosk: payments'
- * applyApprovedAttempt), with loyalty's linkFromKiosk right after this (critic R23).
+ * applyApprovedAttempt). A kiosk hold's member is linked here, right after createOrder (critic
+ * R23), so every caller's tender and refresh see the link.
  */
 export async function createHoldOrder(
   tx: Tx,
@@ -608,6 +605,18 @@ export async function createHoldOrder(
         throw new DomainError("public_hold_target_invalid", 409);
       throw e;
     }
+  }
+  // The member the guest identified at the kiosk (critic R23, kiosk spec §2.10; KIOSK-UX-01):
+  // linked right after createOrder on every path that creates a kiosk hold's order (the
+  // kiosk's own accepts, the hold settle, «Cobrar y enviar», a staff accept of a «Pagar en caja»
+  // hold, a manager's exception, «Aceptar con el pago del kiosco»), before any tender or
+  // refresh, so the settle hook stamps it once. A plain read after LO-2b (lockHold locked the
+  // checkout).
+  if (h.channel === "kiosk" && p.target.kind === "new") {
+    const [c] =
+      await tx`select loyalty_member_id from kiosk_checkouts where hold_id=${h.id}`;
+    if (c?.loyalty_member_id)
+      await linkFromKiosk(tx, s, order.id, c.loyalty_member_id as string);
   }
   // The round this hold became: read, never derived from order.version
   // (a void bumps the version without inserting a round).

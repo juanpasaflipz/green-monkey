@@ -20,11 +20,14 @@ export function KioskDone({
   hold,
   locale,
   currency,
+  member = false,
   onReset,
 }: {
   hold: DinerHoldView;
   locale: Locale;
   currency: string;
+  /** The order carries a club member (KIOSK-UX-01): the stamp is added when it is paid. */
+  member?: boolean;
   onReset: () => void;
 }) {
   const t = strings[locale];
@@ -59,6 +62,7 @@ export function KioskDone({
           ? t.publicKioskPayAtCounter
           : t.publicKioskGoToCounter}
       </p>
+      {member && <p className="kiosk-instructions">{t.kioskStampAtCounter}</p>}
       <Button variant="primary" className="kiosk-new" onClick={onReset}>
         {t.publicKioskNewOrder}
       </Button>

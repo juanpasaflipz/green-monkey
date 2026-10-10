@@ -90,6 +90,7 @@ export function KioskCheckout(p: Props) {
   const [hold, setHold] = useState<DinerHoldView | null>(null);
   const [view, setView] = useState<KioskCheckoutView | null>(null);
   const [counterOnly, setCounterOnly] = useState(false);
+  const [member, setMember] = useState(false);
   const [failedOnce, setFailedOnce] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -126,6 +127,7 @@ export function KioskCheckout(p: Props) {
       });
       setHold(r.hold);
       setView(r.checkout);
+      setMember(r.member);
       if (r.checkout.holdState === "accepted") {
         setStep("paid");
         say(fill(t.kioskPaid, { label: r.checkout.label }));
@@ -324,6 +326,7 @@ export function KioskCheckout(p: Props) {
         hold={hold}
         locale={p.locale}
         currency={p.currency}
+        member={member}
         onReset={p.onDone}
       />
     );

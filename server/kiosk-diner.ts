@@ -498,6 +498,7 @@ export async function kioskSubmit(
         ? null
         : (st.counterOnly ?? "unbound")
       : "unbound",
+    member: !!c?.loyalty_member_id,
     zeroTotal:
       placed.created &&
       !!c &&

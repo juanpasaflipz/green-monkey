@@ -126,8 +126,12 @@ approval and decline.
 
 "Soy del club": a 10-digit keypad, device-bound, 5 lookups per device per 5 minutes plus loyalty's
 per-IP limiter. Counts and a masked phone only, never a name; nothing is created at the kiosk. The
-station-bound member token (15 minutes) rides on the order; the settle links the member right after
-createOrder (`linkFromKiosk`), and loyalty stamps on payment through its own hook. A non-member's
+station-bound member token (15 minutes) rides on the order. Every path that turns the hold into
+an order links the member right after createOrder (`linkFromKiosk`, inside `createHoldOrder`): the
+card settle, the zero-total accept, and staff's accepts of a «Pagar en caja» hold («Cobrar y
+enviar», a plain accept, a manager's exception, «Aceptar con el pago del kiosco»). Loyalty stamps
+on payment through its own hook, once. The counter screen says «Tu sello se suma al pagar en
+caja» when the order carries a member (KIOSK-UX-01). A non-member's
 paid order offers loyalty's join QR. The checkout's member reference is blanked at 30 days
 (retention).
 

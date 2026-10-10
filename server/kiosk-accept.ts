@@ -19,7 +19,6 @@ import {
   finishHoldAccept,
   lockHold,
 } from "./public-holds.js";
-import { linkFromKiosk } from "./loyalty/links.js";
 import {
   applyApprovedAttempt,
   jobSession,
@@ -89,14 +88,6 @@ async function settleActor(tx: Tx, a: AttemptRow): Promise<Session> {
   };
 }
 
-/** The member the diner identified at the kiosk, linked right after createOrder (R23). */
-async function linkMember(tx: Tx, s: Session, holdId: string, order: Order) {
-  const [c] =
-    await tx`select loyalty_member_id from kiosk_checkouts where hold_id=${holdId}`;
-  if (c?.loyalty_member_id)
-    await linkFromKiosk(tx, s, order.id, c.loyalty_member_id as string);
-}
-
 const fingerprint = (attemptId: string) =>
   createHash("sha256").update(JSON.stringify({ attemptId })).digest("hex");
 
@@ -151,8 +142,8 @@ export async function settleKioskHoldCharge(
     // The guest already paid: a code deactivated as abuse since still gets its order.
     abuseAcknowledged: true,
   };
+  // createHoldOrder links the member the diner identified at the kiosk (R23).
   const r = await createHoldOrder(tx, s, h, body, true);
-  await linkMember(tx, s, holdId, r.order);
   if (a.amount !== r.order.total - r.order.paid)
     throw new DomainError("kiosk_settle_price_changed", 409);
   const out = await applyApprovedAttempt(tx, s, a, via, manager, r.order.id);
@@ -234,7 +225,6 @@ export async function kioskAccept(
         abuseAcknowledged: false,
       };
       const r = await createHoldOrder(tx, s, h, body, false);
-      await linkMember(tx, s, holdId, r.order);
       await finishHoldAccept(tx, s, h, body, r, {
         paid: false,
         decisionSource: "kiosk",

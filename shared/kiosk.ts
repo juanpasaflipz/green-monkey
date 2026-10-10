@@ -313,6 +313,8 @@ export type KioskSubmitResult = {
   /** Why the kiosk could not take the payment itself: the guest pays at the counter. */
   counterOnly:
     null | "unbound" | "till_closed" | "disabled" | "no_terminal" | "mode";
+  /** The order carries the member the guest identified (the counter screen's stamp line). */
+  member: boolean;
 };
 
 export type KioskStationView = {
