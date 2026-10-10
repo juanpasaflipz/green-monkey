@@ -621,12 +621,12 @@ test("menu photos @cross: the owner uploads through «Subir foto» (no EXIF reac
   ).toBeVisible();
   expect(uploads.length).toBeGreaterThan(0);
   for (const u of uploads) expect(u.includes(Buffer.from("GPS"))).toBe(false);
-  await editor
-    .getByLabel("Descripción (español)", { exact: true })
-    .fill(descEs);
-  await editor
-    .getByLabel("Descripción (inglés, opcional)", { exact: true })
-    .fill(descEn);
+  // By role and accessible name: a label's text (what getByLabel matches) includes the textarea's
+  // initial content, so it stops matching exactly once the product has a description.
+  const description = (name: string) =>
+    editor.getByRole("textbox", { name, exact: true });
+  await description("Descripción (español)").fill(descEs);
+  await description("Descripción (inglés, opcional)").fill(descEn);
   await editor.getByRole("button", { name: "Guardar", exact: true }).click();
   await expect(editor).toHaveCount(0);
   const served = await page.request.get(`/media/${assetId}/card.${ext}`);
@@ -674,6 +674,13 @@ test("menu photos @cross: the owner uploads through «Subir foto» (no EXIF reac
     await axe(kiosk);
     await kiosk.close();
   } finally {
+    // The descriptions go back to what they were, through the same editor (opened from the list
+    // the save above reloaded, so it holds the current version), then the photo is removed.
+    editor = await openEditor();
+    await description("Descripción (español)").fill(before.es);
+    await description("Descripción (inglés, opcional)").fill(before.en);
+    await editor.getByRole("button", { name: "Guardar", exact: true }).click();
+    await expect(editor).toHaveCount(0);
     const fresh = await call(page, "/menu");
     const p = fresh.products.find((x: any) => x.id === product.id);
     if (p.image)
@@ -681,16 +688,6 @@ test("menu photos @cross: the owner uploads through «Subir foto» (no EXIF reac
         operationId: uuid(),
         expectedVersion: p.version,
       });
-    // The descriptions go back to what they were, through the same editor.
-    editor = await openEditor();
-    await editor
-      .getByLabel("Descripción (español)", { exact: true })
-      .fill(before.es);
-    await editor
-      .getByLabel("Descripción (inglés, opcional)", { exact: true })
-      .fill(before.en);
-    await editor.getByRole("button", { name: "Guardar", exact: true }).click();
-    await expect(editor).toHaveCount(0);
     for (const l of [qrLink, kioskLink])
       await call(page, `/ordering/links/${l.id}/revoke`, {
         operationId: uuid(),
