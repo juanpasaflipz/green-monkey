@@ -27,13 +27,14 @@ import {
   type DinerOrderBody,
 } from "./dinerApi";
 import { useKioskIdle } from "./kioskIdle";
+import { IdleWarning } from "./IdleWarning";
 import { DinerMenu } from "./DinerMenu";
 import { DinerCart } from "./DinerCart";
 import { DinerStatus } from "./DinerStatus";
 import { DinerNotice } from "./DinerNotice";
 import { KioskDone } from "./KioskDone";
 import { PrivacyDialog } from "./PrivacyDialog";
-import { Button, Modal } from "../../components/ui";
+import { Button } from "../../components/ui";
 import { PLATFORM_PRIVACY_PATH } from "./dinerRoute";
 import {
   KIOSK_LIMITS,
@@ -915,7 +916,13 @@ export function DinerApp({
         />
       )}
       {idleWarn && (
-        <IdleWarning locale={locale} onContinue={() => setIdleWarn(false)} />
+        <IdleWarning
+          locale={locale}
+          seconds={
+            (KIOSK_TIMING.resetAfterMs - KIOSK_TIMING.warnAfterMs) / 1000
+          }
+          onContinue={() => setIdleWarn(false)}
+        />
       )}
       {offline && (
         <div className="diner-offline" role="alert">
@@ -923,43 +930,5 @@ export function DinerApp({
         </div>
       )}
     </main>
-  );
-}
-
-/** "¿Sigues ahí?": shown 15 s before the kiosk clears the order. */
-function IdleWarning({
-  locale,
-  onContinue,
-}: {
-  locale: Locale;
-  onContinue: () => void;
-}) {
-  const t = strings[locale];
-  const total = (KIOSK_TIMING.resetAfterMs - KIOSK_TIMING.warnAfterMs) / 1000;
-  const [seconds, setSeconds] = useState(total);
-  useEffect(() => {
-    const started = Date.now();
-    const timer = setInterval(
-      () =>
-        setSeconds(
-          Math.max(0, total - Math.floor((Date.now() - started) / 1000)),
-        ),
-      1000,
-    );
-    return () => clearInterval(timer);
-  }, []);
-  return (
-    <Modal
-      title={t.publicIdleTitle}
-      close={onContinue}
-      closeLabel={t.publicIdleContinue}
-      footer={
-        <Button variant="primary" onClick={onContinue}>
-          {t.publicIdleContinue}
-        </Button>
-      }
-    >
-      <p>{fill(t.publicIdleBody, { seconds })}</p>
-    </Modal>
   );
 }

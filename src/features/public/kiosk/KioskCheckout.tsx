@@ -8,6 +8,7 @@ import type { Locale } from "../../../../shared/domain";
 import type { DinerHoldView } from "../../../../shared/public-ordering";
 import {
   KIOSK_IDLE,
+  idleDeadline,
   payButtons,
   type KioskCheckoutView,
   type KioskMenuBlock,
@@ -19,6 +20,7 @@ import { fill, moneyFormatter } from "../../menu/format";
 import { guestError } from "../dinerApi";
 import { KioskDone } from "../KioskDone";
 import { createIdleController } from "../kioskIdle";
+import { IdleWarning } from "../IdleWarning";
 import { kioskApi, type KioskOrderBody } from "./kioskApi";
 
 export type KioskStep =
@@ -105,6 +107,29 @@ export function cancelsOnReset(
 }
 
 /**
+ * The idle timers of a checkout screen (§2.12; pure, tests/kiosk.test.ts). «¿Para aquí o para
+ * llevar?», pay, declined and unavailable ask «¿Sigues ahí?» 25 s before their 120 s reset
+ * (KIOSK-UX-05, WCAG 2.2.1), like the menu with a cart; the done screens reset without asking;
+ * charging, «La terminal sigue procesando» and the counter code have their own clocks.
+ */
+export function checkoutIdle(step: KioskStep): {
+  warnAt: number | null;
+  resetAt: number | null;
+} {
+  if (
+    step === "pay" ||
+    step === "fulfillment" ||
+    step === "declined" ||
+    step === "unavailable"
+  )
+    return idleDeadline("pay", { cartEmpty: false });
+  if (step === "paid") return idleDeadline("done_paid", { cartEmpty: true });
+  if (step === "paidNoOrder" || step === "askCounter")
+    return idleDeadline("done_counter", { cartEmpty: true });
+  return { warnAt: null, resetAt: null };
+}
+
+/**
  * Whether «Soy del club» is offered (KIOSK-UX-02; pure, tests/kiosk.test.ts). The member token
  * travels only in the body of the one submit (critic R20: one kiosk member route, no attach to a
  * placed hold), so the button shows on the menu and on «¿Para aquí o para llevar?», never once
@@ -150,6 +175,7 @@ export function KioskCheckout(p: Props) {
   // KIOSK-UX-03: «Cancelar cobro» shows after a while; the reader refused the cancel.
   const [cancelOffered, setCancelOffered] = useState(false);
   const [onTerminal, setOnTerminal] = useState(false);
+  const [idleWarn, setIdleWarn] = useState(false);
   const keys = useRef({ operationId: crypto.randomUUID(), statusKey: "" });
   const fulfillment = useRef<"here" | "to_go">("to_go");
   const chargeOp = useRef<string | null>(null);
@@ -368,20 +394,10 @@ export function KioskCheckout(p: Props) {
     return () => clearTimeout(offer);
   }, [step]);
 
-  // Screens that end on their own.
+  // Screens that end on their own; the checkout screens ask «¿Sigues ahí?» first (KIOSK-UX-05).
   useEffect(() => {
-    const ms =
-      step === "paid"
-        ? KIOSK_IDLE.donePaidMs
-        : step === "paidNoOrder" || step === "askCounter"
-          ? KIOSK_IDLE.doneCounterMs
-          : step === "pay" ||
-              step === "fulfillment" ||
-              step === "declined" ||
-              step === "unavailable"
-            ? KIOSK_IDLE.payResetMs
-            : null;
-    if (ms === null) return;
+    const { warnAt, resetAt } = checkoutIdle(step);
+    if (resetAt === null) return;
     // The guest walked away from the card checkout: the hold is cancelled, so staff never see an
     // unpaid order to send to the kitchen (KIOSK-MONEY-3). Best effort: one that stays expires.
     const onReset = () => {
@@ -389,12 +405,20 @@ export function KioskCheckout(p: Props) {
         void kioskApi.cancel(p.token, keys.current.statusKey).catch(() => {});
       p.onDone();
     };
-    const c = createIdleController({ resetAfterMs: ms, onReset });
+    const c = createIdleController({
+      warnAfterMs: warnAt,
+      resetAfterMs: resetAt,
+      onWarn: () => setIdleWarn(true),
+      onReset,
+    });
     const activity = () => c.activity();
     window.addEventListener("pointerdown", activity);
+    window.addEventListener("keydown", activity);
     return () => {
       c.dispose();
+      setIdleWarn(false);
       window.removeEventListener("pointerdown", activity);
+      window.removeEventListener("keydown", activity);
     };
   }, [step]);
 
@@ -570,6 +594,15 @@ export function KioskCheckout(p: Props) {
       )}
       {step === "paid" && view && (
         <KioskPaid view={view} locale={p.locale} onDone={p.onDone} />
+      )}
+      {idleWarn && (
+        <IdleWarning
+          locale={p.locale}
+          seconds={
+            (KIOSK_IDLE.payResetMs - KIOSK_IDLE.payWarnAfterMs) / 1000
+          }
+          onContinue={() => setIdleWarn(false)}
+        />
       )}
     </section>
   );

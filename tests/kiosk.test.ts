@@ -24,12 +24,14 @@ import { cardOffText } from "../src/features/public/KioskSettings";
 import {
   afterCancel,
   cancelsOnReset,
+  checkoutIdle,
   memberLookupOpen,
   stepFor,
   terminalExits,
   type KioskStep,
 } from "../src/features/public/kiosk/KioskCheckout";
 import { cartInputs } from "../src/features/public/DinerApp";
+import { createIdleController } from "../src/features/public/kioskIdle";
 import { priceCart } from "../shared/service";
 import {
   keepAwake,
@@ -159,6 +161,47 @@ describe("idle (§2.12, WCAG 2.2.1)", () => {
     expect(
       KIOSK_IDLE.chargeTimeoutMs + KIOSK_IDLE.inProgressExtraMs,
     ).toBeLessThanOrEqual(KIOSK_IDLE.chargeSuspendMaxMs);
+  });
+  it("KIOSK-UX-05: «¿Para aquí…?», pay, declined and unavailable ask «¿Sigues ahí?» 25 s before the 120 s reset", () => {
+    const steps: KioskStep[] = ["fulfillment", "pay", "declined", "unavailable"];
+    for (const step of steps) {
+      const d = checkoutIdle(step);
+      expect(d, step).toEqual({ warnAt: 95_000, resetAt: 120_000 });
+      expect(d.resetAt! - d.warnAt!, step).toBeGreaterThanOrEqual(20_000);
+    }
+    expect(checkoutIdle("paid")).toEqual({ warnAt: null, resetAt: 30_000 });
+    for (const step of ["paidNoOrder", "askCounter"] as KioskStep[])
+      expect(checkoutIdle(step), step).toEqual({ warnAt: null, resetAt: 20_000 });
+    // Charging and «sigue procesando» run on the poll's clock; the counter code on KioskDone's.
+    for (const step of ["submitting", "charging", "still", "counter"] as KioskStep[])
+      expect(checkoutIdle(step), step).toEqual({ warnAt: null, resetAt: null });
+  });
+  it("KIOSK-UX-05: on the pay screen the warning comes at 95 s, a touch re-arms it, the reset at 120 s", () => {
+    vi.useFakeTimers();
+    try {
+      const { warnAt, resetAt } = checkoutIdle("pay");
+      const onWarn = vi.fn();
+      const onReset = vi.fn();
+      const c = createIdleController({
+        warnAfterMs: warnAt,
+        resetAfterMs: resetAt!,
+        onWarn,
+        onReset,
+      });
+      vi.advanceTimersByTime(94_999);
+      expect(onWarn).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onWarn).toHaveBeenCalledTimes(1);
+      c.activity(); // «Sigo aquí»
+      vi.advanceTimersByTime(119_999);
+      expect(onWarn).toHaveBeenCalledTimes(2);
+      expect(onReset).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onReset).toHaveBeenCalledTimes(1);
+      c.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

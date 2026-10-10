@@ -47,6 +47,9 @@ export const KIOSK_COOKIE_MAX_AGE_SECONDS = 34_560_000;
 export const KIOSK_IDLE = {
   warnAfterMs: 70_000,
   resetAfterMs: 95_000,
+  /** The checkout screens (pay, «¿Para aquí…?», declined, unavailable) warn 25 s before their
+   * 120 s reset (KIOSK-UX-05; WCAG 2.2.1). */
+  payWarnAfterMs: 95_000,
   payResetMs: 120_000,
   donePaidMs: 30_000,
   doneCounterMs: 20_000,
@@ -505,7 +508,8 @@ export function idleDeadline(
   if (screen === "welcome") return { warnAt: null, resetAt: null };
   if (screen === "charging")
     return { warnAt: null, resetAt: KIOSK_IDLE.chargeSuspendMaxMs };
-  if (screen === "pay") return { warnAt: null, resetAt: KIOSK_IDLE.payResetMs };
+  if (screen === "pay")
+    return { warnAt: KIOSK_IDLE.payWarnAfterMs, resetAt: KIOSK_IDLE.payResetMs };
   if (screen === "done_paid")
     return { warnAt: null, resetAt: KIOSK_IDLE.donePaidMs };
   if (screen === "done_counter")
