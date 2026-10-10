@@ -2018,6 +2018,18 @@ th {
   .cart-heading .eyebrow {
     margin-bottom: 0;
   }
+  /* The order's label stays on one line beside the badges and the print and «Pantalla» buttons:
+     a wrapped «Nueva orden» makes the heading taller and pushes the third dine-in line off a
+     10-inch screen. The status badge, which already truncates, gives up the width instead. */
+  .cart-title {
+    flex: none;
+    max-width: 50%;
+  }
+  .cart-title .eyebrow {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   .cart-badges {
     flex-wrap: nowrap;
   }

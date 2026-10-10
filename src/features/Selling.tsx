@@ -1601,7 +1601,7 @@ export function Selling({
   const cartPanel = (
     <>
       <div className="cart-heading">
-        <div>
+        <div className="cart-title">
           <span className="eyebrow">
             {current ? orderLabel(current, today, locale) : t("newOrder")}
           </span>
