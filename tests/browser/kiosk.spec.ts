@@ -515,3 +515,141 @@ test("menu photos: an owner uploads a photo (its EXIF never reaches the server) 
     (await page.request.get(`/media/${image.id}/card.webp`)).status(),
   ).toBe(404);
 });
+
+test("Importar fotos: the owner picks a manifest and generated photos, reviews the proposed products (an unmatched item and a missing file are reported), imports through the normal upload, and a second run imports nothing new", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await login(page);
+  const caps = await call(page, "/capabilities");
+  test.skip(
+    !caps.menuPhotos?.enabled,
+    "needs MEDIA_STORE (fs in local runs and CI)",
+  );
+  const menu = await call(page, "/menu");
+  const byName = (es: string) =>
+    menu.products.find((p: any) => p.name.es === es);
+  const cafe = byName("Café de olla");
+  const flan = byName("Flan de vainilla");
+  const brownie = byName("Brownie de cacao");
+  for (const p of [cafe, flan, brownie]) expect(p.image ?? null).toBeNull();
+  const manifest = {
+    format: "gm-menu-media-v1",
+    source: "sistema ficticio",
+    items: [
+      { id: "ficticio-1", name: "CAFE DE OLLA", file: "cafe-ficticio.png" },
+      { id: "ficticio-2", name: "flan de vainilla", file: "flan-ficticio.png" },
+      {
+        id: "ficticio-3",
+        name: "Pozole inventado",
+        file: "pozole-ficticio.png",
+      },
+      { id: "ficticio-4", name: "Brownie de cacao", file: "no-descargada.png" },
+    ],
+  };
+  const photos = [
+    {
+      name: "cafe-ficticio.png",
+      mimeType: "image/png",
+      buffer: pngWithExif(640, 480),
+    },
+    {
+      name: "flan-ficticio.png",
+      mimeType: "image/png",
+      buffer: pngWithExif(500, 500),
+    },
+    {
+      name: "pozole-ficticio.png",
+      mimeType: "image/png",
+      buffer: pngWithExif(300, 200),
+    },
+  ];
+  const uploads: string[] = [];
+  page.on("request", (r) => {
+    if (/\/api\/menu\/products\/[^/]+\/image$/.test(r.url()))
+      uploads.push(r.headers()["x-gm-import-item"] ?? "");
+  });
+  async function open() {
+    await page
+      .getByRole("button", { name: "Importar fotos", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", {
+      name: "Importar fotos del sistema anterior",
+    });
+    await dialog.getByLabel("Manifiesto (JSON)").setInputFiles({
+      name: "manifiesto.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(manifest)),
+    });
+    await dialog.getByLabel("Fotos (JPG, PNG o WebP)").setInputFiles(photos);
+    await expect(dialog.getByText("3 fotos elegidas")).toBeVisible();
+    await dialog.getByRole("button", { name: "Revisar", exact: true }).click();
+    return dialog;
+  }
+  await page
+    .getByRole("button", { name: "Menú e inventario", exact: true })
+    .click();
+  await expect(page.getByRole("tab", { name: "Productos" })).toBeVisible();
+  try {
+    const dialog = await open();
+    await expect(
+      dialog.getByText(
+        "2 listas · 1 sin producto · 1 sin archivo · 0 ya con foto · 0 repetidas",
+      ),
+    ).toBeVisible();
+    // The proposal ignores case and accents; the owner reviews it before importing.
+    await expect(dialog.getByLabel("Producto aquí: CAFE DE OLLA")).toHaveValue(
+      cafe.id,
+    );
+    await expect(
+      dialog.getByLabel("Producto aquí: Pozole inventado"),
+    ).toHaveValue("");
+    await axe(page);
+    await dialog.getByRole("button", { name: "Importar 2 fotos" }).click();
+    const done = dialog.getByRole("status").filter({ hasText: "Listo:" });
+    await expect(done).toContainText("Listo: 2 importadas, 2 sin importar.", {
+      timeout: 90_000,
+    });
+    await expect(done).toContainText("El reporte quedó en la bitácora.");
+    // The report lists what was not imported and why.
+    await expect(
+      dialog.getByRole("row", { name: /Pozole inventado/ }),
+    ).toContainText("Sin producto");
+    await expect(
+      dialog.getByRole("row", { name: /Brownie de cacao/ }),
+    ).toContainText("Falta el archivo");
+    expect(uploads.sort()).toEqual(["ficticio-1", "ficticio-2"]);
+    await dialog.getByRole("button", { name: "Cerrar" }).last().click();
+    const after = await call(page, "/menu");
+    const image = (p: any) =>
+      after.products.find((x: any) => x.id === p.id).image ?? null;
+    expect(image(cafe)?.w).toBe(640);
+    expect(image(flan)?.w).toBe(500);
+    expect(image(brownie)).toBeNull();
+    expect(
+      (await page.request.get(`/media/${image(cafe).id}/thumb.webp`)).status(),
+    ).toBe(200);
+    // A second run with the same manifest and photos: both products keep their photo.
+    const again = await open();
+    await expect(
+      again.getByText(
+        "0 listas · 1 sin producto · 1 sin archivo · 2 ya con foto · 0 repetidas",
+      ),
+    ).toBeVisible();
+    await expect(
+      again.getByRole("button", { name: "Importar 0 fotos" }),
+    ).toBeDisabled();
+    await again.getByRole("button", { name: "Cerrar" }).first().click();
+    expect(uploads).toHaveLength(2);
+  } finally {
+    const fresh = await call(page, "/menu");
+    for (const p of [cafe, flan]) {
+      const now = fresh.products.find((x: any) => x.id === p.id);
+      if (now.image)
+        await call(page, `/menu/products/${p.id}/image/remove`, {
+          operationId: uuid(),
+          expectedVersion: now.version,
+        });
+    }
+  }
+});

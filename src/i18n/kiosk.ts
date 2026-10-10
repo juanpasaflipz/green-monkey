@@ -146,6 +146,7 @@ export default defineArea({
     kioskOpRefused: "Kiosco: cobro aprobado sin pedido",
     kioskOpMediaAttached: "Menú: foto guardada",
     kioskOpMediaRemoved: "Menú: foto quitada",
+    kioskOpMediaImport: "Menú: importación de fotos",
     kioskOpSuggestions: "Menú: sugerencias guardadas",
   },
   en: {
@@ -287,6 +288,7 @@ export default defineArea({
     kioskOpRefused: "Kiosk: approved payment without an order",
     kioskOpMediaAttached: "Menu: photo saved",
     kioskOpMediaRemoved: "Menu: photo removed",
+    kioskOpMediaImport: "Menu: photo import",
     kioskOpSuggestions: "Menu: suggestions saved",
   },
   errors: {

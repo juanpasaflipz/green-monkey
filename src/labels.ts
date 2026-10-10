@@ -173,6 +173,7 @@ const operations: Record<string, Key> = {
   "kiosk.settle_refused": "kioskOpRefused",
   "menu.media.attached": "kioskOpMediaAttached",
   "menu.media.removed": "kioskOpMediaRemoved",
+  "menu.media.import": "kioskOpMediaImport",
   "menu.suggestions_saved": "kioskOpSuggestions",
 };
 const stockCauses: Record<string, Key> = {

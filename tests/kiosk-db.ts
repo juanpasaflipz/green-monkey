@@ -66,6 +66,7 @@ import type { LoyaltySettingsView } from "../shared/loyalty.js";
 import { runRetention } from "../server/ops/retention.js";
 import {
   mediaRoute,
+  recordMediaImport,
   removeProductImage,
   uploadProductImage,
 } from "../server/media.js";
@@ -2382,6 +2383,113 @@ try {
     assert.equal(hl.state, "accepted");
     assert.equal(hl.decision_source, "kiosk");
     assert.equal(retried.order?.paid, 3500);
+  });
+
+  await test("K25. «Importar fotos» (R42/Q7): an upload tagged with its import run names it in the photo's audit row; its replay-safe operation id never stores a second copy; the run's report is one manager's audit row with every item's outcome, refused when it claims an asset that does not exist", async () => {
+    const batchId = randomUUID();
+    const before = await one(
+      A,
+      (tx) => tx`select data from catalog where id=${ids.gratis}`,
+    );
+    assert.equal(before.data.image ?? null, null);
+    const op = randomUUID();
+    const tagged = (importRef: unknown) =>
+      uploadProductImage(
+        sql,
+        manager,
+        { operationId: op, productId: ids.gratis, importRef },
+        uploadBody(800, 600),
+      );
+    await assert.rejects(tagged({ batchId, sourceId: "id con espacio" }));
+    const first = await tagged({ batchId, sourceId: "ficticio-1" });
+    const again = await tagged({ batchId, sourceId: "ficticio-1" });
+    assert.equal(again.image!.id, first.image!.id, "the replay answers it");
+    const copies = await one(
+      A,
+      (tx) =>
+        tx`select count(*)::int as n from menu_media where created_by=${ids.manager} and created_at>now()-interval '1 minute'`,
+    );
+    assert.equal(copies.n, 1);
+    const attached = await one(
+      A,
+      (tx) =>
+        tx`select detail from audit where operation='menu.media.attached' and entity_id=${ids.gratis}
+          order by created_at desc limit 1`,
+    );
+    assert.deepEqual(attached.detail.via, {
+      kind: "menu_import",
+      batchId,
+      sourceId: "ficticio-1",
+    });
+    const report = {
+      operationId: batchId,
+      source: "pos-lite",
+      manifestSha256: "a".repeat(64),
+      replace: false,
+      items: [
+        {
+          id: "ficticio-1",
+          name: "Salsa inventada",
+          productId: ids.gratis,
+          outcome: "imported",
+          assetId: first.image!.id,
+        },
+        {
+          id: "ficticio-2",
+          name: "Pozole inventado",
+          productId: null,
+          outcome: "unmatched",
+        },
+        {
+          id: "ficticio-3",
+          name: "Taco ficticio",
+          productId: ids.taco,
+          outcome: "missing_file",
+        },
+      ],
+    };
+    await rejects(
+      write(cashier, (tx) => recordMediaImport(tx, cashier, report)),
+      "forbidden",
+    );
+    await rejects(
+      write(manager, (tx) =>
+        recordMediaImport(tx, manager, {
+          ...report,
+          operationId: randomUUID(),
+          items: [{ ...report.items[0], assetId: randomUUID() }],
+        }),
+      ),
+      "not_found",
+    );
+    const saved = await write(manager, (tx) =>
+      recordMediaImport(tx, manager, report),
+    );
+    assert.deepEqual(saved.counts, {
+      imported: 1,
+      unmatched: 1,
+      missing_file: 1,
+    });
+    const replay = await write(manager, (tx) =>
+      recordMediaImport(tx, manager, report),
+    );
+    assert.deepEqual(replay, saved);
+    const rows = await asOwner(
+      A,
+      (tx) =>
+        tx`select actor_id,detail from audit where operation='menu.media.import' and entity_id=${batchId}`,
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].actor_id, ids.manager);
+    assert.deepEqual(
+      rows[0].detail.items.map((i: any) => [i.id, i.outcome]),
+      [
+        ["ficticio-1", "imported"],
+        ["ficticio-2", "unmatched"],
+        ["ficticio-3", "missing_file"],
+      ],
+    );
+    assert.equal(rows[0].detail.items[1].name, "Pozole inventado");
   });
 
   assert.deepEqual(dead, [], "no job went dead");

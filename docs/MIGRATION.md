@@ -118,8 +118,10 @@ detailed steps are in their sections above; this is the order. PILOT_SOP §10 po
 6. **One low-value real charge per terminal**, then cancel or refund it.
 7. **Kiosk** (KIOSK.md §4): uninstall the APK; add the kiosk link and its station (terminal and
    receiving till); pair the tablet; the field checks (LAUNCH_HANDOFF); set «Cobro en el kiosco».
-   Photos and descriptions: the owner uploads them in the product editor (the in-app import of
-   pos-lite's photos, critic R42/Q7, is still open: see KIOSK.md); curated suggestions per product
+   Photos: the operator downloads pos-lite's product photos and writes the `gm-menu-media-v1`
+   manifest (KIOSK.md §7); the owner runs **Importar fotos**, reviews the mapping and imports
+   (critic R42/Q7; re-running it is safe). Descriptions are typed in the product editor. Curated
+   suggestions per product
    and for the cart (pos-lite's last curated set was Orden Papas, Brownie con crema, Refresco,
    Cerveza and CHELA 3X2).
 8. **Club settings**: attestation, enable.

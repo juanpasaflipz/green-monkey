@@ -18,7 +18,8 @@ import { Button } from "../../components/ui";
 
 type Result = { productId: string; version: number; image: Product["image"] };
 
-async function encode(file: File): Promise<Blob> {
+/** The original checked by its bytes, then the three WebP variants as one upload body. */
+export async function encodePhoto(file: File): Promise<Blob> {
   const head = new Uint8Array(await file.slice(0, 256 * 1024).arrayBuffer());
   const problem = checkOriginal(head, file.size);
   if (problem) throw new Error(problem);
@@ -78,7 +79,7 @@ export function ProductPhotoField({
     setBusy(true);
     setError("");
     try {
-      const body = await encode(file);
+      const body = await encodePhoto(file);
       const r = await api<Result>(
         `/menu/products/${product.id}/image`,
         {},

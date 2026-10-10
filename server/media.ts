@@ -33,6 +33,7 @@ import {
   type MediaVariant,
 } from "../shared/media.js";
 import { z } from "zod";
+import { importRef, mediaImportReportInput } from "../shared/media-import.js";
 
 export type ProcessedVariant = {
   name: MediaVariant;
@@ -134,7 +135,14 @@ const LRU_MAX = 2000,
 export const forgetMedia = (assetId?: string) =>
   assetId ? lru.delete(assetId) : lru.clear();
 
-const uploadInput = z.object({ operationId: id, productId: id }).strict();
+const uploadInput = z
+  .object({
+    operationId: id,
+    productId: id,
+    /** «Importar fotos» (R42/Q7): the import run and item this upload belongs to. */
+    importRef: importRef.optional(),
+  })
+  .strict();
 
 /**
  * POST /api/menu/products/:id/image (owners and managers): the three variants as one raw body.
@@ -145,7 +153,7 @@ const uploadInput = z.object({ operationId: id, productId: id }).strict();
 export async function uploadProductImage(
   sql: postgres.Sql,
   s: Session,
-  raw: { operationId: unknown; productId: unknown },
+  raw: { operationId: unknown; productId: unknown; importRef?: unknown },
   body: Buffer,
 ): Promise<ImageResult> {
   permit(s, managers);
@@ -239,11 +247,59 @@ export async function uploadProductImage(
           await audit(tx, s, "menu.media.attached", p.productId, {
             assetId,
             previous: old.data.image?.id ?? null,
+            ...(p.importRef
+              ? { via: { kind: "menu_import", ...p.importRef } }
+              : {}),
           });
           return { productId: p.productId, version: data.version, image };
         },
       ),
     );
+  });
+}
+
+/**
+ * POST /api/menu/media-import (owners and managers): «Importar fotos»'s report, one audit row per
+ * run under its own operation id (the photos were each attached by the upload route, tagged with
+ * the run). It records what was imported and what was not and why (no product, no file, already
+ * a photo, a product two items named, failed), so the unmatched items stay on record.
+ */
+export async function recordMediaImport(
+  tx: Tx,
+  s: Session,
+  raw: unknown,
+): Promise<{ batchId: string; counts: Record<string, number> }> {
+  permit(s, managers);
+  const p = mediaImportReportInput.parse(raw);
+  return once(tx, s, p.operationId, "menu.media.import", p, async () => {
+    const counts: Record<string, number> = {};
+    for (const item of p.items)
+      counts[item.outcome] = (counts[item.outcome] ?? 0) + 1;
+    // An item reported imported names an asset this restaurant attached to that product.
+    const claimed = p.items.filter((i) => i.outcome === "imported");
+    if (claimed.some((i) => !i.assetId || !i.productId))
+      throw new DomainError("invalid_input");
+    if (claimed.length) {
+      const [found] = await tx`select count(*)::int as n from menu_media
+        where id=any(${tx.array(claimed.map((i) => i.assetId!))}::uuid[])`;
+      if (found.n !== new Set(claimed.map((i) => i.assetId)).size)
+        throw new DomainError("not_found", 404);
+    }
+    await audit(tx, s, "menu.media.import", p.operationId, {
+      source: p.source,
+      manifestSha256: p.manifestSha256,
+      replace: p.replace,
+      counts,
+      items: p.items.map((i) => ({
+        id: i.id,
+        name: i.name,
+        productId: i.productId,
+        outcome: i.outcome,
+        ...(i.assetId ? { assetId: i.assetId } : {}),
+        ...(i.code ? { code: i.code } : {}),
+      })),
+    });
+    return { batchId: p.operationId, counts };
   });
 }
 

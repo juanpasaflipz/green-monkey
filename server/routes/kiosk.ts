@@ -16,7 +16,11 @@ import {
   saveStation,
   saveSuggestions,
 } from "../kiosk-settings.js";
-import { removeProductImage, uploadProductImage } from "../media.js";
+import {
+  recordMediaImport,
+  removeProductImage,
+  uploadProductImage,
+} from "../media.js";
 import { kioskReport } from "../kiosk-report.js";
 import { snapshotTenant } from "../reports/snapshot.js";
 
@@ -46,6 +50,15 @@ function uploadRoute(app: express.Express, sql: postgres.Sql) {
             {
               operationId: req.get("x-gm-operation-id"),
               productId: id.parse(req.params.id),
+              // «Importar fotos»: the run and its item, named in the photo's audit row.
+              ...(req.get("x-gm-import")
+                ? {
+                    importRef: {
+                      batchId: req.get("x-gm-import"),
+                      sourceId: req.get("x-gm-import-item") ?? "",
+                    },
+                  }
+                : {}),
             },
             req.body,
           ),
@@ -102,6 +115,9 @@ export function register({ app, sql, route }: RouteContext) {
   );
   route("post", "/menu/products/:id/suggestions", (tx, s, req) =>
     saveSuggestions(tx, s, String(req.params.id), req.body),
+  );
+  route("post", "/menu/media-import", (tx, s, req) =>
+    recordMediaImport(tx, s, req.body),
   );
   route("post", "/menu/products/:id/image/remove", (tx, s, req) =>
     removeProductImage(tx, s, String(req.params.id), req.body),

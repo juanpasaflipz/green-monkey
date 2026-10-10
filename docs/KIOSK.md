@@ -144,6 +144,45 @@ max-age=31536000, immutable`, ETag = the variant's sha256, `nosniff`, `default-s
 within the 10-minute cache). Web jobs: `media_purge` deletes the objects 7 days after removal;
 `media_stale` sweeps an upload that never finished (1 hour).
 
+**Importing photos from the previous system (critic R42/Q7, «Importar fotos»).** An in-app owner
+import replaces the support CLI (no support write path, no store credentials on an operator's
+machine). The operator downloads the old system's product photos into one folder and writes a
+manifest next to them:
+
+```json
+{
+  "format": "gm-menu-media-v1",
+  "source": "pos-lite",
+  "items": [
+    { "id": "101", "name": "Taco de ejemplo", "file": "101.jpg" },
+    { "id": "102", "name": "Agua de ejemplo", "file": "102.png" }
+  ]
+}
+```
+
+- `format` is exactly `gm-menu-media-v1`; `source` is a label (1–40 characters) kept in the report.
+- `items`: 1–500 entries with exactly these keys. `id` is the old system's product id (1–64 of
+  `A–Z a–z 0–9 _ . : -`, unique), `name` its product name (1–120 characters, used to propose the
+  match), `file` the image's file name as saved (no folder, no URL, no control characters).
+- The images are JPG, PNG or WebP, 10 MB and 40 megapixels at most (the upload's own limits).
+  Option images and descriptions are not imported (descriptions are typed in the product editor).
+
+Menú e inventario → Productos → **Importar fotos** (owners and managers): choose the manifest and
+all the photos, then **Revisar**. Each item proposes the one active product whose Spanish or
+English name equals the item's name ignoring accents, case, punctuation and spacing; no match,
+several matches or a product an earlier item already took stay «— No importar —» until the owner
+picks one. The status column reads Lista, Sin producto, Falta el archivo, Ya tiene foto (skipped
+unless «Reemplazar las fotos que ya existen») or Producto repetido. **Importar N fotos** sends each
+photo through the normal upload (the browser's check and WebP re-encode, the server's validation),
+one at a time; past the 30 uploads per 10 minutes it waits and resumes by itself. Each upload's
+operation id is derived from the product, its version and the file's bytes, so a retried request
+or a second tab never stores a second copy, and a re-run skips the products that already got their
+photo. Audit: each photo's `menu.media.attached` row carries `via: {kind: "menu_import", batchId,
+sourceId}`, and the run's report is one `menu.media.import` row (Bitácora «Menú: importación de
+fotos») with every item's outcome (imported with its asset, unmatched, missing file, already had a
+photo, repeated product, failed with its code). The screen ends on the list of items not imported
+and why.
+
 ## 8. Kill switches
 
 | Variable | Default | Off |
