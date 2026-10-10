@@ -1376,8 +1376,12 @@ describe("restaurant-day.yml: the go-live gate (specs/acceptance.md §13)", () =
         "security",
         "restaurant-day",
         "restaurant-day-cfdi",
+        "restaurant-day-payments",
       ]),
     );
+    // Branches P and S (payments and the kiosk) run in their own job against the payments
+    // fake (LD-80, LD-89); it became required once it was green on main (LD-104).
+    expect(job("day-payments")).toContain("name: restaurant-day-payments\n");
     expect(job("day-cfdi")).toContain(
       "if: needs.cfdi-key.outputs.present == 'true'",
     );

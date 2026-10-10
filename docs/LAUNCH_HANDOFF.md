@@ -219,7 +219,8 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
   `ALERT_WEBHOOK_KIND`; the repository variables pin `RAILWAY_CLI_VERSION` and
   `RAILWAY_IAC_VERSION`.
 - **Required checks after the release merge (lead, not you).** `ops/github/main-ruleset.json`
-  also lists `restaurant-day` and `restaurant-day-cfdi`. The lead re-applies it with
+  also lists `restaurant-day`, `restaurant-day-cfdi` and `restaurant-day-payments` (the
+  payments and kiosk branches P and S, LD-104). The lead re-applies it with
   `github-protect.sh` right after the release pull request merges (applying it earlier
   would block pull requests before the workflow exists on `main`; LD-57). See section 3.
 - **Production: done for the deploy (2026-10-08, LD-69).** The `production` environment
