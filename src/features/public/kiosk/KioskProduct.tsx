@@ -146,7 +146,10 @@ export function SuggestionStrip({
             type="button"
             key={p.id}
             className="kiosk-suggestion"
-            aria-label={`${p.name[locale]}, ${money(p.price)}`}
+            aria-label={fill(strings[locale].kioskSuggestionAdd, {
+              name: p.name[locale],
+              price: money(p.price),
+            })}
             onClick={() => onAdd(p)}
           >
             <ProductPhoto

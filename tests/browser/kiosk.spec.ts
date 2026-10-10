@@ -394,6 +394,18 @@ test("kiosk card payment: pairing from Configuración, para aquí, the card appr
     const hold = inbox.holds.find((h: any) => h.label === counterLabel);
     expect(hold.kiosk.paymentChoice).toBe("counter");
     expect(hold.kiosk.charging).toBe(false);
+    // The cashier collects it and sends it to the kitchen (the inbox is left as it was found).
+    const accepted = await call(page, `/ordering/holds/${hold.id}/accept`, {
+      operationId: uuid(),
+      target: { kind: "new" },
+      payment: {
+        method: "cash",
+        amount: hold.currentTotal,
+        tip: 0,
+        received: hold.currentTotal,
+      },
+    });
+    expect(accepted.hold.state).toBe("accepted");
     expect(label).not.toBe(counterLabel);
   } finally {
     await tearDown(page, s).catch((e) =>
