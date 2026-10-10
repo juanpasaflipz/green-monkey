@@ -80,6 +80,19 @@ export type Draft = { lines: DraftLine[]; name: string; note: string };
  * server keeps on the hold, not part of a priced line (quote's line input is strict, so a
  * suggestion line would read as invalid and block the cart). Diner lines carry no note.
  */
+/**
+ * «Agregado: {name}» for the live region; the same text twice in a row gets a trailing no-break
+ * space, so a second tap on the same product is announced again (KIOSK-UX-15).
+ */
+export function addedAnnouncement(
+  name: string,
+  locale: Locale,
+  previous: string,
+): string {
+  const text = fill(strings[locale].publicAdded, { name });
+  return previous === text ? text + "\u00a0" : text;
+}
+
 export const cartInputs = (lines: DraftLine[]) =>
   lines.map(({ origin: _origin, ...l }) => ({ ...l, note: "" }));
 /** A diner's own order on this phone (QR only, sessionStorage). */
@@ -347,6 +360,10 @@ export function DinerApp({
   }
   function add(p: Product, options: string[] = [], origin?: "suggestion") {
     setSheet(null);
+    // KIOSK-UX-15 (§2.12): every addition is spoken, also a suggestion that closes its sheet.
+    setAnnounce((previous) =>
+      addedAnnouncement(p.name[locale], locale, previous),
+    );
     edit((d) => {
       const same = d.lines.find(
         (l) =>

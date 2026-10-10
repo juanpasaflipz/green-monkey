@@ -50,11 +50,15 @@ import {
   cancelsOnReset,
   checkoutIdle,
   memberLookupOpen,
+  stepAnnouncement,
   stepFor,
   terminalExits,
   type KioskStep,
 } from "../src/features/public/kiosk/KioskCheckout";
-import { cartInputs } from "../src/features/public/DinerApp";
+import {
+  addedAnnouncement,
+  cartInputs,
+} from "../src/features/public/DinerApp";
 import { createIdleController } from "../src/features/public/kioskIdle";
 import { priceCart } from "../shared/service";
 import {
@@ -1207,5 +1211,37 @@ describe("the QR menu's product description reaches screen readers (KIOSK-UX-18)
     const html = render(true);
     expect(html).not.toContain("aria-describedby");
     expect(html).not.toContain("Contiene cacahuate");
+  });
+});
+
+describe("the kiosk speaks every checkout step and every cart addition (KIOSK-UX-15, §2.12)", () => {
+  it("the steps no handler announces are said through the live region", () => {
+    const say = (step: KioskStep, error = "") =>
+      stepAnnouncement(step, "es", "K-14", error);
+    expect(say("fulfillment")).toBe("¿Para aquí o para llevar?");
+    expect(say("pay")).toBe("¿Cómo quieres pagar?");
+    expect(say("still")).toBe(
+      strings.es.kioskTerminalStill.replace("{label}", "K-14"),
+    );
+    expect(say("askCounter")).toBe("Pregunta en caja por tu pedido K-14.");
+    expect(say("paidNoOrder")).toBe(
+      strings.es.kioskPaidNoOrder.replace("{label}", "K-14"),
+    );
+    expect(say("unavailable")).toBe(strings.es.kioskTerminalUnavailable);
+    expect(say("unavailable", strings.es.kioskTerminalBusy)).toBe(
+      strings.es.kioskTerminalBusy,
+    );
+    // Said where they happen (the sale result, the decline, «Sigue las instrucciones…»).
+    for (const step of ["paid", "declined", "charging", "counter", "submitting"] as KioskStep[])
+      expect(say(step)).toBeNull();
+  });
+  it("«Agregado: {name}», and the same product twice is announced again", () => {
+    const first = addedAnnouncement("Taco de asada", "es", "");
+    expect(first).toBe("Agregado: Taco de asada");
+    const second = addedAnnouncement("Taco de asada", "es", first);
+    expect(second).not.toBe(first);
+    expect(second.trim()).toBe(first);
+    expect(addedAnnouncement("Taco de asada", "es", second)).toBe(first);
+    expect(addedAnnouncement("Churros", "en", "")).toBe("Added: Churros");
   });
 });

@@ -158,6 +158,36 @@ type Props = {
   onStep?: (step: KioskStep) => void;
 };
 
+/**
+ * What the persistent live region says when the checkout lands on a step no handler announces
+ * (KIOSK-UX-15; pure, tests/kiosk.test.ts): the sale result, «Sigue las instrucciones…», a decline
+ * and the counter code are said where they happen; a region inserted already filled is never read.
+ */
+export function stepAnnouncement(
+  step: KioskStep,
+  locale: Locale,
+  label: string,
+  error: string,
+): string | null {
+  const t = strings[locale];
+  switch (step) {
+    case "fulfillment":
+      return t.kioskFulfillmentTitle;
+    case "pay":
+      return t.kioskPayTitle;
+    case "still":
+      return fill(t.kioskTerminalStill, { label });
+    case "askCounter":
+      return fill(t.kioskAskCounter, { label });
+    case "paidNoOrder":
+      return fill(t.kioskPaidNoOrder, { label });
+    case "unavailable":
+      return error || t.kioskTerminalUnavailable;
+    default:
+      return null;
+  }
+}
+
 export function KioskCheckout(p: Props) {
   const t = strings[p.locale];
   const money = moneyFormatter(p.locale, p.currency);
@@ -180,16 +210,31 @@ export function KioskCheckout(p: Props) {
   const fulfillment = useRef<"here" | "to_go">("to_go");
   const chargeOp = useRef<string | null>(null);
   const live = useRef(true);
-  useEffect(
-    () => () => {
+  // Set on every setup: React StrictMode (dev) runs setup, cleanup, setup, and a ref left false by
+  // that cleanup dropped every sync result.
+  useEffect(() => {
+    live.current = true;
+    return () => {
       live.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
   const onStep = p.onStep;
   useEffect(() => onStep?.(step), [step, onStep]);
   const say = (text: string) => p.announce(text);
   const label = view?.label ?? hold?.label ?? "";
+  // KIOSK-UX-15: every step is spoken (the ones no handler announces, here) and the focus moves
+  // to the new step's heading, since the button that held it is gone.
+  const section = useRef<HTMLElement>(null);
+  const firstStep = useRef(true);
+  useEffect(() => {
+    const text = stepAnnouncement(step, p.locale, label, error);
+    if (text) say(text);
+    if (firstStep.current) {
+      firstStep.current = false;
+      return;
+    }
+    section.current?.querySelector<HTMLElement>("h2")?.focus();
+  }, [step]);
   // The latest checkout read, for the idle reset (its effect runs per screen, not per poll).
   const latest = useRef(view);
   useEffect(() => {
@@ -452,7 +497,7 @@ export function KioskCheckout(p: Props) {
       />
     );
   return (
-    <section className="kiosk-checkout" aria-live="off">
+    <section className="kiosk-checkout" aria-live="off" ref={section}>
       {offline && (step === "charging" || step === "still") && (
         <p className="kiosk-banner" role="alert">
           {fill(t.kioskOfflineCharging, { label })}
@@ -465,7 +510,9 @@ export function KioskCheckout(p: Props) {
       )}
       {step === "fulfillment" && (
         <>
-          <h2 className="kiosk-title">{t.kioskFulfillmentTitle}</h2>
+          <h2 className="kiosk-title" tabIndex={-1}>
+            {t.kioskFulfillmentTitle}
+          </h2>
           <div className="kiosk-choices">
             <Button
               variant="primary"
@@ -496,7 +543,7 @@ export function KioskCheckout(p: Props) {
       )}
       {(step === "pay" || step === "declined" || step === "unavailable") && (
         <>
-          <h2 className="kiosk-title">
+          <h2 className="kiosk-title" tabIndex={-1}>
             {step === "declined"
               ? view?.payment.state === "cancelled"
                 ? t.kioskChargeCancelled
@@ -543,7 +590,7 @@ export function KioskCheckout(p: Props) {
       {step === "charging" && (
         <>
           <div className="kiosk-charging" role="status">
-            <h2 className="kiosk-title">
+            <h2 className="kiosk-title" tabIndex={-1}>
               {fill(t.kioskFollowTerminal, {
                 amount: money(view?.payment.amount ?? view?.total ?? 0),
               })}
@@ -564,7 +611,7 @@ export function KioskCheckout(p: Props) {
       )}
       {step === "still" && (
         <>
-          <h2 className="kiosk-title" role="status">
+          <h2 className="kiosk-title" tabIndex={-1}>
             {fill(t.kioskTerminalStill, { label })}
           </h2>
           {onTerminal && (
@@ -575,7 +622,9 @@ export function KioskCheckout(p: Props) {
       )}
       {step === "askCounter" && (
         <>
-          <h2 className="kiosk-title">{fill(t.kioskAskCounter, { label })}</h2>
+          <h2 className="kiosk-title" tabIndex={-1}>
+            {fill(t.kioskAskCounter, { label })}
+          </h2>
           <Button variant="primary" className="kiosk-new" onClick={p.onDone}>
             {t.kioskNewOrder}
           </Button>
@@ -583,7 +632,9 @@ export function KioskCheckout(p: Props) {
       )}
       {step === "paidNoOrder" && (
         <>
-          <h2 className="kiosk-code">{label}</h2>
+          <h2 className="kiosk-code" tabIndex={-1}>
+            {label}
+          </h2>
           <p className="kiosk-instructions">
             {fill(t.kioskPaidNoOrder, { label })}
           </p>
@@ -630,7 +681,7 @@ function KioskPaid({
   return (
     <div className={"kiosk-paid" + (invoice || join ? " kiosk-paid-qr" : "")}>
       <div className="kiosk-paid-main">
-        <h2 className="kiosk-title">
+        <h2 className="kiosk-title" tabIndex={-1}>
           {fill(t.kioskPaid, { label: view.label })}
         </h2>
         <p className="kiosk-code">{view.label}</p>
