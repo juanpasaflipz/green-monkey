@@ -11,8 +11,10 @@ import {
   Pause,
   Printer,
   SlidersHorizontal,
+  Gift,
 } from "lucide-react";
 import {
+  listPrice,
   type Session,
   type Product,
   type Locale,
@@ -64,6 +66,11 @@ import {
   type ParkedOrderTarget,
 } from "../offline-records";
 import { DiscountButton } from "./discounts/DiscountButton";
+import { useLoyaltyCheckout } from "./loyalty/useLoyaltyCheckout";
+import { LoyaltyLookupDialog } from "./loyalty/LoyaltyLookupDialog";
+import { RedeemRewardButton } from "./loyalty/RedeemReward";
+import { fill as fillText } from "./loyalty/format";
+import "./loyalty/loyalty.css";
 import { CheckDiscountSummary } from "./discounts/OrderAdjustments";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 import { useMediaQuery } from "../serviceHooks";
@@ -74,6 +81,9 @@ import {
 } from "../print";
 import { CartLine } from "./CartLine";
 import { PaymentDialog } from "./PaymentDialog";
+import { usePaymentOptions } from "./payments/options";
+import { PLATFORM_KEYS } from "./payments/PlatformFields";
+import type { PlatformCode } from "../../shared/payments";
 import { ReceiptModal, checkStateOf, noteEditableOf } from "./Receipt";
 import { NoteDialog } from "./OrderDetail";
 import {
@@ -128,6 +138,7 @@ export function Selling({
   online,
   active,
   navigate,
+  onPaymentSettled: onPaymentSettledProp,
 }: {
   session: Session;
   catalog: Product[];
@@ -135,6 +146,12 @@ export function Selling({
   online: boolean;
   active: boolean;
   navigate: (s: string) => void;
+  /**
+   * payments (037, critic R18): the one exit for "a payment settled on the
+   * server", whatever the method (cash, manual terminal, platform; P2's
+   * integrated charges). Loyalty's post-payment link hangs only on this.
+   */
+  onPaymentSettled?: (order: Order) => void;
 }) {
   const t = (k: Key) => strings[locale][k];
   const exponent = currencyExponent(session.restaurant.currency);
@@ -193,6 +210,9 @@ export function Selling({
   const [noteReprint, setNoteReprint] = useState<Order | null>(null);
   /** SVC-R2: one payment request at a time, from the tap until it settles. */
   const [paying, setPaying] = useState(false);
+  // payments (037): terminals and platforms for the payment dialog and the price list.
+  const [optionsRefresh, setOptionsRefresh] = useState(0);
+  const paymentOptions = usePaymentOptions(session, online, optionsRefresh);
   /**
    * SVC-R7: ids of the cart lines in a send that has not answered yet. They
    * cannot be edited and a product tap never merges into them (the ref is
@@ -207,6 +227,8 @@ export function Selling({
    * answers after a move never writes its order into the new cart.
    */
   const contextEpoch = useRef(0);
+  /** The same count as state: the club's member follows the cart (LOYALTY-UX-2). */
+  const [contextCount, setContextCount] = useState(0);
   const activeRef = useRef(active);
   activeRef.current = active;
   /** SVC-R10: a switch from Mesas or Órdenes is waiting for a request. */
@@ -220,6 +242,22 @@ export function Selling({
   const nameCache = useRef(new Map<string, Label>());
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  // loyalty (038 §2.5): the cart's club member; never on the money path.
+  const loyalty = useLoyaltyCheckout({
+    session,
+    locale,
+    online,
+    lines: draft.lines.length,
+    current,
+    context: contextCount,
+    draftId: draft.operationId,
+    orderLabel: (o) => numberText(o),
+  });
+  /**
+   * The club's after-payment result (stamps, a completed card or a link failure), shown in the
+   * receipt dialog of its order, where the cashier looks (LOYALTY-UX-3).
+   */
+  const [clubResult, setClubResult] = useState<{ orderId: string; text: string } | null>(null);
   const currentRef = useRef(current);
   currentRef.current = current;
   /** ACC-PR-2: the payment dialog and the receipt, as a late answer sees them. */
@@ -321,6 +359,7 @@ export function Selling({
    */
   function replaceContext(order: Order | null, next: OrderInput) {
     contextEpoch.current++;
+    setContextCount(contextEpoch.current);
     unseenFailure.current = false;
     switchDeferred.current = false;
     currentRef.current = order;
@@ -785,7 +824,11 @@ export function Selling({
     const timer = setTimeout(() => setLastAddedId(null), 600);
     return () => clearTimeout(timer);
   }, [lastAddedId]);
-  const cart = priceCart(draft.lines, catalog, true);
+  // payments (037, LD-72): the order's platform price list (set at creation), else the cart's.
+  const priceList = current
+    ? (current.pricePlatform ?? null)
+    : (draft.pricePlatform ?? null);
+  const cart = priceCart(draft.lines, catalog, true, priceList);
   const priced = cart.lines.flatMap((l) => (l.priced ? [l.priced] : []));
   const draftTotal = cart.total;
   for (const l of priced) nameCache.current.set(l.id, l.name);
@@ -948,6 +991,7 @@ export function Selling({
       setCurrent(o);
       setDraft((x) => reconcileLostSend(x, o, operationId, ids()).draft);
       if (next.changed) setNotice(t("serviceSendChanged"));
+      loyalty.afterOrderExists(o); // loyalty (038): link the cart's member, fire-and-forget
       await db.cache.put({ id: contextId, value: o.id });
       if (readPrintSettings().kitchenOnSend) printNewRound(o);
       return o;
@@ -1068,6 +1112,37 @@ export function Selling({
     setNotice("");
   }
   /**
+   * payments (037, critic R18): every server-settled payment ends here once.
+   * `cartOwn`: the order is the cart's own (owned, same context epoch) and its
+   * receipt replaces the cart; otherwise the cart moved on from it.
+   */
+  function onPaymentSettled(order: Order, cartOwn: boolean) {
+    try {
+      onPaymentSettledProp?.(order);
+    } catch {
+      // A consumer's failure never hides the receipt of money already taken.
+    }
+    // loyalty (038, R18): the club's after-payment work hangs only on this
+    // exit; its failure is a notice, never an error. The cart's own order:
+    // link the cart's member if needed, reconcile, and show the result in the
+    // receipt status. An order the cart moved on from: reconcile only, never
+    // linking the cart's current member to it.
+    if (!cartOwn) {
+      loyalty.reconcileOnly(order);
+      return;
+    }
+    void loyalty.afterPayment(order).then((text) => {
+      if (!text) return;
+      setClubResult({ orderId: order.id, text });
+      // No receipt for this order on screen: the cart shows it instead.
+      if (
+        receiptRef.current?.id !== order.id &&
+        currentRef.current?.id === order.id
+      )
+        setNotice(text);
+    });
+  }
+  /**
    * SVC-R2: the in-flight flag is set synchronously on the tap and cleared
    * only when the whole collect (send, payment, recovery) settles, so a second
    * tap can never queue another payment behind the lock.
@@ -1168,6 +1243,13 @@ export function Selling({
                 : null;
               await settleActiveAttempt(orderId ?? null, (result, owned) => {
                 setPayment(false);
+                // R18: "Recuperar pago" takes the one exit too (LOYALTY-MONEY-7). An empty
+                // new cart shows the receipt, but the order is not its own: the club only
+                // reconciles it, so a member picked for the new cart is never linked to it.
+                onPaymentSettled(
+                  result,
+                  owned && currentRef.current?.id === result.id,
+                );
                 if (owned) {
                   setCurrent(result);
                   setReceipt(result);
@@ -1199,7 +1281,9 @@ export function Selling({
     const settled = (result: Order, owned = true) => {
       setPendingPayment(false);
       setPayment(false);
-      if (!owned || epoch !== contextEpoch.current) {
+      const cartOwn = owned && epoch === contextEpoch.current;
+      onPaymentSettled(result, cartOwn);
+      if (!cartOwn) {
         setNotice(
           t("servicePaidAfterSwitch").replace("{n}", numberText(result)),
         );
@@ -1230,6 +1314,11 @@ export function Selling({
             method: values.method,
             reference: values.reference,
             confirmed: values.confirmed,
+            ...(values.terminalId ? { terminalId: values.terminalId } : {}),
+            ...(values.platform ? { platform: values.platform } : {}),
+            ...(values.platformLabel
+              ? { platformLabel: values.platformLabel }
+              : {}),
           },
           {
             draft,
@@ -1266,9 +1355,15 @@ export function Selling({
         method: values.method,
         // Always present: the stored attempt (paymentAttemptV1) requires both,
         // and cash sends the server defaults, so the fingerprint is unchanged.
-        externalConfirmed: values.method === "external" && values.confirmed,
-        reference: values.method === "external" ? values.reference.trim() : "",
+        externalConfirmed: values.method !== "cash" && values.confirmed,
+        reference: values.method === "cash" ? "" : values.reference.trim(),
         ...(items ? { items } : {}),
+        // payments (037): only when present (an older payload hashes as before).
+        ...(values.terminalId ? { terminalId: values.terminalId } : {}),
+        ...(values.platform ? { platform: values.platform } : {}),
+        ...(values.platformLabel
+          ? { platformLabel: values.platformLabel }
+          : {}),
       };
       submittedAttempt = {
         formatVersion: 1,
@@ -1362,6 +1457,42 @@ export function Selling({
       />
     </Field>
   );
+  // payments (037, LD-72): ring a new order at a platform's prices.
+  // Shown once some product has a platform price; with none, every list is the POS one.
+  const priceListField =
+    !current &&
+    // LD-75: a platform list is for delivery and takeaway, never a table or dine-in order.
+    draft.mode !== "dine_in" &&
+    paymentOptions.platforms.length > 0 &&
+    catalog.some((p) => p.platformPrices) ? (
+      <Field label={t("payPriceList")}>
+        <select
+          value={draft.pricePlatform ?? ""}
+          disabled={!!sending}
+          onChange={(e) => {
+            const value = e.target.value as PlatformCode | "";
+            setDraft((d) => {
+              const { pricePlatform: _old, ...rest } = d;
+              return value ? { ...rest, pricePlatform: value } : rest;
+            });
+          }}
+        >
+          <option value="">{t("payPriceListPos")}</option>
+          {paymentOptions.platforms.map((p) => (
+            <option key={p.platform} value={p.platform}>
+              {t(PLATFORM_KEYS[p.platform])}
+            </option>
+          ))}
+        </select>
+      </Field>
+    ) : current?.pricePlatform ? (
+      <p className="muted tiny">
+        {t("payPriceListLocked").replace(
+          "{platform}",
+          t(PLATFORM_KEYS[current.pricePlatform]),
+        )}
+      </p>
+    ) : null;
   const cartPanel = (
     <>
       <div className="cart-heading">
@@ -1393,6 +1524,15 @@ export function Selling({
               </span>
             </Badge>
           )}
+          {priceList && (
+            // PAYMENTS-UX-1: the price list is visible in both layouts.
+            <Badge tone="amber">
+              {t("payPlatformPriceList").replace(
+                "{platform}",
+                t(PLATFORM_KEYS[priceList]),
+              )}
+            </Badge>
+          )}
           <Badge tone={online ? "green" : "amber"}>
             {online
               ? current
@@ -1417,12 +1557,91 @@ export function Selling({
           <button
             key={mode}
             className={draft.mode === mode ? "selected" : ""}
-            onClick={() => setDraft((d) => ({ ...d, mode }))}
+            onClick={() =>
+              setDraft((d) => {
+                // LD-75: dine-in never rings at a platform's prices.
+                if (mode !== "dine_in" || !d.pricePlatform)
+                  return { ...d, mode };
+                const { pricePlatform: _old, ...rest } = d;
+                return { ...rest, mode };
+              })
+            }
           >
             {t(mode)}
           </button>
         ))}
       </div>
+      {loyalty.club && (
+        <div className="loyalty-cart">
+          {loyalty.member ? (
+            <span className="loyalty-chip">
+              {fillText(t("loyaltyChip"), {
+                name: loyalty.member.firstName,
+                stamps: loyalty.member.stamps,
+                required: loyalty.member.required,
+              })}
+              {loyalty.member.rewards > 0 && (
+                // A reward to use is on the chip itself, not only in Canjear premio (UX-16).
+                <strong className="loyalty-chip-reward">
+                  {" · "}
+                  <Gift size={14} aria-hidden="true" />{" "}
+                  {loyalty.member.rewards === 1
+                    ? t("loyaltyChipRewardOne")
+                    : fillText(t("loyaltyChipRewardMany"), { n: loyalty.member.rewards })}
+                </strong>
+              )}
+              <button
+                type="button"
+                className="text-button"
+                aria-label={t("loyaltyRemove")}
+                disabled={!online}
+                onClick={loyalty.remove}
+              >
+                ✕
+              </button>
+            </span>
+          ) : (
+            <Button
+              disabled={!online}
+              aria-describedby={online ? undefined : "loyalty-offline-hint"}
+              onClick={loyalty.openPrompt}
+            >
+              {t("loyaltyClubButton")}
+            </Button>
+          )}
+          {!online && (
+            <small id="loyalty-offline-hint" className="tiny muted">
+              {t("loyaltyOfflineHint")}
+            </small>
+          )}
+          {loyalty.notices.map((n) => (
+            <p role="status" className="tiny loyalty-failure" key={n.orderId}>
+              {n.text}{" "}
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => loyalty.dismissNotice(n.orderId)}
+              >
+                {t("loyaltyDismiss")}
+              </button>
+            </p>
+          ))}
+        </div>
+      )}
+      {loyalty.prompt && loyalty.club && (
+        <LoyaltyLookupDialog
+          locale={locale}
+          club={loyalty.club}
+          online={online}
+          onUse={(m) => {
+            loyalty.use(m);
+            // The kitchen and the counter call the order by the member's first name.
+            if (!current && !draftRef.current.name.trim())
+              setDraft((d) => ({ ...d, name: m.firstName }));
+          }}
+          onClose={loyalty.closePrompt}
+        />
+      )}
       {compact ? (
         <button
           type="button"
@@ -1436,6 +1655,14 @@ export function Selling({
               t(draft.mode),
               draft.name || t("serviceUnnamed"),
               ...(draft.mode === "dine_in" ? [tableName ?? t("noTable")] : []),
+              ...(priceList
+                ? [
+                    t("payPlatformPriceList").replace(
+                      "{platform}",
+                      t(PLATFORM_KEYS[priceList]),
+                    ),
+                  ]
+                : []),
               ...(draft.note ? [draft.note] : []),
             ].join(" · ")}
           </span>
@@ -1444,6 +1671,7 @@ export function Selling({
         <div className="cart-fields">
           {nameField}
           {tableField}
+          {priceListField}
         </div>
       )}
       <div className="cart-lines">
@@ -1648,7 +1876,9 @@ export function Selling({
         {!online && !current && !offline.tableService && (
           <p className="muted tiny">{t("offlineTableServiceOffHint")}</p>
         )}
-        <div className="row between">
+        {/* Guardar borrador, Descuento, the club's Canjear premio and the saved note
+            (.cart-actions in styles.css: they wrap only on narrow screens). */}
+        <div className="row between cart-actions">
           <button
             className="text-button"
             disabled={!draft.lines.length || busy}
@@ -1686,6 +1916,33 @@ export function Selling({
               // receipt opens, as after a payment (LD-15 discounts Q7).
               if (currentRef.current?.id !== o.id) return;
               setCurrent(o);
+              if (o.checkState === "closed") setReceipt(o);
+            }}
+          />
+          <RedeemRewardButton
+            order={current && isServerOrder(current) ? current : null}
+            hasDraftLines={
+              draft.lines.length > 0 && (!current || isServerOrder(current))
+            }
+            send={async () => {
+              try {
+                const o = await send();
+                return isServerOrder(o) ? o : null;
+              } catch (e) {
+                if (!(e instanceof HandledError)) throw e;
+                return null;
+              }
+            }}
+            member={loyalty.member}
+            club={loyalty.club}
+            locale={locale}
+            online={online}
+            money={money}
+            onApplied={(o, view) => {
+              if (currentRef.current?.id !== o.id) return;
+              setCurrent(o);
+              // The chip and Canjear premio follow the rewards left (LOYALTY-UX-11).
+              if (view.member) loyalty.refreshMember(view.member);
               if (o.checkState === "closed") setReceipt(o);
             }}
           />
@@ -1795,7 +2052,10 @@ export function Selling({
               <span className="product-category">{p.category[locale]}</span>
               <strong>{p.name[locale]}</strong>
               <span className="product-price">
-                {p.openAmount ? t("menuOpenPriceBadge") : money(p.price)}
+                {p.openAmount
+                  ? t("menuOpenPriceBadge")
+                  : // PAYMENTS-MONEY-7: the tile shows the cart's list price.
+                    money(listPrice(p, priceList))}
               </span>
               {p.kind === "combo" && (
                 <span className="product-tag">{t("menuKindCombo")}</span>
@@ -1840,6 +2100,7 @@ export function Selling({
           locale={locale}
           currency={session.restaurant.currency}
           canOpen
+          priceList={priceList}
           onConfirm={(selection) => {
             add(picker, selection);
             setPicker(null);
@@ -1892,6 +2153,28 @@ export function Selling({
               </>
             ),
           }}
+          paymentOptions={paymentOptions}
+          pricePlatform={priceList}
+          dineIn={
+            current
+              ? current.mode === "dine_in" || !!current.tableId
+              : draft.mode === "dine_in" || !!draft.tableId
+          }
+          orderName={current?.name || draft.name}
+          onSetDefaultTerminal={(terminalId) => {
+            // PAYMENTS-UX-14: the outcome is said, never swallowed.
+            void api(`/payments/devices/${session.deviceId}/terminal`, {
+              operationId: crypto.randomUUID(),
+              terminalId,
+            })
+              .then(() => {
+                setOptionsRefresh((n) => n + 1);
+                setNotice(t("payDefaultSaved"));
+              })
+              .catch((e) =>
+                setNotice(`${t("payDefaultFailed")} ${errorNotice(e, locale)}`),
+              );
+          }}
           onClose={() => setPayment(false)}
           onGoToCash={() => {
             setPayment(false);
@@ -1906,6 +2189,7 @@ export function Selling({
           locale={locale}
           onNext={reset}
           onBack={() => setReceipt(null)}
+          status={clubResult?.orderId === receipt.id ? clubResult.text : undefined}
           label={offline.receiptProps(receipt)?.label}
           labelHint={offline.receiptProps(receipt)?.labelHint}
           printLabel={offline.receiptProps(receipt)?.printLabel}
@@ -2018,6 +2302,7 @@ export function Selling({
         >
           {nameField}
           {tableField}
+          {priceListField}
           {noteField}
           {!current && (
             <p className="muted tiny">{t("serviceOrderNoteHint")}</p>

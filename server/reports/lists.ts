@@ -15,7 +15,9 @@ import {
   type OrderReportRow,
   type Page,
   type TenderReportRow,
+  methodOf,
 } from "../../shared/reports.js";
+import type { PlatformCode } from "../../shared/payments.js";
 import { businessDayCte, isoRequired, windowOf } from "./days.js";
 import { restaurantOf } from "./restaurant.js";
 import { collectionCtes } from "./summary.js";
@@ -120,11 +122,14 @@ export async function tenderRows(
     select x.id, x.created_at, x.created_at::text as at_text, x.day::text as collection_date, x.order_id,
       x.order_number, x.order_date::text as order_date, x.method, x.amount, x.tip, x.external_reference,
       x.session_id, dev.name as device_name, x.offline, x.source,
+      x.terminal_id, coalesce(pt.name, x.terminal_label) as terminal_name, x.provider, x.provider_reference,
+      x.card_brand, x.card_last4, x.platform, x.platform_label, x.fee, x.fee_source,
       coalesce((select sum(r.amount) from refunds r where r.tenant_id = x.tenant_id and r.tender_id = x.id), 0)::int8
         as refunded
     from x
     left join cash_sessions cs on cs.tenant_id = x.tenant_id and cs.id = x.session_id
     left join devices dev on dev.tenant_id = cs.tenant_id and dev.id = cs.device_id
+    left join payment_terminals pt on pt.tenant_id = x.tenant_id and pt.id = x.terminal_id
     where x.day between ${range.from}::date and ${range.to}::date
       ${q.method ? tx`and x.method = ${q.method}` : tx``}
       ${q.drawer ? tx`and x.session_id = ${q.drawer}` : tx``}
@@ -141,7 +146,7 @@ export async function tenderRows(
       orderId: String(r.order_id),
       orderNumber: n(r.order_number),
       orderDate: String(r.order_date),
-      method: r.method === "external" ? "external" : "cash",
+      method: methodOf(r.method),
       amount: n(r.amount),
       tip: n(r.tip),
       reference: (r.external_reference as string | null) ?? null,
@@ -150,6 +155,18 @@ export async function tenderRows(
       refunded: n(r.refunded),
       offline: r.offline === true,
       source: String(r.source ?? "normal"),
+      // payments (037): terminal, provider, card and platform columns; fees (managers only:
+      // this list is a manager endpoint).
+      terminalId: (r.terminal_id as string | null) ?? null,
+      terminal: (r.terminal_name as string | null) ?? null,
+      provider: (r.provider as string | null) ?? null,
+      providerReference: (r.provider_reference as string | null) ?? null,
+      cardBrand: (r.card_brand as string | null) ?? null,
+      cardLast4: (r.card_last4 as string | null) ?? null,
+      platform: (r.platform as PlatformCode | null) ?? null,
+      platformLabel: (r.platform_label as string | null) ?? null,
+      fee: r.fee === null || r.fee === undefined ? null : n(r.fee),
+      feeSource: (r.fee_source as "provider" | "estimated" | null) ?? null,
     })),
     next:
       rows.length > q.limit && last

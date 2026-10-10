@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Locale, Session } from "../../../shared/domain";
 import {
   CARD_PAYMENT_FORMS,
+  SUBSTITUTE_PAYMENT_FORMS,
   DOCUMENT_STATUS_FILTERS,
   firstReceptorError,
   receptorIssues,
@@ -1009,7 +1010,9 @@ function CreditNoteSubstituteDialog({
   done: (v: CfdiDocumentView) => void;
 }) {
   const t = strings[locale];
-  const forms = ["01", ...CARD_PAYMENT_FORMS] as const;
+  // Cash, the card forms and the platform forms (PAYMENTS-FISCAL-1): a platform refund's note
+  // (31 or 03) keeps its own form preselected.
+  const forms = SUBSTITUTE_PAYMENT_FORMS;
   const [paymentForm, setPaymentForm] = useState<(typeof forms)[number]>(() =>
     (forms as readonly string[]).includes(doc.paymentForm ?? "")
       ? (doc.paymentForm as (typeof forms)[number])

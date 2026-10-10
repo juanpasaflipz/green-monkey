@@ -51,12 +51,13 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
 import ts from "typescript";
 
-/** LO levels as numbers; LO-2b and LO-5a sit between their neighbours. */
+/** LO levels as numbers; LO-2b, LO-2c and LO-5a sit between their neighbours. */
 export const LEVEL = {
   organization: 0,
   key: 1,
   restaurants: 2,
   holds: 2.5,
+  attempts: 2.75,
   config: 3,
   orderNumbers: 4,
   orders: 5,
@@ -70,9 +71,10 @@ export const LEVEL = {
   issue: 12,
 } as const;
 
-/** "2b", "5a" and the integers, as written in the LO table. */
+/** "2b", "2c", "5a" and the integers, as written in the LO table. */
 export function levelLabel(level: number): string {
   if (level === LEVEL.holds) return "2b";
+  if (level === LEVEL.attempts) return "2c";
   if (level === LEVEL.employees) return "5a";
   return String(level);
 }
@@ -92,6 +94,17 @@ export const TABLE_LEVEL: Record<string, number> = {
   // public ordering (032; ARCHITECTURE LO-3/LO-4, PUBLIC-CONCURRENCY-1)
   public_links: LEVEL.config,
   public_ordering_settings: LEVEL.config,
+  // payments (037; ARCHITECTURE LO-2c and LO-3, critic R4/R7): attempt rows right after the
+  // hold, configuration rows under the payments key (advisory class 934, an LO-3 area key)
+  payment_attempts: LEVEL.attempts,
+  payment_terminals: LEVEL.config,
+  payment_platforms: LEVEL.config,
+  payment_platform_prices: LEVEL.config,
+  payment_provider_accounts: LEVEL.config,
+  payment_device_terminals: LEVEL.config,
+  // loyalty (038; ARCHITECTURE LO-3, LO-R10): member rows FOR NO KEY UPDATE, the settings row
+  loyalty_members: LEVEL.config,
+  loyalty_settings: LEVEL.config,
   order_numbers: LEVEL.orderNumbers,
   public_hold_numbers: LEVEL.orderNumbers,
   orders: LEVEL.orders,

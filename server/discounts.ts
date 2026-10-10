@@ -12,6 +12,8 @@ import { requireSelling } from "./free-limits.js";
 import { audit, getOrder, once } from "./orders.js";
 import { assertCheckWritable, refreshCheckState } from "./checks.js";
 import { assertNoFiscalTicket } from "./fiscal.js";
+import { loyaltyRewardDiscountReversed } from "./loyalty/hooks.js";
+import { assertNoLiveAttempt } from "./payments/guards.js";
 import { DomainError, type Order, type Session } from "../shared/domain.js";
 import {
   canCloseDrawer,
@@ -24,7 +26,11 @@ import {
   discountReverseInput,
   moneyControlsInput,
   planDiscount,
+  RESERVED_DISCOUNT_REASON,
   type AdjustmentRow,
+  type DiscountExpectation,
+  type DiscountPlan,
+  type DiscountRequest,
   type MoneyControls,
   type MoneyControlsView,
   type StaffRole,
@@ -190,6 +196,8 @@ async function lockOrder(tx: Tx, orderId: string, expectedVersion: number) {
  * their own step-up) is the only PIN; a within-limit staff discount without an
  * approver needs the actor's own recent PIN. approval_required is answered
  * before any step-up, so staff over their limit are asked for one PIN only.
+ * The loyalty reward reason is reserved for loyalty's redemption (038 §4.5):
+ * discount_reason_reserved before any work.
  */
 export async function applyDiscount(
   tx: Tx,
@@ -200,6 +208,8 @@ export async function applyDiscount(
 ): Promise<Order> {
   permit(s, operators);
   const p = discountInput.parse(raw);
+  if (p.reasonCode === RESERVED_DISCOUNT_REASON)
+    throw new DomainError("discount_reason_reserved", 400);
   const issue = discountInputIssue(p);
   if (issue) throw new DomainError(issue, 400);
   return once(
@@ -208,66 +218,103 @@ export async function applyDiscount(
     p.operationId,
     "discount.apply",
     approvalFingerprint({ orderId }, p),
-    async () => {
-      await requireSelling(tx, s);
-      const o = await lockOrder(tx, orderId, p.expectedVersion);
-      assertCheckWritable(o);
-      await assertNoFiscalTicket(tx, orderId);
-      const controls = await moneyControls(tx);
-      const order = await getOrder(tx, orderId);
-      if (!order.itemSplitAvailable)
-        throw new DomainError("unallocated_history", 409);
-      const plan = planDiscount(order, p);
-      // §2.2 (DSC-R13): the preview and the result are identical. Payments
-      // (online, offline sync, recovery) and service changes do not bump
-      // orders.version, so the request carries what its preview showed and a
-      // different plan, starting balance or closing outcome is refused here,
-      // under the order lock, before any approval or limit is evaluated.
-      if (!discountPlanMatches(order, plan, p))
-        throw new DomainError("discount_changed", 409);
-      // MONEY-2/MONEY-3 (LD-26): the request's own kind rule and, per check,
-      // the staff discounts recorded without an approver, read under the lock.
-      const check = discountLimitCheck(s.role, p, plan, controls, order);
-      let approver: string | null;
-      if (check === "self") approver = a.approverId ?? s.employeeId;
-      else if (check === "within") approver = a.approverId;
-      else {
-        if (!a.approverId) throw new DomainError("approval_required", 403);
-        approver = a.approverId;
-      }
-      if (!a.approverId) requireRecentAuth(s);
-      if (approver) await assertApproverActive(tx, approver, s);
-      const discountId = randomUUID();
-      await tx`insert into discounts(tenant_id,id,order_id,scope,line_id,kind,percent_bps,requested_amount,
-          base,amount,units,reason_code,note,actor_id,approver_id,device_id)
-        values(${s.tenantId},${discountId},${orderId},${p.scope},${p.scope === "line" ? p.lineId! : null},${p.kind},
-          ${p.kind === "percent" ? p.percentBps! : null},${p.kind === "amount" ? p.amount! : null},
-          ${plan.base},${plan.amount},${plan.units},${p.reasonCode},${p.note},${s.employeeId},${approver},${s.deviceId})`;
-      // One statement for every allocation (the guard trigger runs per row).
-      await tx`insert into discount_allocations(tenant_id,discount_id,order_id,line_id,unit_index,amount)
-        select ${s.tenantId},${discountId},${orderId},x.line_id,x.unit_index,x.amount
-        from unnest(${tx.array(plan.allocations.map((x) => x.lineId))}::uuid[],
-          ${tx.array(plan.allocations.map((x) => x.unit))}::int[],
-          ${tx.array(plan.allocations.map((x) => x.amount))}::int[]) as x(line_id,unit_index,amount)`;
-      await tx`update orders set total=total-${plan.amount},discount=discount+${plan.amount},version=version+1 where id=${orderId}`;
-      await audit(tx, s, "discount.applied", orderId, {
-        discountId,
-        scope: p.scope,
-        lineId: p.lineId ?? null,
-        kind: p.kind,
-        percentBps: p.percentBps ?? null,
-        amount: plan.amount,
-        base: plan.base,
-        units: plan.units,
-        reasonCode: p.reasonCode,
-        approverId: approver,
-      });
-      // A balance of 0 settles the check (a takeaway or tableless one closes
-      // and the discount becomes final; a table check becomes "paid").
-      await refreshCheckState(tx, s, orderId);
-      return getOrder(tx, orderId);
-    },
+    () => recordDiscount(tx, s, orderId, p, { approval: a }),
   );
+}
+
+/** What recordDiscount records: the request, its preview (DSC-R13), reason and note. */
+export type DiscountRecord = DiscountRequest &
+  DiscountExpectation & {
+    expectedVersion: number;
+    reasonCode: string;
+    note: string;
+  };
+
+/**
+ * The body of applyDiscount after once() (extracted for loyalty's redemption, 038 §4.5; behaviour
+ * unchanged for applyDiscount): the order lock, the writable, fiscal and preview checks, the limit
+ * and approval rule, the inserts, the audit and the refresh. `reserved` (loyalty's reward only)
+ * skips the staff limit, the approver and the step-up: the member's ledger proves the entitlement
+ * under the member's lock, and the discount is recorded with no approver. `afterInsert` runs under
+ * the order lock after the discount and its allocations, before the refresh (loyalty's link and
+ * ledger row, row 48).
+ */
+export async function recordDiscount(
+  tx: Tx,
+  s: Session,
+  orderId: string,
+  p: DiscountRecord,
+  o: {
+    approval?: ApprovalContext;
+    reserved?: boolean;
+    afterInsert?: (discountId: string, plan: DiscountPlan) => Promise<void>;
+  },
+): Promise<Order> {
+  await requireSelling(tx, s);
+  const locked = await lockOrder(tx, orderId, p.expectedVersion);
+  // payments (037, critic R17): right after the order lock, here in
+  // recordDiscount so a staff discount and a club reward are both refused
+  // while a terminal attempt is live (payments_order_attempt_live).
+  await assertNoLiveAttempt(tx, orderId);
+  assertCheckWritable(locked);
+  await assertNoFiscalTicket(tx, orderId);
+  const controls = await moneyControls(tx);
+  const order = await getOrder(tx, orderId);
+  if (!order.itemSplitAvailable)
+    throw new DomainError("unallocated_history", 409);
+  const plan = planDiscount(order, p);
+  // §2.2 (DSC-R13): the preview and the result are identical. Payments
+  // (online, offline sync, recovery) and service changes do not bump
+  // orders.version, so the request carries what its preview showed and a
+  // different plan, starting balance or closing outcome is refused here,
+  // under the order lock, before any approval or limit is evaluated.
+  if (!discountPlanMatches(order, plan, p))
+    throw new DomainError("discount_changed", 409);
+  let approver: string | null = null;
+  if (!o.reserved) {
+    const a = o.approval ?? { approverId: null };
+    // MONEY-2/MONEY-3 (LD-26): the request's own kind rule and, per check,
+    // the staff discounts recorded without an approver, read under the lock.
+    const check = discountLimitCheck(s.role, p, plan, controls, order);
+    if (check === "self") approver = a.approverId ?? s.employeeId;
+    else if (check === "within") approver = a.approverId;
+    else {
+      if (!a.approverId) throw new DomainError("approval_required", 403);
+      approver = a.approverId;
+    }
+    if (!a.approverId) requireRecentAuth(s);
+    if (approver) await assertApproverActive(tx, approver, s);
+  }
+  const discountId = randomUUID();
+  await tx`insert into discounts(tenant_id,id,order_id,scope,line_id,kind,percent_bps,requested_amount,
+      base,amount,units,reason_code,note,actor_id,approver_id,device_id)
+    values(${s.tenantId},${discountId},${orderId},${p.scope},${p.scope === "line" ? p.lineId! : null},${p.kind},
+      ${p.kind === "percent" ? p.percentBps! : null},${p.kind === "amount" ? p.amount! : null},
+      ${plan.base},${plan.amount},${plan.units},${p.reasonCode},${p.note},${s.employeeId},${approver},${s.deviceId})`;
+  // One statement for every allocation (the guard trigger runs per row).
+  await tx`insert into discount_allocations(tenant_id,discount_id,order_id,line_id,unit_index,amount)
+    select ${s.tenantId},${discountId},${orderId},x.line_id,x.unit_index,x.amount
+    from unnest(${tx.array(plan.allocations.map((x) => x.lineId))}::uuid[],
+      ${tx.array(plan.allocations.map((x) => x.unit))}::int[],
+      ${tx.array(plan.allocations.map((x) => x.amount))}::int[]) as x(line_id,unit_index,amount)`;
+  await tx`update orders set total=total-${plan.amount},discount=discount+${plan.amount},version=version+1 where id=${orderId}`;
+  await audit(tx, s, "discount.applied", orderId, {
+    discountId,
+    scope: p.scope,
+    lineId: p.lineId ?? null,
+    kind: p.kind,
+    percentBps: p.percentBps ?? null,
+    amount: plan.amount,
+    base: plan.base,
+    units: plan.units,
+    reasonCode: p.reasonCode,
+    approverId: approver,
+  });
+  if (o.afterInsert) await o.afterInsert(discountId, plan);
+  // A balance of 0 settles the check (a takeaway or tableless one closes
+  // and the discount becomes final; a table check becomes "paid").
+  await refreshCheckState(tx, s, orderId);
+  return getOrder(tx, orderId);
 }
 
 /**
@@ -304,7 +351,7 @@ export async function reverseDiscount(
       assertCheckWritable(o);
       await assertNoFiscalTicket(tx, orderId);
       await assertApproverActive(tx, approver, s);
-      const [d] = await tx`select d.id,d.reversed_at,
+      const [d] = await tx`select d.id,d.reversed_at,d.reason_code,
           coalesce((select sum(b.amount) from discount_allocations b
             where b.tenant_id=d.tenant_id and b.discount_id=d.id
               and not exists (select 1 from line_voids v where v.tenant_id=b.tenant_id
@@ -338,6 +385,9 @@ export async function reverseDiscount(
         note: p.note,
         approverId: approver,
       });
+      // loyalty (038 §4.5): a removed reward returns to the member (the reconcile job posts it).
+      if (d.reason_code === RESERVED_DISCOUNT_REASON)
+        await loyaltyRewardDiscountReversed(tx, s, orderId, discountId);
       // A reversal raises the balance: a "paid" table check returns to open.
       await refreshCheckState(tx, s, orderId);
       return getOrder(tx, orderId);
@@ -400,7 +450,7 @@ export async function adjustmentRows(
        join employees e on e.tenant_id=r.tenant_id and e.id=r.actor_id
        where t.order_id=i.id) as refunds,
       (select coalesce(jsonb_agg(jsonb_build_object('id',b.id,'mode',b.mode,'amount',b.amount,
-          'cashAmount',b.cash_amount,'externalAmount',b.external_amount,'reasonCode',b.reason_code,'note',b.note,
+          'cashAmount',b.cash_amount,'externalAmount',b.external_amount,'platformAmount',b.platform_amount,'reasonCode',b.reason_code,'note',b.note,
           'restock',b.restock,'actorName',ea.name,'approverName',em.name,'createdAt',b.created_at,
           'businessDate',b.business_date) order by b.created_at,b.id),'[]')
        from refund_batches b

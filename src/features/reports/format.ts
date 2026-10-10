@@ -100,6 +100,7 @@ const EXCEPTION_KEYS: Record<ExceptionKind, Key> = {
   open_price: "reportsExKindOpenPrice",
   offline_archive: "reportsExKindOfflineArchive",
   offline_reconcile: "reportsExKindOfflineReconcile",
+  platform_tender: "payExKindPlatformTender",
 };
 export function exceptionKindLabel(kind: ExceptionKind, locale: Locale) {
   return strings[locale][EXCEPTION_KEYS[kind]];
@@ -115,6 +116,7 @@ const GROUP_KEYS: Record<AuditGroup, Key> = {
   settings: "reportsAuditGroupSettings",
   fiscal: "reportsAuditGroupFiscal",
   reports: "reportsAuditGroupReports",
+  loyalty: "loyaltyAuditGroup",
 };
 export function auditGroupLabel(group: AuditGroup, locale: Locale) {
   return strings[locale][GROUP_KEYS[group]];

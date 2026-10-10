@@ -12,6 +12,7 @@ import { RestaurantSettings } from "./RestaurantSettings";
 import { FiscalSettings } from "./fiscal/FiscalSettings";
 import { CfdiSettings } from "./cfdi/CfdiSettings";
 import { AccountPrivacy } from "./AccountPrivacy";
+import { LoyaltySettings } from "./loyalty/LoyaltySettings";
 import { currencyExponent } from "../../shared/domain";
 import { ManagementTools } from "./ManagementTools";
 import { useEffect, useState } from "react";
@@ -32,6 +33,7 @@ import {
 } from "./cash/drawer-cache";
 import type { DrawerView } from "./cash/DrawerCloseDialog";
 import { DrawerReviewDialog } from "./cash/DrawerReviewDialog";
+import { PaymentSettings } from "./payments/PaymentSettings";
 import { MoneyControlsSettings } from "./cash/MoneyControlsSettings";
 import type { CashHistoryRow } from "./CashHistory";
 import { TodayDashboard } from "./reports/TodayDashboard";
@@ -208,8 +210,20 @@ export function Operations({
           {manager && (
             <MoneyControlsSettings session={session} locale={locale} />
           )}
+          {/* payments (037, critic R26): after money controls, before privacy. */}
+          {manager && (
+            <PaymentSettings
+              session={session}
+              locale={locale}
+              online={online}
+            />
+          )}
           {["owner", "manager"].includes(session.role) && (
             <AccountPrivacy session={session} locale={locale} />
+          )}
+          {/* loyalty (038, R26): after Privacidad y datos, whose notice it needs. */}
+          {["owner", "manager"].includes(session.role) && (
+            <LoyaltySettings session={session} locale={locale} online={online} />
           )}
           <PublicOrderingSettings
             session={session}

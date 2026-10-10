@@ -6,7 +6,9 @@ import { permit, operators } from "./auth.js";
 import { audit, getOrder, once, recordPayment } from "./orders.js";
 import { bumpKitchenFeed } from "./kitchen.js";
 import { issueDueTicket } from "./fiscal.js";
+import { assertNoLiveAttempt } from "./payments/guards.js";
 import { publicOrderingEnabled } from "./account-settings.js";
+import { loyaltyOrderSettled, loyaltyOrderVoided } from "./loyalty/hooks.js";
 import {
   DomainError,
   businessDate,
@@ -70,7 +72,7 @@ export async function refreshCheckState(
   orderId: string,
 ): Promise<CheckState> {
   const [o] =
-    await tx`select o.mode,o.table_id,o.channel,o.total,o.state,o.check_state,
+    await tx`select o.mode,o.table_id,o.channel,o.total,o.state,o.check_state,o.version,
       coalesce((select sum(t.amount) from tenders t where t.tenant_id=o.tenant_id and t.order_id=o.id),0)::int as paid,
       (select count(*) from order_lines l where l.tenant_id=o.tenant_id and l.order_id=o.id)::int as lines,
       (select count(*) from order_lines l where l.tenant_id=o.tenant_id and l.order_id=o.id
@@ -82,6 +84,8 @@ export async function refreshCheckState(
     return "closed";
   const money = { total: o.total as number, paid: o.paid as number };
   if (o.lines > 0 && o.voided_lines === o.lines && o.paid === 0) {
+    // loyalty (038): a reward on a voided check is restored (one link read, at most one job).
+    await loyaltyOrderVoided(tx, s, orderId);
     await close(tx, s, orderId, "voided", money);
     return "closed";
   }
@@ -94,10 +98,13 @@ export async function refreshCheckState(
       if (o.check_state !== "paid") {
         await tx`update orders set check_state='paid' where id=${orderId}`;
         await issueDueTicket(tx, s, orderId); // fiscal 027: open → paid issues the ticket
+        // loyalty (038, R16): the only coupling between payments and stamps (LO-R10).
+        await loyaltyOrderSettled(tx, s, orderId, o.paid, o.version);
       }
       return "paid";
     }
     await issueDueTicket(tx, s, orderId); // fiscal 027: before close, so the ticket audit precedes check.closed
+    await loyaltyOrderSettled(tx, s, orderId, o.paid, o.version); // loyalty (038, R16)
     await close(tx, s, orderId, "settled", money);
     return "closed";
   }
@@ -130,6 +137,8 @@ export async function closeCheck(
       if (o.check_state === "closed") return getOrder(tx, orderId);
       if (String(o.state).startsWith("recovery"))
         throw new DomainError("stale_order", 409);
+      // payments (037): no release while money may be in flight at a terminal.
+      await assertNoLiveAttempt(tx, orderId);
       const [m] =
         await tx`select coalesce(sum(amount),0)::int as paid from tenders where order_id=${orderId}`;
       if (o.total - m.paid > 0) throw new DomainError("balance_due", 409);
@@ -167,6 +176,9 @@ export async function recordSettlement(tx: Tx, s: Session, raw: unknown) {
     const total = p.orders.reduce((a, o) => a + o.amount, 0);
     if (total > p.received) throw new DomainError("insufficient_cash");
     await tx`select id from orders where id = any(${tx.array(p.orders.map((o) => o.id))}::uuid[]) order by id for update`;
+    // payments (037): "Cobrar juntas" is cash-only; an order with a live
+    // terminal attempt is refused before any payment (plain reads).
+    for (const o of p.orders) await assertNoLiveAttempt(tx, o.id);
     const result = [];
     for (const o of [...p.orders].sort((a, b) => a.id.localeCompare(b.id)))
       result.push(

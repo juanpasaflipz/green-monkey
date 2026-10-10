@@ -106,9 +106,35 @@ const FIRST_VERSION = {
   changes: FIRST,
 } as const;
 
+/**
+ * The loyalty club version of the privacy notice and the DPA (038, critic R40, LD-74): club
+ * members' data categories, the processor line and the no-transfer line. Counsel reviews the text
+ * before the legal set is published (LD-3). Not a material change: no account had accepted a
+ * published version when it shipped (production signup stays paused until the set is published,
+ * LD-72/LD-74), so it takes effect on announcement. Were acceptances of a published 2026-10-06 to
+ * exist by the release, set requiresAcceptanceSince to this version and effectiveFrom 15 days after
+ * announcedAt instead: the club then waits for effectiveFrom (clubLegalCovered).
+ */
+const CLUB_VERSION = {
+  version: "2026-10-09",
+  requiresAcceptanceSince: "2026-10-06",
+  previousVersion: "2026-10-06",
+  previousRequiresAcceptanceSince: "2026-10-06",
+  announcedAt: "2026-10-09",
+  effectiveFrom: "2026-10-09",
+} as const;
+
 export const LEGAL_DOCUMENTS: Record<LegalDocumentKey, LegalDocumentMeta> = {
   privacy: {
-    ...FIRST_VERSION,
+    ...CLUB_VERSION,
+    changes: {
+      es: [
+        "Socios del club de lealtad de los restaurantes: datos, proveedores y que no se transfieren (§5 y §6).",
+      ],
+      en: [
+        "Restaurants' loyalty club members: data, providers and no transfers (§5 and §6).",
+      ],
+    },
     path: "/legal/privacidad",
     enPath: "/legal/privacy",
   },
@@ -118,11 +144,39 @@ export const LEGAL_DOCUMENTS: Record<LegalDocumentKey, LegalDocumentMeta> = {
     enPath: "/legal/terms",
   },
   dpa: {
-    ...FIRST_VERSION,
+    ...CLUB_VERSION,
+    changes: {
+      es: [
+        "Socios del club de lealtad: categorías de datos (§2), subencargados (§6) y sin transferencias (§11).",
+      ],
+      en: [
+        "Loyalty club members: data categories (§2), sub-processors (§6) and no transfers (§11).",
+      ],
+    },
     path: "/legal/encargo-de-datos",
     enPath: "/legal/data-processing",
   },
 };
+
+/** The first privacy notice and DPA version whose text covers the loyalty club (LOYALTY-PRIVACY-4). */
+export const CLUB_LEGAL_VERSION = CLUB_VERSION.version;
+/**
+ * Whether the platform documents in force cover the loyalty club: published, and the privacy
+ * notice and DPA at CLUB_LEGAL_VERSION or later, in effect. Enabling the club waits for it.
+ */
+export function clubLegalCovered(
+  status: LegalStatus,
+  now: number = Date.now(),
+): boolean {
+  if (status !== "published") return false;
+  return (["privacy", "dpa"] as const).every((d) => {
+    const m = LEGAL_DOCUMENTS[d];
+    const order = compareLegalVersions(m.version, CLUB_LEGAL_VERSION);
+    if (order < 0) return false;
+    // A later version replaced the club's one, which was in effect before it was announced.
+    return order > 0 || now >= legalInstant(m.effectiveFrom);
+  });
+}
 /** Generated change entry when only the responsable's data changed (LEGAL-3). */
 export const ENTITY_UPDATED_CHANGE: Record<LegalLocale, string> = {
   es: "Datos del responsable actualizados (nombre, domicilio, RFC, contacto o jurisdicción). El resto del texto no cambió.",

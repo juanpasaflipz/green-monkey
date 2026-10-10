@@ -22,6 +22,14 @@ import {
   type FiscalSummary,
 } from "./fiscal.js";
 import { TAX_CATEGORIES } from "./tax.js";
+import {
+  isTenderMethod,
+  TENDER_METHODS,
+  type PlatformCode,
+  type TenderMethod,
+} from "./payments.js";
+// payments (037): one value set for every reader (cash, external, platform).
+export { TENDER_METHODS, type TenderMethod };
 
 // ---------------------------------------------------------------------------------------------
 // Limits, business dates and ranges
@@ -236,6 +244,9 @@ export const EXCEPTION_KINDS = [
   "open_price",
   "offline_archive",
   "offline_reconcile",
+  // payments (037, LD-75): a platform tender that is «Otra», on an order not rung at that
+  // platform's price list, or offline evidence that broke an online platform rule.
+  "platform_tender",
 ] as const;
 export type ExceptionKind = (typeof EXCEPTION_KINDS)[number];
 /**
@@ -294,9 +305,15 @@ export const AUDIT_GROUPS = {
     "public.paused",
     "public.resumed",
     "job.",
+    // payments (037, critic R27): terminals, platforms, platform prices, device defaults.
+    "payment.terminal_",
+    "payment.platform",
+    "payment.device_terminal",
   ],
   fiscal: ["fiscal.", "cfdi."],
   reports: ["reports."],
+  // loyalty (038, R27): settings, members (ARCO included), links, rewards and the import.
+  loyalty: ["loyalty."],
 } as const;
 export type AuditGroup = keyof typeof AUDIT_GROUPS;
 export const AUDIT_GROUP_KEYS = Object.keys(AUDIT_GROUPS) as [
@@ -364,7 +381,7 @@ export const tenderListQuery = z
   .object({
     from: q,
     to: q,
-    method: z.enum(["cash", "external"]).optional(),
+    method: z.enum(TENDER_METHODS).optional(),
     drawer: id.optional(),
     cursor,
     limit: limit(LIMITS.pageMax, 200),
@@ -560,8 +577,14 @@ export function aggregateInt(value: unknown): number {
 // Wire types (JSON; every amount is an integer in minor units)
 // ---------------------------------------------------------------------------------------------
 
-export type TenderMethod = "cash" | "external";
-export const TENDER_METHODS: readonly TenderMethod[] = ["cash", "external"];
+/**
+ * A stored tenders/refunds method as a report value (payments 037). There is no default: an
+ * unknown value throws instead of counting as cash (spec §8; 037's checks make it unreachable).
+ */
+export function methodOf(value: unknown): TenderMethod {
+  if (isTenderMethod(value)) return value;
+  throw new RangeError("report_method_unknown");
+}
 export type MethodTotals = {
   method: TenderMethod;
   count: number;
@@ -599,10 +622,64 @@ export type RefundMetrics = {
   total: number;
   cash: number;
   external: number;
+  /** payments (037): refunds of platform tenders. */
+  platform: number;
   restockedCost: number;
+};
+/** payments (037): card money of the range by terminal (null terminalId = "Otra terminal"). */
+export type TerminalTotals = {
+  terminalId: string | null;
+  /** The terminal's current name, else the latest snapshot on its tenders. */
+  label: string | null;
+  kind: string | null;
+  count: number;
+  amount: number;
+  tips: number;
+  refunds: number;
+  /** Processor fees: from the provider, and estimated from the terminal's rate. */
+  fees: { provider: number; estimated: number };
+  net: number;
+  netAfterFees: number;
+};
+/** payments (037): platform money of the range by platform. */
+export type PlatformTotals = {
+  platform: PlatformCode;
+  /** The latest typed name of an "Otra" platform; null for named platforms. */
+  label: string | null;
+  count: number;
+  amount: number;
+  refunds: number;
+  /** Estimated commission from the platform's rate (0 when not tracked). */
+  commission: number;
+  net: number;
+};
+/** S6 (payments 037): tenders and refunds of the range by terminal (collection/refund lens). */
+export type TerminalAggregate = {
+  terminalId: string | null;
+  label: string | null;
+  kind: string | null;
+  count: number;
+  amount: number;
+  tips: number;
+  refunds: number;
+  feeProvider: number;
+  feeEstimated: number;
+};
+/** S7 (payments 037): tenders and refunds of the range by platform. */
+export type PlatformAggregate = {
+  platform: PlatformCode;
+  label: string | null;
+  count: number;
+  amount: number;
+  refunds: number;
+  commission: number;
 };
 export type CollectionMetrics = {
   byMethod: MethodTotals[];
+  /** payments (037): Σ amount = byMethod external amount (the methods_sum check). */
+  byTerminal: TerminalTotals[];
+  /** payments (037): Σ amount = byMethod platform amount (the methods_sum check). */
+  byPlatform: PlatformTotals[];
   collected: number;
   tips: number;
   refunds: number;
@@ -618,6 +695,15 @@ export type MarginMetrics = {
   cogs: number;
   restockedCost: number;
   estimatedMargin: number | null;
+  /**
+   * payments (037; ARCHITECTURE "contribution after fees"): processor fees of card tenders and
+   * delivery-platform commissions, subtracted separately. `feesEstimated` is true when any part
+   * comes from a configured rate rather than the provider.
+   */
+  processorFees: number;
+  platformCommissions: number;
+  feesEstimated: boolean;
+  marginAfterFees: number | null;
 };
 export const CHECK_CODES = [
   "lines_vs_orders",
@@ -643,6 +729,8 @@ export type DayRow = {
   refunds: number;
   cash: number;
   external: number;
+  /** payments (037): paid by platforms (a sale, never cash or card). */
+  platform: number;
   tips: number;
   paidOuts: number;
 };
@@ -796,6 +884,17 @@ export type TenderReportRow = {
    * the Pagos list labels it with tenderMethodLabel(method, source) ("Recuperado").
    */
   source: string;
+  /** payments (037): the named terminal (current name, else the tender's snapshot). */
+  terminalId?: string | null;
+  terminal?: string | null;
+  provider?: string | null;
+  providerReference?: string | null;
+  cardBrand?: string | null;
+  cardLast4?: string | null;
+  platform?: PlatformCode | null;
+  platformLabel?: string | null;
+  fee?: number | null;
+  feeSource?: "provider" | "estimated" | null;
 };
 /**
  * One loss-prevention row. `accountId`/`accountName` are the check's server (assigned waiter,
@@ -913,6 +1012,9 @@ export type DrawerRow = {
   terminalNet: number;
   terminalReported: number | null;
   terminalDifference: number | null;
+  /** payments (037): paid by platforms in this drawer (outside expected cash and card totals). */
+  platformSales: number;
+  platformRefunds: number;
   payments: number;
   /** Cash amount + tips recorded after the close (included in cashSales and cashTips). */
   lateCash: number;
@@ -994,6 +1096,14 @@ export type CorteDocument = {
     reported: number | null;
     difference: number | null;
   };
+  /**
+   * payments (037): the terminal section by terminal (label snapshot or current name; null =
+   * "Otra terminal"), as of close like `terminal`, with the typed batch total once closed. Fees
+   * appear only in the full variant for managers.
+   */
+  terminals: CorteTerminalLine[];
+  /** payments (037): paid by platforms; informative, outside expected cash. */
+  platforms: CortePlatformLine[];
   /** Cobros registrados; a corte Z counts only the tenders recorded by the close. */
   payments: number;
   controls: CorteControls | null;
@@ -1084,6 +1194,16 @@ export type ReconciliationInput = {
   byMethod: readonly { amount: number; tips: number }[];
   collected: number;
   tips: number;
+  /**
+   * payments (037): the external and platform method amounts and the sums of their per-terminal
+   * and per-platform rows; methods_sum also fails when either split disagrees. Absent: skipped.
+   */
+  splits?: {
+    external: number;
+    terminals: number;
+    platform: number;
+    platforms: number;
+  };
   /** Σ refunds.amount in the refund lens with created_at ≥ fiscal_epoch(). */
   fiscalRefunds: number;
   /** fiscalSummary totals; null when fiscal issues no tickets (non-MXN). */
@@ -1126,8 +1246,16 @@ export function reconciliationChecks(
   );
   const methodAmounts = sumBy(i.byMethod, (m) => m.amount);
   const methodTips = sumBy(i.byMethod, (m) => m.tips);
+  const sp = i.splits;
   if (methodAmounts !== i.collected)
     push("methods_sum", i.collected, methodAmounts);
+  else if (sp && (sp.terminals !== sp.external || sp.platforms !== sp.platform))
+    push(
+      "methods_sum",
+      add(sp.external, sp.platform),
+      add(sp.terminals, sp.platforms),
+      false,
+    );
   else push("methods_sum", i.tips, methodTips);
   if (i.fiscal)
     push("refunds_vs_fiscal", i.fiscalRefunds, i.fiscal.refundGross);
@@ -1247,6 +1375,9 @@ export type SummaryInput = {
   restocks: readonly RestockDayAggregate[];
   paidOuts: readonly PaidOutDayAggregate[];
   drawers: readonly DrawerRow[];
+  /** payments (037): S6 and S7; absent in unit fixtures (no splits check then). */
+  terminals?: readonly TerminalAggregate[];
+  platforms?: readonly PlatformAggregate[];
   /**
    * fiscalSummary for the range (null: no fiscal tickets, non-MXN). It becomes SalesSummary.tax,
    * and its totals drive the margin and the fiscal checks.
@@ -1359,6 +1490,7 @@ export function composeSalesSummary(input: SummaryInput): SalesSummary {
     total: sumBy(r, (x) => x.amount),
     cash: sumBy(refundsOf("cash"), (x) => x.amount),
     external: sumBy(refundsOf("external"), (x) => x.amount),
+    platform: sumBy(refundsOf("platform"), (x) => x.amount),
     restockedCost,
   };
 
@@ -1377,8 +1509,34 @@ export function composeSalesSummary(input: SummaryInput): SalesSummary {
       net: add(amount, tips) - refunded,
     };
   });
+  const byTerminal: TerminalTotals[] = (input.terminals ?? []).map((t) => {
+    const net = add(t.amount, t.tips) - t.refunds;
+    return {
+      terminalId: t.terminalId,
+      label: t.label,
+      kind: t.kind,
+      count: t.count,
+      amount: t.amount,
+      tips: t.tips,
+      refunds: t.refunds,
+      fees: { provider: t.feeProvider, estimated: t.feeEstimated },
+      net,
+      netAfterFees: net - add(t.feeProvider, t.feeEstimated),
+    };
+  });
+  const byPlatform: PlatformTotals[] = (input.platforms ?? []).map((p) => ({
+    platform: p.platform,
+    label: p.label,
+    count: p.count,
+    amount: p.amount,
+    refunds: p.refunds,
+    commission: p.commission,
+    net: p.amount - p.refunds,
+  }));
   const collections: CollectionMetrics = {
     byMethod,
+    byTerminal,
+    byPlatform,
     collected: sumBy(c, (x) => x.amount),
     tips: sumBy(c, (x) => x.tips),
     refunds: refunds.total,
@@ -1391,13 +1549,26 @@ export function composeSalesSummary(input: SummaryInput): SalesSummary {
   };
 
   const f = summaryFiscal(input);
+  const processorFees = sumBy(byTerminal, (t) =>
+    add(t.fees.provider, t.fees.estimated),
+  );
+  const platformCommissions = sumBy(byPlatform, (p) => p.commission);
+  const estimatedMargin = f ? add(f.netBase - sales.cogs, restockedCost) : null;
   const margin: MarginMetrics = {
     netSalesExTax: f ? f.base : null,
     netAfterRefundsExTax: f ? f.netBase : null,
     salesAfterRefunds: f ? f.netGross : null,
     cogs: sales.cogs,
     restockedCost,
-    estimatedMargin: f ? add(f.netBase - sales.cogs, restockedCost) : null,
+    estimatedMargin,
+    processorFees,
+    platformCommissions,
+    feesEstimated:
+      platformCommissions > 0 || byTerminal.some((t) => t.fees.estimated > 0),
+    marginAfterFees:
+      estimatedMargin === null
+        ? null
+        : estimatedMargin - add(processorFees, platformCommissions),
   };
 
   const on = <T extends { date: string }>(rows: readonly T[], date: string) =>
@@ -1425,6 +1596,10 @@ export function composeSalesSummary(input: SummaryInput): SalesSummary {
               collected.filter((x) => x.method === "external"),
               (x) => x.amount,
             ),
+            platform: sumBy(
+              collected.filter((x) => x.method === "platform"),
+              (x) => x.amount,
+            ),
             tips: sumBy(collected, (x) => x.tips),
             paidOuts: sumBy(on(input.paidOuts, date), (x) => x.amount),
           };
@@ -1444,6 +1619,22 @@ export function composeSalesSummary(input: SummaryInput): SalesSummary {
     byMethod,
     collected: collections.collected,
     tips: collections.tips,
+    ...(input.terminals || input.platforms
+      ? {
+          splits: {
+            external: sumBy(
+              byMethod.filter((m) => m.method === "external"),
+              (m) => m.amount,
+            ),
+            terminals: sumBy(byTerminal, (t) => t.amount),
+            platform: sumBy(
+              byMethod.filter((m) => m.method === "platform"),
+              (m) => m.amount,
+            ),
+            platforms: sumBy(byPlatform, (p) => p.amount),
+          },
+        }
+      : {}),
     fiscalRefunds: sumBy(r, (x) => x.fiscalAmount),
     fiscal: f ? { gross: f.gross, refundGross: f.refundGross } : null,
   });
@@ -1780,6 +1971,21 @@ export type DrawerFacts = {
     lateAmount: number;
     lateTips: number;
   };
+  /**
+   * payments (037): platform tenders of the drawer, never cash and never card (optional so
+   * older fixtures stay valid; absent = none). `late*` as for cash.
+   */
+  platform?: {
+    count: number;
+    amount: number;
+    refunds: number;
+    lateCount: number;
+    lateAmount: number;
+  };
+  /** payments (037): the external tenders by terminal (Σ = `external`), with the typed batch totals. */
+  terminals?: DrawerTerminalFact[];
+  /** payments (037): the platform tenders by platform (Σ = `platform`). */
+  platforms?: DrawerPlatformFact[];
   /** −Σ negative cash_movements (positive amount). */
   paidOuts: CountAmount;
   /** Σ positive cash_movements (no command records one today). */
@@ -1796,6 +2002,117 @@ export type DrawerFacts = {
   review: DrawerReview | null;
   zPrints: number;
 };
+
+/** payments (037): one terminal's tenders and refunds in a drawer (terminalId null = Otra terminal). */
+export type DrawerTerminalFact = {
+  terminalId: string | null;
+  label: string | null;
+  kind: string | null;
+  count: number;
+  amount: number;
+  tips: number;
+  refunds: number;
+  lateCount: number;
+  lateAmount: number;
+  lateTips: number;
+  feeProvider: number;
+  feeEstimated: number;
+  /** Kiosk-channel tenders (critic R27): the kiosk corte sub-line. */
+  kioskCount: number;
+  kioskAmount: number;
+  /** drawer_terminal_counts written at the close; null when not typed. */
+  expected: number | null;
+  reported: number | null;
+};
+export type DrawerPlatformFact = {
+  platform: PlatformCode;
+  label: string | null;
+  count: number;
+  amount: number;
+  refunds: number;
+  lateCount: number;
+  lateAmount: number;
+  commission: number;
+};
+const NO_PLATFORM = {
+  count: 0,
+  amount: 0,
+  refunds: 0,
+  lateCount: 0,
+  lateAmount: 0,
+} as const;
+/** payments (037): one terminal line of a corte (as of close on a corte Z). */
+export type CorteTerminalLine = {
+  terminalId: string | null;
+  label: string | null;
+  kind: string | null;
+  count: number;
+  sales: number;
+  tips: number;
+  refunds: number;
+  net: number;
+  reported: number | null;
+  difference: number | null;
+  kioskCount: number;
+  kioskAmount: number;
+  /** Full variant only (managers): provider plus estimated fees. */
+  fees?: number;
+};
+export type CortePlatformLine = {
+  platform: PlatformCode;
+  label: string | null;
+  count: number;
+  sales: number;
+  refunds: number;
+  net: number;
+  /** Full variant only (managers): estimated commission. */
+  commission?: number;
+};
+function corteTerminals(
+  f: DrawerFacts,
+  closed: boolean,
+  fees: boolean,
+): CorteTerminalLine[] {
+  return (f.terminals ?? []).map((t) => {
+    const sales = t.amount - (closed ? t.lateAmount : 0);
+    const tips = t.tips - (closed ? t.lateTips : 0);
+    const net = add(sales, tips) - t.refunds;
+    return {
+      terminalId: t.terminalId,
+      label: t.label,
+      kind: t.kind,
+      count: t.count - (closed ? t.lateCount : 0),
+      sales,
+      tips,
+      refunds: t.refunds,
+      net,
+      reported: closed ? t.reported : null,
+      difference:
+        closed && t.reported !== null ? t.reported - (t.expected ?? net) : null,
+      kioskCount: t.kioskCount,
+      kioskAmount: t.kioskAmount,
+      ...(fees ? { fees: add(t.feeProvider, t.feeEstimated) } : {}),
+    };
+  });
+}
+function cortePlatforms(
+  f: DrawerFacts,
+  closed: boolean,
+  fees: boolean,
+): CortePlatformLine[] {
+  return (f.platforms ?? []).map((p) => {
+    const sales = p.amount - (closed ? p.lateAmount : 0);
+    return {
+      platform: p.platform,
+      label: p.label,
+      count: p.count - (closed ? p.lateCount : 0),
+      sales,
+      refunds: p.refunds,
+      net: sales - p.refunds,
+      ...(fees ? { commission: p.commission } : {}),
+    };
+  });
+}
 
 /**
  * Every figure a drawer's expected cash and terminal net come from, as one string: a tender,
@@ -1894,7 +2211,10 @@ export function drawerRow(
     terminalNet: terminalNet(f),
     terminalReported: closed ? f.stored.externalReported : null,
     terminalDifference: terminalDifference(f),
-    payments: f.cash.count + f.external.count,
+    platformSales: (f.platform ?? NO_PLATFORM).amount,
+    platformRefunds: (f.platform ?? NO_PLATFORM).refunds,
+    payments:
+      f.cash.count + f.external.count + (f.platform ?? NO_PLATFORM).count,
     lateCash: closed ? add(f.cash.lateAmount, f.cash.lateTips) : 0,
     lateTerminal: lateTerminal(f),
     review: f.review,
@@ -2082,12 +2402,22 @@ export function buildCorteDocument(
       last: number;
       count: number;
     }[];
+    /**
+     * Processor fees and platform commissions (spec §2.2: owner and manager only). drawerCorte
+     * passes managers && full (PAYMENTS-SECURITY-3): a cashier allowed to see expected cash
+     * still never sees the negotiated rates. Absent: the full variant's default.
+     */
+    fees?: boolean;
   },
 ): CorteDocument {
   const closed = f.closedAt !== null;
   const blind = ctx.visibility === "blind";
+  const fees = !blind && (ctx.fees ?? true);
   if (!closed && blind) throw new RangeError("blind_corte_x");
-  const lateCount = closed ? add(f.cash.lateCount, f.external.lateCount) : 0;
+  const platform = f.platform ?? NO_PLATFORM;
+  const lateCount = closed
+    ? add(add(f.cash.lateCount, f.external.lateCount), platform.lateCount)
+    : 0;
   const cash: CorteDocument["cash"] = blind
     ? null
     : closed
@@ -2146,7 +2476,10 @@ export function buildCorteDocument(
       reported: closed ? f.stored.externalReported : null,
       difference: terminalDifference(f),
     },
-    payments: add(f.cash.count, f.external.count) - lateCount,
+    terminals: corteTerminals(f, closed, fees),
+    platforms: cortePlatforms(f, closed, fees),
+    payments:
+      add(add(f.cash.count, f.external.count), platform.count) - lateCount,
     controls: blind ? null : ctx.controls,
     folios: blind ? [] : folioRanges(ctx.folios, CORTE_FOLIO_RUNS),
     lateCash: blind || !closed ? 0 : add(f.cash.lateAmount, f.cash.lateTips),
@@ -2162,14 +2495,20 @@ export function buildCorteDocument(
  */
 export function otherDayDrawerCollections(
   collected: number,
-  drawers: readonly Pick<
+  drawers: readonly (Pick<
     DrawerRow,
     "businessDate" | "cashSales" | "terminalSales"
-  >[],
+  > & { platformSales?: number })[],
   date: string,
 ): number {
   const sameDay = drawers.filter((d) => d.businessDate === date);
-  return collected - sumBy(sameDay, (d) => add(d.cashSales, d.terminalSales));
+  // payments (037): platform sales are recorded in drawers too (never as cash).
+  return (
+    collected -
+    sumBy(sameDay, (d) =>
+      add(add(d.cashSales, d.terminalSales), d.platformSales ?? 0),
+    )
+  );
 }
 
 /** The corte del día document: one business date's summary, drawers and exception totals. */

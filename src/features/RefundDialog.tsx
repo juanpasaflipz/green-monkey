@@ -6,6 +6,7 @@ import {
   type Session,
 } from "../../shared/domain";
 import { parseMoneyInput } from "../../shared/service";
+import type { TenderMethod } from "../../shared/payments";
 import {
   amountRefundAllowed,
   itemRefundExpectation,
@@ -28,7 +29,7 @@ import {
   currentBusinessDate,
   orderNumberLabel,
   orderNumberText,
-  tenderMethodLabel,
+  tenderLabel,
 } from "../labels";
 import { printDocument, readPrintSettings } from "../print";
 import { RefundSlip } from "./discounts/RefundSlip";
@@ -49,7 +50,7 @@ import { cfdiTicketCovered, useCfdiTicketStatus } from "./cfdi/status";
 
 type Tender = {
   id: string;
-  method: "cash" | "external";
+  method: TenderMethod;
   amount: number;
   refunded: number;
   external_reference: string | null;
@@ -77,6 +78,25 @@ const RELOAD_CODES = [
  * Q2). One operation id per opened dialog, kept across retries until it
  * succeeds (MON-3).
  */
+/**
+ * The refund breakdown by method: cash leaves the drawer, card money goes back on the terminal,
+ * and a platform portion is refunded by the platform, never in cash (PAYMENTS-UX-8, spec §5.1).
+ * An unknown method counts in none of them (never cash).
+ */
+export function refundParts(
+  portions: readonly { method: string; amount: number }[],
+): { cash: number; external: number; platform: number } {
+  const part = (method: string) =>
+    portions
+      .filter((p) => p.method === method)
+      .reduce((n, p) => n + p.amount, 0);
+  return {
+    cash: part("cash"),
+    external: part("external"),
+    platform: part("platform"),
+  };
+}
+
 export function RefundDialog({
   order: initial,
   session,
@@ -219,11 +239,12 @@ export function RefundDialog({
         ? [{ tenderId: tender.id, method: tender.method, amount }]
         : [];
   const total = portions.reduce((n, p) => n + p.amount, 0);
-  const cashPart = portions
-    .filter((p) => p.method === "cash")
-    .reduce((n, p) => n + p.amount, 0);
+  const {
+    cash: cashPart,
+    external: externalPart,
+    platform: platformPart,
+  } = refundParts(portions);
   const externalPortions = portions.filter((p) => p.method === "external");
-  const externalPart = externalPortions.reduce((n, p) => n + p.amount, 0);
 
   // Kitchen: units of rounds the kitchen has not served are cancelled there.
   const roundOf = (lineId: string) => {
@@ -380,6 +401,11 @@ export function RefundDialog({
                   amount: money(result.batch.cashAmount),
                 })}
               </strong>
+            </p>
+          )}
+          {result.batch.platformAmount > 0 && (
+            <p>
+              {t("payRefundPlatform")}: {money(result.batch.platformAmount)}
             </p>
           )}
           {result.batch.externalAmount > 0 && (
@@ -638,7 +664,7 @@ export function RefundDialog({
                   {amountTenders.map((x) => (
                     <option key={x.id} value={x.id}>
                       {fill(t("discountsRefundTenderOption"), {
-                        method: tenderMethodLabel(x.method, x.source, locale),
+                        method: tenderLabel(x, locale),
                         paid: money(x.amount),
                         available: money(x.amount - x.refunded),
                       })}
@@ -741,6 +767,16 @@ export function RefundDialog({
                       </div>
                     );
                   })}
+                </>
+              )}
+              {platformPart > 0 && (
+                <>
+                  <p>
+                    <strong>
+                      {t("payRefundPlatform")}: {money(platformPart)}
+                    </strong>
+                  </p>
+                  <p className="muted tiny">{t("payRefundPlatformHint")}</p>
                 </>
               )}
             </section>

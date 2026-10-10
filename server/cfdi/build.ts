@@ -36,12 +36,17 @@ import {
   type TaxCategory,
 } from "../../shared/fiscal.js";
 import {
+  DEFAULT_PLATFORM_FORM,
   paymentFormFor,
   resicoWithholds,
   RESICO_ISR_RATE_BPS,
   usoCfdiAllowed,
   type CardForm,
+  type FormPayment,
+  type PaymentFormCode,
+  type PlatformForm,
   type Receptor,
+  type SubstituteForm,
 } from "../../shared/cfdi.js";
 import {
   invoiceInput,
@@ -451,6 +456,8 @@ export type InvoiceBuildInput = {
   issuerPostalCode: string;
   /** Credit or debit for external-terminal tenders (asked at invoicing; restaurant default). */
   cardForm: CardForm;
+  /** payments (037): cfdi_settings.platform_payment_form; absent = the default (31). */
+  platformForm?: PlatformForm;
   /** Restaurant timezone, for the ticket date in the PDF section. */
   timezone: string;
   /** Refunds to net; default every refund in the payload (all were recorded before the freeze). */
@@ -546,7 +553,10 @@ export function buildInvoiceRequest(i: InvoiceBuildInput): InvoiceBuild {
     type: "I",
     customer: customerFor(receptor),
     items,
-    payment_form: paymentFormFor(payload.payments, i.cardForm),
+    payment_form: paymentFormFor(payload.payments, {
+      card: i.cardForm,
+      platform: i.platformForm,
+    }),
     payment_method: "PUE",
     use: receptor.use,
     currency: "MXN",
@@ -584,7 +594,7 @@ export type GlobalTicket = {
   folio: string;
   /** netGroups() of the ticket: fiscal's figures net of its refunds. */
   groups: readonly NetGroup[];
-  payments: readonly { method: string; amount: number }[];
+  payments: readonly FormPayment[];
 };
 export type GlobalPart = {
   docId: string;
@@ -623,6 +633,8 @@ export function buildGlobalRequests(i: {
   period: GlobalInfo;
   issuerPostalCode: string;
   cardForm: CardForm;
+  /** payments (037): the platform form; absent (the scheduler's partition) = the default 31. */
+  platformForm?: PlatformForm;
   maxConcepts?: number;
 }): GlobalPart[] {
   const max = i.maxConcepts ?? GLOBAL_MAX_CONCEPTS;
@@ -689,7 +701,10 @@ export function buildGlobalRequests(i: {
       type: "I",
       customer: publicoEnGeneral(i.issuerPostalCode),
       items: d.items,
-      payment_form: paymentFormFor(largest.payments, i.cardForm),
+      payment_form: paymentFormFor(largest.payments, {
+        card: i.cardForm,
+        platform: i.platformForm,
+      }),
       payment_method: "PUE",
       use: "S01",
       currency: "MXN",
@@ -735,16 +750,18 @@ export type EgresoBuildInput = {
   issuerPostalCode: string;
   /** cfdi_settings.card_payment_form, when the parent's form is not a card form. */
   cardForm: CardForm;
+  /** payments (037): the refund of a platform tender takes the platform form (default 31). */
+  platformForm?: PlatformForm;
   /**
    * A substitute credit note (CFDI-SAT-2): the UUID of the credit note it replaces (relation 04,
    * next to the 01 relation to the parent) and the FormaPago the manager chose.
    */
-  replaces?: { uuid: string; paymentForm: "01" | CardForm } | null;
+  replaces?: { uuid: string; paymentForm: SubstituteForm } | null;
   /**
    * What the note credits: a refund (default), or a ticket's whole net amount in a global before
    * its nominative invoice (route III, CFDI-SAT-3), with the ticket's own FormaPago.
    */
-  credit?: { purpose: "invoiced"; paymentForm: "01" | CardForm } | null;
+  credit?: { purpose: "invoiced"; paymentForm: PaymentFormCode } | null;
 };
 export type EgresoBuild = {
   body: FInvoiceInput;
@@ -807,7 +824,19 @@ export function buildEgresoRequest(i: EgresoBuildInput): EgresoBuild {
       ? parent.paymentForm && cardForms.includes(parent.paymentForm)
         ? parent.paymentForm
         : i.cardForm
-      : "01");
+      : refund.method === "platform"
+        ? // The note keeps its parent's platform form when the parent has one (31 and 03 only
+          // come from platform money), so a later change of the setting never splits the pair
+          // (PAYMENTS-FISCAL-2); otherwise the setting in force.
+          parent.paymentForm && ["31", "03"].includes(parent.paymentForm)
+          ? (parent.paymentForm as PlatformForm)
+          : (i.platformForm ?? DEFAULT_PLATFORM_FORM)
+        : refund.method === "cash"
+          ? "01"
+          : (() => {
+              // payments (037): no default to cash for an unknown method.
+              throw new DomainError("cfdi_payment_method_unknown", 409);
+            })());
   const body = finalize({
     type: "E",
     customer: receptor

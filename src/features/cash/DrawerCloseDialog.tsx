@@ -34,6 +34,49 @@ export type DrawerView = {
     difference: number | null;
     late: number;
   };
+  /** payments (037): card money per terminal (optional: an older cached copy lacks it). */
+  byTerminal?: {
+    terminalId: string | null;
+    label: string | null;
+    kind: string | null;
+    count: number;
+    amount: number;
+    tips: number;
+    refunds: number;
+    net: number;
+    late: number;
+    kioskCount: number;
+    kioskAmount: number;
+    fees?: { provider: number; estimated: number };
+    reported?: number | null;
+    difference?: number | null;
+  }[];
+  /** payments (037): paid by platforms, outside expected cash and card totals. */
+  platform?: { sales: number; refunds: number; net: number; count: number };
+  platforms?: {
+    platform: string;
+    /** «Otra»'s typed name (absent on an older cached copy). */
+    label?: string | null;
+    count: number;
+    amount: number;
+    refunds: number;
+    net: number;
+    late: number;
+    commission?: number;
+  }[];
+  /** payments (037): terminal charges that keep the drawer from closing. */
+  unresolvedAttempts?: {
+    id: string;
+    state: string;
+    target: string;
+    orderId: string | null;
+    holdId: string | null;
+    orderNumber: number | null;
+    holdLabel: string | null;
+    terminal: string;
+    amount: number;
+    createdAt: string;
+  }[];
   paymentCount: number;
   expected: number | null;
   closedExpected: number | null;
@@ -89,6 +132,11 @@ export function DrawerCloseDialog({
   const [step, setStep] = useState<"count" | "confirm" | "result">("count");
   const [countedText, setCountedText] = useState("");
   const [terminalText, setTerminalText] = useState("");
+  // payments (037): "Total del lote" per terminal when named terminals took money here.
+  const terminalRows = (drawer.byTerminal ?? []).some((r) => r.terminalId)
+    ? (drawer.byTerminal ?? [])
+    : [];
+  const [batchTexts, setBatchTexts] = useState<Record<string, string>>({});
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -115,7 +163,39 @@ export function DrawerCloseDialog({
   } catch {
     terminalError = `${t("discountsCloseTerminal")}: ${translateError("invalid_amount", locale)}`;
   }
-  const inputError = countedError || terminalError;
+  const batches: { terminalId: string | null; reported: number }[] = [];
+  // PAYMENTS-UX-17: each batch field has its own error, naming its terminal.
+  const batchErrors: Record<string, string> = {};
+  const batchLabel = (row: { label: string | null }) =>
+    `${t("cashBatchTotal")} · ${row.label ?? t("payOtherTerminal")}`;
+  for (const row of terminalRows) {
+    const typed = batchTexts[row.terminalId ?? ""]?.trim();
+    if (!typed) continue;
+    try {
+      batches.push({
+        terminalId: row.terminalId,
+        reported: parseMoneyInput(typed, exponent),
+      });
+    } catch {
+      batchErrors[row.terminalId ?? ""] =
+        `${batchLabel(row)}: ${translateError("invalid_amount", locale)}`;
+    }
+  }
+  // PAYMENTS-SECURITY-2 / UX-3 / MONEY-2: every terminal that holds money, or none (the server
+  // refuses a partial report: a blank terminal's shortage would hide).
+  if (batches.length || Object.keys(batchErrors).length)
+    for (const row of terminalRows)
+      if (
+        row.net !== 0 &&
+        !batchTexts[row.terminalId ?? ""]?.trim() &&
+        !batchErrors[row.terminalId ?? ""]
+      )
+        batchErrors[row.terminalId ?? ""] =
+          `${batchLabel(row)}: ${t("cashBatchRequired")}`;
+  const batchErrorId = (key: string) =>
+    batchErrors[key] ? `close-batch-${key || "other"}-error` : undefined;
+  const inputError =
+    countedError || terminalError || Object.values(batchErrors)[0] || "";
   const visibleDifference =
     visible && counted !== null && drawer.expected !== null
       ? counted - drawer.expected
@@ -135,7 +215,13 @@ export function DrawerCloseDialog({
         operationId,
         counted,
         reason: reason.trim(),
-        ...(terminal !== null ? { externalReported: terminal } : {}),
+        ...(terminalRows.length
+          ? batches.length
+            ? { terminalReports: batches }
+            : {}
+          : terminal !== null
+            ? { externalReported: terminal }
+            : {}),
       });
       setResult(view);
       setStep("result");
@@ -273,17 +359,54 @@ export function DrawerCloseDialog({
               onChange={(e) => setCountedText(e.target.value)}
             />
           </Field>
-          <Field label={t("discountsCloseTerminal")}>
-            <input
-              inputMode="decimal"
-              value={terminalText}
-              aria-invalid={!!terminalError || undefined}
-              aria-describedby={
-                terminalError ? "close-terminal-error" : undefined
-              }
-              onChange={(e) => setTerminalText(e.target.value)}
-            />
-          </Field>
+          {terminalRows.length ? (
+            <fieldset>
+              <legend>{t("cashCardByTerminal")}</legend>
+              <p className="muted tiny">{t("cashBatchAllOrNone")}</p>
+              {terminalRows.map((row) => {
+                const key = row.terminalId ?? "";
+                return (
+                  <div key={key || "other"}>
+                    <Field label={batchLabel(row)}>
+                      <input
+                        inputMode="decimal"
+                        value={batchTexts[key] ?? ""}
+                        aria-invalid={!!batchErrors[key] || undefined}
+                        aria-describedby={batchErrorId(key)}
+                        onChange={(e) =>
+                          setBatchTexts((b) => ({
+                            ...b,
+                            [key]: e.target.value,
+                          }))
+                        }
+                      />
+                    </Field>
+                    {batchErrors[key] && (
+                      <p
+                        className="error field-error"
+                        role="alert"
+                        id={batchErrorId(key)}
+                      >
+                        {batchErrors[key]}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </fieldset>
+          ) : (
+            <Field label={t("discountsCloseTerminal")}>
+              <input
+                inputMode="decimal"
+                value={terminalText}
+                aria-invalid={!!terminalError || undefined}
+                aria-describedby={
+                  terminalError ? "close-terminal-error" : undefined
+                }
+                onChange={(e) => setTerminalText(e.target.value)}
+              />
+            </Field>
+          )}
           <Field label={visible ? t("reason") : t("discountsCloseComment")}>
             <textarea
               value={reason}

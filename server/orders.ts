@@ -16,6 +16,20 @@ import { stock, lockStockItems } from "./stock.js";
 export { stock };
 import { recipeStockIds } from "../shared/menu.js";
 import { assertCheckWritable, refreshCheckState } from "./checks.js";
+import { assertNoLiveAttempt } from "./payments/guards.js";
+import {
+  insertTender,
+  liveTerminal,
+  tenderPlatform,
+  tenderTerminal,
+  type TenderSpec,
+} from "./payments/tenders.js";
+import {
+  PAYMENTS_LIMITS,
+  paymentMethodInput,
+  platformReferenceProblem,
+  tenderExtras,
+} from "../shared/payments.js";
 import { bumpKitchenFeed } from "./kitchen.js";
 import { adjustmentRows } from "./discounts.js";
 import {
@@ -190,7 +204,11 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
       } as PricedLine,
     }));
     const voids = voidsBy.get(orderId) ?? [];
-    const tenders = tendersBy.get(orderId) ?? [];
+    // payments (037): fees are manager figures (reports and corte); the order
+    // view every role and the receipt job read never carries them.
+    const tenders = (tendersBy.get(orderId) ?? []).map(
+      ({ fee: _fee, fee_source: _feeSource, ...t }) => t,
+    );
     const rounds = roundsBy.get(orderId) ?? [];
     const tenderAllocations = (allocationsBy.get(orderId) ?? []).map(
       ({ order_id: _order, ...a }) => a as TenderAllocation,
@@ -255,6 +273,7 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
         closedAt: o.closed_at ? o.closed_at.toISOString() : null,
         closeReason: o.close_reason ?? null,
         channel: o.channel,
+        pricePlatform: o.price_platform ?? null, // payments (037, LD-72)
         businessDate: o.business_day,
         openedBy: o.opened_by,
         id: o.id,
@@ -345,11 +364,23 @@ export async function createOrder(
   return once(tx, s, input.operationId, "create_order", input, async () => {
     if (["qr", "kiosk"].includes(input.channel)) await requirePro(tx);
     else if (!offline) await requireSelling(tx, s);
+    // payments (037, LD-72): only staff orders ring at a platform's prices, and online only at an
+    // enabled platform's (PAYMENTS-SECURITY-5; offline sales already happened, OFF-8). A platform
+    // list is for delivery: never on a table or a dine-in order (LD-75).
+    if (input.pricePlatform && ["qr", "kiosk"].includes(input.channel))
+      throw new DomainError("invalid_input");
+    if (input.pricePlatform && !offline) {
+      if (input.tableId || input.mode === "dine_in")
+        throw new DomainError("payments_platform_dine_in", 409);
+      if (!(await tenderPlatform(tx, input.pricePlatform)).enabled)
+        throw new DomainError("payments_platform_disabled", 409);
+    }
     const lines = quote(
       input.lines,
       await catalog(tx),
       !["qr", "kiosk"].includes(input.channel),
       await fiscalContext(tx),
+      input.pricePlatform ?? null,
     );
     if (input.tableId) {
       const [t] =
@@ -366,7 +397,7 @@ export async function createOrder(
     const [number] =
       await tx`insert into order_numbers(tenant_id,business_date,value) values(${s.tenantId},${date},1) on conflict(tenant_id,business_date) do update set value=order_numbers.value+1 returning value`;
     const orderId = randomUUID();
-    await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,restaurant_snapshot) values(${s.tenantId},${orderId},${number.value},${date},${s.employeeId},${input.tableId},${input.mode},${input.name},${input.note},${input.channel},${sum(lines.map((l) => l.total))},${tx.json(s.restaurant)})`;
+    await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,restaurant_snapshot,price_platform) values(${s.tenantId},${orderId},${number.value},${date},${s.employeeId},${input.tableId},${input.mode},${input.name},${input.note},${input.channel},${sum(lines.map((l) => l.total))},${tx.json(s.restaurant)},${input.pricePlatform ?? null})`;
     await append(tx, s, orderId, lines, 1, {
       stockPolicy: offline ? "allow" : undefined,
     });
@@ -374,6 +405,7 @@ export async function createOrder(
       channel: input.channel,
       deviceId: s.deviceId,
       capabilityId: s.id,
+      ...(input.pricePlatform ? { pricePlatform: input.pricePlatform } : {}),
     });
     // LO-R3: the kitchen feed (LO-10) after every order, round and stock lock of
     // this command and before refreshCheckState, whose issuance takes the folio
@@ -435,11 +467,16 @@ export async function addRound(
       if (o.version !== input.expectedVersion)
         throw new DomainError("stale_order", 409);
       assertCheckWritable(o as { check_state: string; state: string });
+      // payments (037, LD-72): a round takes the order's own price list, set at creation; a
+      // round body naming another list is refused.
+      if (input.pricePlatform && input.pricePlatform !== o.price_platform)
+        throw new DomainError("payments_platform_price_list", 409);
       const lines = quote(
         input.lines,
         await catalog(tx),
         true,
         await fiscalContext(tx),
+        o.price_platform ?? null,
       );
       await applyRound(tx, s, o as RoundTarget, lines, { note: input.note });
       await bumpKitchenFeed(tx, s);
@@ -453,7 +490,7 @@ export const paymentInput = z
     amount: money.refine((n) => n > 0),
     tip: money.default(0),
     received: money,
-    method: z.enum(["cash", "external"]),
+    method: paymentMethodInput,
     externalConfirmed: z.boolean().default(false),
     reference: z.string().max(120).default(""),
     items: z
@@ -461,6 +498,8 @@ export const paymentInput = z
       .min(1)
       .max(9900)
       .optional(),
+    // payments (037): optional, no defaults, so old payloads hash the same.
+    ...tenderExtras,
   })
   .strict();
 export async function drawer(tx: Tx, s: Session) {
@@ -469,6 +508,16 @@ export async function drawer(tx: Tx, s: Session) {
   if (!d) throw new DomainError("drawer_required", 409);
   return d;
 }
+export type RecordPaymentOptions = {
+  /**
+   * Offline evidence (OFF-8): money already collected is always applied. It
+   * skips the live-attempt guard and the platform's online-only rules (full
+   * balance, enabled platform, price list); an archived terminal is accepted.
+   */
+  evidence?: boolean;
+  /** Offline evidence named a terminal that no longer exists: noted on the audit row. */
+  droppedTerminalId?: string | null;
+};
 export async function recordPayment(
   tx: Tx,
   s: Session,
@@ -476,16 +525,23 @@ export async function recordPayment(
   raw: unknown,
   groupId: string | null = null,
   expectedDrawerId?: string,
+  opts: RecordPaymentOptions = {},
 ) {
   permit(s, operators);
   const p = paymentInput.parse(raw);
   return once(tx, s, p.operationId, "payment", { orderId, ...p }, async () => {
     const [row] =
-      await tx`select id,state,check_state from orders where id=${orderId} for update`;
+      await tx`select id,state,check_state,price_platform,table_id,mode from orders where id=${orderId} for update`;
     if (!row) throw new DomainError("not_found", 404);
     assertCheckWritable(row as { check_state: string; state: string });
+    // payments (037): no second payment while money may be in flight at a terminal.
+    if (!opts.evidence) await assertNoLiveAttempt(tx, orderId);
     const o = await getOrder(tx, orderId);
     if (p.amount > o.total - o.paid) throw new DomainError("overpayment", 409);
+    if (p.terminalId && p.method !== "external")
+      throw new DomainError("invalid_input");
+    if ((p.platform || p.platformLabel) && p.method !== "platform")
+      throw new DomainError("invalid_input");
     // An external terminal collects no cash: received is ignored for it.
     if (p.method === "cash" && p.received < p.amount + p.tip)
       throw new DomainError("insufficient_cash");
@@ -494,6 +550,71 @@ export async function recordPayment(
       (!p.externalConfirmed || !p.reference.trim())
     )
       throw new DomainError("external_confirmation");
+    let platform: TenderSpec["platform"] = null;
+    /** Online platform rules offline evidence broke (PAYMENTS-SECURITY-4): noted, not refused. */
+    const skipped: string[] = [];
+    if (p.method === "platform") {
+      if (!p.platform) throw new DomainError("payments_platform_required");
+      if ((p.platform === "other") !== Boolean(p.platformLabel))
+        throw new DomainError("payments_platform_required");
+      if (!p.externalConfirmed)
+        throw new DomainError("payments_platform_confirm_required");
+      if (p.tip !== 0) throw new DomainError("payments_platform_no_tip");
+      if (p.items) throw new DomainError("invalid_input");
+      if (p.reference.trim().length > PAYMENTS_LIMITS.platformReferenceMax)
+        throw new DomainError("invalid_input");
+      const platformRow = await tenderPlatform(tx, p.platform);
+      // LD-75 (PAYMENTS-SECURITY-1): each rule names the online error it raises.
+      const rules: [string, boolean, string][] = [
+        // Q6: a platform covers the whole remaining balance.
+        [
+          "full_balance",
+          p.amount !== o.total - o.paid,
+          "payments_platform_full_balance",
+        ],
+        // Disabled by default: the owner opts in per platform.
+        ["disabled", !platformRow.enabled, "payments_platform_disabled"],
+        // A platform pays a delivery or takeaway order, never a table or dine-in one.
+        [
+          "dine_in",
+          Boolean(row.table_id) || row.mode === "dine_in",
+          "payments_platform_dine_in",
+        ],
+        // LD-72: an order rung at a platform's prices is paid by that platform.
+        [
+          "price_list",
+          Boolean(row.price_platform) && row.price_platform !== p.platform,
+          "payments_platform_price_list",
+        ],
+        // LD-75: a platform with prices of its own pays only orders rung at its list.
+        [
+          "needs_price_list",
+          !row.price_platform && platformRow.has_prices,
+          "payments_platform_needs_price_list",
+        ],
+        // Uber Eats, Rappi and DiDi tenders carry the platform's order number.
+        [
+          "reference",
+          platformReferenceProblem(p.platform, p.reference) !== null,
+          "payments_platform_reference_required",
+        ],
+      ];
+      for (const [rule, broken, code] of rules) {
+        if (!broken) continue;
+        if (!opts.evidence)
+          throw new DomainError(code, rule === "reference" ? 400 : 409);
+        skipped.push(rule);
+      }
+      platform = { row: platformRow, label: p.platformLabel ?? null };
+    }
+    let terminal: TenderSpec["terminal"] = null;
+    if (p.method === "external" && p.terminalId) {
+      // An integrated terminal used manually is the documented fallback.
+      terminal = opts.evidence
+        ? await tenderTerminal(tx, p.terminalId)
+        : await liveTerminal(tx, p.terminalId);
+      if (!terminal) throw new DomainError("payments_terminal_not_found", 404);
+    }
     if (p.items && !o.itemSplitAvailable)
       throw new DomainError("unallocated_history", 409);
     const allocations = o.itemSplitAvailable
@@ -502,16 +623,47 @@ export async function recordPayment(
     const d = await drawer(tx, s);
     if (expectedDrawerId && d.id !== expectedDrawerId)
       throw new DomainError("payment_review_required", 409);
-    const tenderId = randomUUID();
-    const received = p.method === "external" ? p.amount + p.tip : p.received;
-    const reference = p.method === "external" ? p.reference.trim() : null;
-    await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,group_id) values(${s.tenantId},${tenderId},${orderId},${d.id},${p.method},${p.amount},${p.tip},${received},${reference},${groupId})`;
+    const received =
+      p.method === "external"
+        ? p.amount + p.tip
+        : p.method === "platform"
+          ? p.amount
+          : p.received;
+    const reference = p.method === "cash" ? null : p.reference.trim() || null;
+    const tenderId = await insertTender(tx, s, {
+      orderId,
+      drawerId: d.id,
+      method: p.method,
+      amount: p.amount,
+      tip: p.tip,
+      received,
+      reference,
+      groupId,
+      terminal,
+      platform,
+    });
     for (const allocation of allocations)
       await tx`insert into tender_allocations(tenant_id,order_id,tender_id,line_id,unit_index,amount) values(${s.tenantId},${orderId},${tenderId},${allocation.lineId},${allocation.unit},${allocation.amount})`;
     await audit(tx, s, "payment.recorded", orderId, {
       method: p.method,
       amount: p.amount,
       tip: p.tip,
+      // Excepciones joins a platform tender to its actor through this id (LD-75).
+      tenderId,
+      ...(terminal ? { terminalId: terminal.id } : {}),
+      ...(platform ? { platform: platform.row.platform } : {}),
+      ...(opts.droppedTerminalId
+        ? {
+            droppedTerminalId: opts.droppedTerminalId,
+            note: "payments_terminal_unknown",
+          }
+        : {}),
+      ...(skipped.length
+        ? {
+            platformRulesSkipped: skipped,
+            platformNote: "payments_platform_rule_skipped",
+          }
+        : {}),
     });
     // Settle the check before the receipt is read; a settling payment issues
     // the fiscal ticket there (folio counter, LO-12, last). Payments never bump

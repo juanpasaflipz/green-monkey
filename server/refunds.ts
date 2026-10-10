@@ -1,5 +1,6 @@
-// Refunds (028): item refunds of paid units and amount refunds, for cash and
-// external-terminal (card) tenders, with kitchen cancellation and optional
+// Refunds (028): item refunds of paid units and amount refunds, for cash,
+// external-terminal (card) and, since payments 037, platform tenders (no
+// drawer, no terminal confirmation), with kitchen cancellation and optional
 // restock; and the legacy POST /refunds for old bundles. insertRefundBatch is
 // the single writer of refunds and the single caller of fiscal's
 // recordRefundTax. Lock order (docs/ARCHITECTURE.md): items 1 → 2 → 5 → 5a →
@@ -21,6 +22,7 @@ import {
   type ApprovalContext,
 } from "./discounts.js";
 import { assertRefundAllowed, recordRefundTax } from "./fiscal.js";
+import { loyaltyRefundRecorded } from "./loyalty/hooks.js";
 import { recipeStockIds } from "../shared/menu.js";
 import {
   businessDate,
@@ -31,6 +33,7 @@ import {
   type Order,
   type Session,
 } from "../shared/domain.js";
+import { isTenderMethod, type TenderMethod } from "../shared/payments.js";
 import {
   itemRefundPlanMatches,
   itemRefundsBlocked,
@@ -56,7 +59,7 @@ export type RefundBatchWrite = {
   /** In tender order (created_at, id). */
   portions: {
     tenderId: string;
-    method: "cash" | "external";
+    method: TenderMethod;
     amount: number;
     reference: string | null;
     units: { lineId: string; unit: number; amount: number }[];
@@ -69,6 +72,23 @@ export type RefundBatchWrite = {
     kitchenAck: boolean;
   }[];
 };
+
+/** A batch's split by tender method (payments 037: cash, external, platform). */
+export function refundSplit(
+  portions: readonly { method: string; amount: number }[],
+): Record<TenderMethod, number> {
+  const split: Record<TenderMethod, number> = {
+    cash: 0,
+    external: 0,
+    platform: 0,
+  };
+  for (const p of portions) {
+    if (!isTenderMethod(p.method))
+      throw new DomainError("report_method_unknown", 500);
+    split[p.method] += p.amount;
+  }
+  return split;
+}
 
 /**
  * Writes one refund batch: the batch row, one refund_lines row per line, then
@@ -94,13 +114,13 @@ export async function insertRefundBatch(
     throw new DomainError("drawer_required", 409);
   const batchId = randomUUID();
   const amount = sum(b.portions.map((p) => p.amount));
-  const cash = sum(
-    b.portions.filter((p) => p.method === "cash").map((p) => p.amount),
-  );
+  // payments (037): every portion counts in exactly one split column; an
+  // unknown method is refused, never counted as cash (refund_batches_split).
+  const split = refundSplit(b.portions);
   await tx`insert into refund_batches(tenant_id,id,order_id,mode,amount,cash_amount,external_amount,
-      reason_code,note,restock,actor_id,approver_id,device_id,business_date)
-    values(${s.tenantId},${batchId},${b.orderId},${b.mode},${amount},${cash},${amount - cash},
-      ${b.reasonCode},${b.note},${b.restock},${s.employeeId},${b.approverId},${s.deviceId},${b.businessDate})`;
+      platform_amount,reason_code,note,restock,actor_id,approver_id,device_id,business_date)
+    values(${s.tenantId},${batchId},${b.orderId},${b.mode},${amount},${split.cash},${split.external},
+      ${split.platform},${b.reasonCode},${b.note},${b.restock},${s.employeeId},${b.approverId},${s.deviceId},${b.businessDate})`;
   const refundLineIds: Record<string, string> = {};
   for (const line of b.lines) {
     const lineId = randomUUID();
@@ -132,6 +152,8 @@ export async function insertRefundBatch(
     );
     refundIds.push(refundId);
   }
+  // loyalty (038, R19): the last statement of the batch; a refund lowers the stamp base.
+  await loyaltyRefundRecorded(tx, s, b.orderId, batchId);
   return { batchId, refundIds, refundLineIds };
 }
 
@@ -327,15 +349,14 @@ export async function recordRefund(
             );
         }
       const total = sum(portions.map((x) => x.amount));
-      const cash = sum(
-        portions.filter((x) => x.method === "cash").map((x) => x.amount),
-      );
+      const split = refundSplit(portions);
       await audit(tx, s, "refund.recorded", orderId, {
         batchId: written.batchId,
         mode: p.mode,
         amount: total,
-        cash,
-        external: total - cash,
+        cash: split.cash,
+        external: split.external,
+        ...(split.platform ? { platform: split.platform } : {}),
         lines: lines.map((l) => ({ lineId: l.lineId, units: l.units })),
         restock: p.mode === "items" && p.restock,
         reasonCode: p.reasonCode,
@@ -390,6 +411,12 @@ export async function refund(tx: Tx, s: Session, raw: unknown) {
       throw new DomainError("refund_exceeds", 409);
     if (t.method === "external")
       throw new DomainError("external_refund_unverified", 409);
+    // payments (037): a platform refund has no drawer and goes through the
+    // batch refund (Reembolsar), which records it as a platform portion.
+    if (t.method === "platform")
+      throw new DomainError("payments_platform_refund_requires_batch", 409);
+    if (t.method !== "cash")
+      throw new DomainError("report_method_unknown", 500);
     if (p.reason.trim().length < 3)
       throw new DomainError("refund_note_required", 400);
     const d = await drawer(tx, s);

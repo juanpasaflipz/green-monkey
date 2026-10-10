@@ -397,6 +397,42 @@ Diners' ARCO requests go to the restaurant, the responsable; for a held order
 that never became a sale, support follows [public ordering](PUBLIC_ORDERING.md)
 §12.
 
+### The loyalty club (038)
+
+A restaurant's club ([Loyalty](LOYALTY.md)) cannot be switched on without this URL and the owner's
+attestation, recorded with who and when, that the notice covers the club: the data (name or nickname,
+phone, purchase history in the club), the purposes (primary: identify the member and keep stamps and
+rewards; secondary and optional: promotions by message), retention (24 months without activity) and the
+ARCO channel. Removing the URL later does not switch the club off, but enrollment is refused
+(`loyalty_privacy_notice_required`) until a URL is set again. Each member keeps the consent channel, the
+time and a snapshot of the URL in force; the marketing opt-in is separate and starts unchecked. Imported
+pos-lite members keep their program (`pos_lite_import`) but their pre-checked SMS opt-ins are evidence
+only, never marketing consent. ARCO is in the app (Clientes: "Imprimir datos del cliente", "Editar
+datos", the marketing toggle, "Eliminar datos del cliente") and in the owner export; the daily retention
+pass redacts members inactive for 24 months. Counsel reviews all consent and notice wording (LD-3).
+
+**Restaurant-notice checklist (critic R40).** Add to the items a restaurant's notice must cover: the club
+items above; and, with payments (037), the card brand, type and last four digits of terminal payments.
+
+**Platform notice and DPA: the club (critic R40, LD-74, LOYALTY-PRIVACY-4).** Version `2026-10-09` of the
+privacy notice and the DPA (`CLUB_LEGAL_VERSION`) covers the club: DPA §2 lists club members' name or
+nickname, phone, purchase history in the club, consent record, promotions preference and imported pos-lite
+figures; DPA §6 and privacy §5 say the club's data stays with the same database, hosting and backup
+processors and adds none; DPA §11 and privacy §6 say it is never transferred and that Green Monkey sends
+members no messages. Counsel reviews these paragraphs with the rest before publication (LD-3, LAUNCH_HANDOFF
+1.12). It ships as a non-material version (effect on announcement) because no account had accepted a
+published version (production signup stays paused until the set is published); if acceptances of a
+published `2026-10-06` exist when it deploys, the release marks it material instead (`requiresAcceptanceSince`
+= `2026-10-09`, `effectiveFrom` 15 days after `announcedAt`). **Gate:** turning the club on answers
+`409 loyalty_legal_required` unless the documents are published and that version (or a later one) is in
+effect (`clubLegalCovered`); with unpublished documents only where draft documents may be used
+(`LEGAL_UNPUBLISHED_SIGNUP=allow`, never production). A club already on is not switched off.
+
+**Still inputs for their tracks (not loyalty's):** DPA §2 card brand, type and last 4 digits and the kiosk
+device-binding cookie; Cloudflare's scope widening to "and menu images" (kiosk); DPA §11 transmission to the
+restaurant's own payment providers (Mercado Pago, Clip) on its instruction and custody of its sealed
+credentials. Each ships as a new version the same way.
+
 ## Plan lapse (GAP-1)
 
 - **Drawer continuation:** when Free rules would block selling but this device

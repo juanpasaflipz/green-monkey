@@ -13,6 +13,7 @@ import {
   type PricedLine,
 } from "./domain.js";
 import { lineRemaining } from "./settlement.js";
+import type { CardType, PlatformCode, TenderMethod } from "./payments.js";
 import {
   extractTax,
   resolveTaxCategory,
@@ -1033,11 +1034,19 @@ export type FiscalTicketView = {
   groups: TaxGroup[];
   lines: TicketLineSnapshot[];
   payments: {
-    method: "cash" | "external";
+    method: TenderMethod;
     amount: number;
     tip: number;
     reference: string | null;
     at: string;
+    /** payments (037; absent on older tickets): the platform of a platform tender. */
+    platform?: PlatformCode;
+    /** The terminal ("Clip Mostrador") or the platform's display name ("Otra" label). */
+    label?: string;
+    /** Credit, debit or prepaid when an integrated terminal reported it. */
+    cardType?: CardType;
+    cardBrand?: string;
+    cardLast4?: string;
   }[];
 };
 export type RefundTaxView = {
@@ -1128,7 +1137,7 @@ export type TicketRow = {
   groups: CategoryTax[];
   refundGross: number;
   refundTax: number;
-  payments: { method: "cash" | "external"; amount: number }[];
+  payments: { method: TenderMethod; amount: number }[];
   selfInvoiceCode: string;
   source: string;
 };
@@ -1152,6 +1161,6 @@ export type CfdiTicketPayload = {
   }[];
   itemized: TicketLineSnapshot[];
   itemizedValid: boolean;
-  payments: { method: "cash" | "external"; amount: number }[];
+  payments: { method: TenderMethod; amount: number; cardType?: CardType }[];
   refunds: RefundTaxView[];
 };

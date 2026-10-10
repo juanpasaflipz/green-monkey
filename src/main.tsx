@@ -8,6 +8,7 @@ const SelfInvoicePortal = lazy(
 );
 const LegalPage = lazy(() => import("./legal/LegalPage"));
 const PublicOrdering = lazy(() => import("./features/PublicOrdering"));
+const JoinPage = lazy(() => import("./features/loyalty/JoinPage"));
 import { PlatformGate } from "./features/offline/PlatformGate";
 import { registerServiceWorker } from "./service-worker";
 import "@fontsource-variable/inter/opsz.css";
@@ -21,6 +22,8 @@ createRoot(document.getElementById("root")!).render(
         <SelfInvoicePortal />
       ) : /^\/(qr|kiosk)(\/|$)/.test(location.pathname) ? (
         <PublicOrdering />
+      ) : /^\/club\/?$/.test(location.pathname) ? (
+        <JoinPage />
       ) : location.pathname === "/" &&
         !new URLSearchParams(location.search).has("account") &&
         !new URLSearchParams(location.search).has("auth_error") ? (
@@ -33,7 +36,7 @@ createRoot(document.getElementById("root")!).render(
     </Suspense>
   </React.StrictMode>,
 );
-const publicPage = /^\/(f|factura|qr|kiosk)(\/|$)/.test(location.pathname);
+const publicPage = /^\/(f|factura|qr|kiosk|club)(\/|$)/.test(location.pathname);
 // The worker is registered at a fixed URL with its build id baked in (OFF-10).
 if ("serviceWorker" in navigator && import.meta.env.PROD && !publicPage)
   void registerServiceWorker();

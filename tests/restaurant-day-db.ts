@@ -16,13 +16,23 @@ import {
   runUrls,
   type RunState,
 } from "./restaurant-day/env.js";
-import { oracleA, oracleB, ticketFigures } from "./restaurant-day/oracle.js";
+import {
+  oracleA,
+  oracleB,
+  oracleL,
+  stampsFor,
+  ticketFigures,
+} from "./restaurant-day/oracle.js";
 import {
   CHECKS_B,
+  CLUB_L,
   ORDERS_A,
+  ORDERS_L,
   REFUNDS_A,
+  REFUNDS_L,
   RESTAURANT_A,
   RESTAURANT_B,
+  RESTAURANT_L,
 } from "./restaurant-day/scenario.js";
 
 const state = JSON.parse(readFileSync(STATE_FILE, "utf8")) as RunState;
@@ -33,6 +43,7 @@ const sql = connect(urls.runtime);
 const admin = postgres(urls.provisioner, { max: 2, onnotice: () => {} });
 const A = state.tenantA!;
 const B = state.tenantB!;
+const L = state.tenantL!;
 const FIG = ticketFigures();
 const cents = (money: string) => {
   const m = /^([−-])?\$([\d,]+)\.(\d{2})$/.exec(money);
@@ -80,6 +91,8 @@ const inB = <T>(fn: (tx: Tx) => Promise<T>) => inT(B, fn);
 
 const expectedA = oracleA();
 const expectedB = oracleB();
+const expectedL = oracleL();
+const inL = <T>(fn: (tx: Tx) => Promise<T>) => inT(L, fn);
 
 await check(
   "D1",
@@ -837,6 +850,368 @@ await check(
         .reduce((s, c) => s + c.gross, 0),
       cents(g.tasa0),
     );
+  },
+);
+
+// ---------------------------------------------------------------- branch L
+// Loyalty spec §9.4 (LD-80): Restaurant L's club day reconciled with the oracle (R18, R19) and
+// the hand-typed tables (expected.ts L); the club exists in no other restaurant.
+
+await check(
+  "D20",
+  "Restaurant L: folios L-000001..3, tickets, tenders, the reward discount, the refund and the open drawer equal branch L's book",
+  async () => {
+    const series = RESTAURANT_L.fiscal.series;
+    const tickets = await inL(
+      (tx) =>
+        tx`select t.series||'-'||lpad(t.number::text,6,'0') as folio, o.number::int as n, t.gross::int as gross,
+          o.total::int as total, o.discount::int as discount, t.business_date::text as d,
+          (select coalesce(json_object_agg(x.category, json_build_object('gross',x.gross::int,'base',x.base::int,'tax',x.tax::int)),'{}')
+             from fiscal_ticket_taxes x where x.ticket_id=t.id) as cats
+        from fiscal_tickets t join orders o on o.id=t.order_id where t.series=${series} order by t.number`,
+    );
+    assert.deepEqual(
+      tickets.map((t) => [t.folio, t.n]),
+      ORDERS_L.map((o) => [FIG[o.id]!.folio, o.number]),
+    );
+    for (const o of ORDERS_L) {
+      const f = FIG[o.id]!;
+      const t = tickets.find((x) => x.n === o.number)!;
+      assert.equal(t.gross, f.total, `${o.id} gross`);
+      assert.equal(t.total, f.total, `${o.id} total`);
+      assert.equal(t.d, state.businessDateL, `${o.id} business date`);
+      assert.equal(
+        t.discount,
+        f.grossBeforeDiscount - f.total,
+        `${o.id} discount`,
+      );
+      assert.deepEqual(t.cats, { iva16: f.groups.iva16 }, `${o.id} IVA`);
+    }
+    const tenders = await inL(
+      (tx) =>
+        tx`select o.number::int as n, x.method, x.amount::int as amount, x.tip::int as tip, x.received::int as received,
+          x.external_reference as ref, x.session_id is not null as drawer
+        from tenders x join orders o on o.id=x.order_id order by o.number, x.created_at`,
+    );
+    assert.deepEqual(
+      tenders,
+      ORDERS_L.map((o) => ({
+        n: o.number,
+        method: o.payment!.method,
+        amount: FIG[o.id]!.total,
+        tip: 0,
+        received:
+          o.payment!.method === "cash"
+            ? o.payment!.bill! * 100
+            : FIG[o.id]!.total,
+        ref: o.payment!.ref ?? null,
+        drawer: true,
+      })),
+    );
+    const staff = await inL((tx) => tx`select id, name from employees`);
+    const id = (key: string) =>
+      staff.find(
+        (e) => e.name === RESTAURANT_L.staff.find((p) => p.key === key)!.name,
+      )!.id as string;
+    // The reward (R18): a comp of one unit within the cap, no approver, the cashier's own.
+    const rewardOrder = ORDERS_L.find((o) => o.reward)!;
+    const reward = expectedL.adjustments[0]!;
+    const discounts = await inL(
+      (tx) =>
+        tx`select o.number::int as n, d.kind, d.amount::int as amount, d.units, d.reason_code, d.actor_id,
+          d.approver_id, d.reversed_at is null as active
+        from discounts d join orders o on o.id=d.order_id`,
+    );
+    assert.deepEqual(discounts, [
+      {
+        n: rewardOrder.number,
+        kind: reward.courtesy !== "—" ? "comp" : "amount",
+        amount: cents(
+          reward.courtesy !== "—" ? reward.courtesy : reward.discount,
+        ),
+        units: 1,
+        reason_code: "loyalty_reward",
+        actor_id: id(rewardOrder.cashier),
+        approver_id: null,
+        active: true,
+      },
+    ]);
+    // The refund (R8): one amount batch from the drawer, the cashier with the manager's PIN.
+    const batches = await inL(
+      (tx) =>
+        tx`select o.number::int as n, b.mode, b.cash_amount::int as cash, b.external_amount::int as external,
+          b.platform_amount::int as platform, b.actor_id, b.approver_id
+        from refund_batches b join orders o on o.id=b.order_id order by o.number`,
+    );
+    assert.deepEqual(
+      batches,
+      REFUNDS_L.map((rf) => ({
+        n: FIG[rf.order]!.number,
+        mode: "amount",
+        cash: rf.method === "cash" ? rf.amount : 0,
+        external: rf.method === "external" ? rf.amount : 0,
+        platform: 0,
+        actor_id: id(rf.actor),
+        approver_id: id(rf.approver),
+      })),
+    );
+    const adj = await inL(
+      (tx) =>
+        tx`select t.series||'-'||lpad(t.number::text,6,'0') as folio, a.gross::int as gross, a.base::int as base, a.tax::int as tax
+        from fiscal_adjustments a join fiscal_tickets t on t.order_id=a.order_id order by t.number`,
+    );
+    assert.deepEqual(
+      adj,
+      expectedL.refunds.map((rf) => ({
+        folio: rf.folio,
+        gross: cents(rf.amount),
+        base: cents(rf.base),
+        tax: cents(rf.tax),
+      })),
+    );
+    // R11: the drawer is still open; its expected cash recomputed from tenders and refunds.
+    const [drawer] = await inL(
+      (tx) =>
+        tx`select count(*) over ()::int as drawers, c.opening::int as opening, c.closed_at is null as open,
+          c.opening + coalesce((select sum(x.amount + x.tip) from tenders x where x.session_id=c.id and x.method='cash'),0)
+            - coalesce((select sum(r.amount) from refunds r where r.session_id=c.id and r.method='cash'),0) as expected
+        from cash_sessions c`,
+    );
+    assert.deepEqual(
+      { ...drawer, expected: Number(drawer.expected) },
+      {
+        drawers: 1,
+        opening: RESTAURANT_L.openingCash,
+        open: true,
+        expected: cents(expectedL.day.expectedCash),
+      },
+    );
+  },
+);
+
+await check(
+  "D21",
+  "Restaurant L's club: settings and attestation, one consented member, links, and a ledger equal to R19 (earn, card, redemption, reversal)",
+  async () => {
+    const staff = await inL((tx) => tx`select id, name from employees`);
+    const id = (key: string) =>
+      staff.find(
+        (e) => e.name === RESTAURANT_L.staff.find((p) => p.key === key)!.name,
+      )!.id as string;
+    const [settings] = await inL(
+      (tx) =>
+        tx`select s.enabled, s.program_name, s.stamps_required, s.stamp_threshold, s.reward_kind,
+          s.reward_max_amount, s.reward_description, s.prompt_at_checkout, s.receipt_join_qr,
+          s.privacy_attested_by, s.privacy_attested_at is not null as attested,
+          (select privacy_notice_url from restaurant_account_settings) as notice
+        from loyalty_settings s`,
+    );
+    assert.deepEqual(settings, {
+      enabled: true,
+      program_name: CLUB_L.programName,
+      stamps_required: CLUB_L.stampsRequired,
+      stamp_threshold: CLUB_L.threshold,
+      reward_kind: "item",
+      reward_max_amount: CLUB_L.rewardCap,
+      reward_description: CLUB_L.rewardDescription,
+      prompt_at_checkout: true,
+      receipt_join_qr: true,
+      privacy_attested_by: id("ines"),
+      attested: true,
+      notice: CLUB_L.privacyNoticeUrl,
+    });
+    const members = await inL(
+      (tx) =>
+        tx`select id, name, phone_e164, joined_via, joined_by, consent_channel, consent_notice_url,
+          marketing_opt_in, redacted_at is null as live, stamps, rewards, lifetime_stamps,
+          rewards_earned, rewards_redeemed
+        from loyalty_members`,
+    );
+    assert.equal(members.length, 1);
+    const m = members[0]!;
+    const cashier = ORDERS_L.find((o) => o.club === "enroll")!.cashier;
+    assert.deepEqual(
+      { ...m, id: undefined },
+      {
+        id: undefined,
+        name: CLUB_L.member.name,
+        phone_e164: "+52" + CLUB_L.member.phone,
+        joined_via: "pos",
+        joined_by: id(cashier),
+        consent_channel: "staff_attested",
+        consent_notice_url: CLUB_L.privacyNoticeUrl,
+        marketing_opt_in: false,
+        live: true,
+        stamps: expectedL.club.member.stamps,
+        rewards: expectedL.club.member.rewards,
+        lifetime_stamps: expectedL.club.member.lifetimeStamps,
+        rewards_earned: expectedL.club.member.rewardsEarned,
+        rewards_redeemed: expectedL.club.member.rewardsRedeemed,
+      },
+    );
+    // Links: every member order to Rosa at the register; the walk-in has none.
+    const links = await inL(
+      (tx) =>
+        tx`select o.number::int as n, k.member_id, k.via, k.linked_by
+        from loyalty_order_links k join orders o on o.id=k.order_id order by o.number`,
+    );
+    assert.deepEqual(
+      links,
+      ORDERS_L.filter((o) => o.club === "enroll" || o.club === "lookup").map(
+        (o) => ({
+          n: o.number,
+          member_id: m.id,
+          via: "pos",
+          linked_by: id(o.cashier),
+        }),
+      ),
+    );
+    // The ledger, in posting order, equals R19's; each earn row carries its order's stamp base
+    // and the rule it earned under; the redemption names the reward discount.
+    const ledger = await inL(
+      (tx) =>
+        tx`select o.number::int as n, l.kind, l.stamps_delta as stamps, l.rewards_delta as rewards,
+          l.base, l.stamp_threshold, l.member_id, l.discount_id, l.business_date::text as d,
+          (select d.reason_code from discounts d where d.id=l.discount_id) as reason
+        from loyalty_ledger l join orders o on o.id=l.order_id order by l.created_at, l.id`,
+    );
+    const number = (key: string) => FIG[key]!.number;
+    assert.deepEqual(
+      ledger.map((x) => ({
+        order: ORDERS_L.find((o) => o.number === x.n)!.id,
+        kind: x.kind,
+        stamps: x.stamps,
+        rewards: x.rewards,
+      })),
+      expectedL.club.ledger,
+    );
+    for (const x of ledger) {
+      assert.equal(x.member_id, m.id);
+      assert.equal(x.d, state.businessDateL);
+      if (x.kind === "earn" || x.kind === "earn_reversal") {
+        assert.equal(x.stamp_threshold, CLUB_L.threshold);
+        // The base each posting used is the one whose R19 target the running sum reaches.
+        const upTo = ledger.slice(0, ledger.indexOf(x) + 1);
+        const posted = upTo
+          .filter(
+            (y) =>
+              y.n === x.n && (y.kind === "earn" || y.kind === "earn_reversal"),
+          )
+          .reduce((s, y) => s + y.stamps, 0);
+        assert.equal(
+          stampsFor(x.base),
+          posted,
+          `#${x.n} ${x.kind} base ${x.base}`,
+        );
+      }
+      if (x.kind === "reward_redeemed")
+        assert.equal(x.reason, "loyalty_reward");
+      else assert.equal(x.discount_id, null);
+    }
+    const settled = ORDERS_L.find((o) => o.club === "enroll")!;
+    const refunded = REFUNDS_L.filter((rf) => rf.order === settled.id);
+    const earn = ledger.find(
+      (x) => x.n === number(settled.id) && x.kind === "earn",
+    )!;
+    const reversal = ledger.find(
+      (x) => x.n === number(settled.id) && x.kind === "earn_reversal",
+    )!;
+    assert.equal(earn.base, FIG[settled.id]!.total);
+    assert.equal(
+      reversal.base,
+      FIG[settled.id]!.total - refunded.reduce((s, rf) => s + rf.amount, 0),
+    );
+    // Balances are the ledger's sums (the club report's ledger-vs-members check).
+    assert.deepEqual(
+      {
+        stamps: ledger.reduce((s, x) => s + x.stamps, 0),
+        rewards: ledger.reduce((s, x) => s + x.rewards, 0),
+      },
+      { stamps: m.stamps, rewards: m.rewards },
+    );
+  },
+);
+
+await check(
+  "D22",
+  "Restaurant L's club: every reconcile job done, audit rows per command, and no phone or name in audit details, job payloads or operation results",
+  async () => {
+    const jobs = await meta(
+      (tx) =>
+        tx`select state, count(*)::int as n from jobs where tenant_id=${L} and kind='loyalty_reconcile' group by state order by state`,
+    );
+    assert.ok(jobs.length > 0, "the hooks enqueued reconcile jobs");
+    assert.deepEqual(
+      jobs.map((j) => j.state),
+      ["done"],
+      JSON.stringify(jobs),
+    );
+    const ops = Object.fromEntries(
+      (
+        await inL(
+          (tx) =>
+            tx`select operation, count(*)::int as n from audit where operation like 'loyalty.%' or operation in ('discount.applied','refund.recorded') group by operation`,
+        )
+      ).map((r) => [r.operation as string, r.n as number]),
+    );
+    assert.deepEqual(ops, {
+      "loyalty.settings.saved": 1,
+      "loyalty.member.enrolled": 1,
+      "loyalty.order.linked": ops["loyalty.order.linked"] ?? 0,
+      "loyalty.reward.redeemed": 1,
+      "discount.applied": 1,
+      "refund.recorded": REFUNDS_L.length,
+    });
+    assert.ok(
+      ops["loyalty.order.linked"]! >= 1,
+      "the member orders were linked",
+    );
+    // LOYALTY-PRIVACY-1, H1: personal data never in audit details, job payloads or once() results.
+    const digits = CLUB_L.member.phone;
+    const [leaks] = await meta(
+      (tx) =>
+        tx`select
+          (select count(*)::int from audit where tenant_id=${L} and (detail::text like ${"%" + digits + "%"} or detail::text like ${"%" + CLUB_L.member.name + "%"})) as audit,
+          (select count(*)::int from jobs where tenant_id=${L} and (payload::text like ${"%" + digits + "%"} or payload::text like ${"%" + CLUB_L.member.name + "%"})) as jobs,
+          (select count(*)::int from operations where tenant_id=${L} and (result::text like ${"%" + digits + "%"} or result::text like ${"%" + CLUB_L.member.name + "%"})) as operations`,
+    );
+    assert.deepEqual(leaks, { audit: 0, jobs: 0, operations: 0 });
+  },
+);
+
+await check(
+  "D23",
+  "the club exists only in Restaurant L: A and B have no loyalty rows, and no L row is visible from A or B (or the reverse) under RLS",
+  async () => {
+    for (const t of [A, B]) {
+      const [r] = await inT(
+        t,
+        async (tx) =>
+          tx`select (select count(*)::int from loyalty_settings) as settings, (select count(*)::int from loyalty_members) as members,
+          (select count(*)::int from loyalty_order_links) as links, (select count(*)::int from loyalty_ledger) as ledger`,
+      );
+      assert.deepEqual(r, { settings: 0, members: 0, links: 0, ledger: 0 });
+    }
+    const tables = await meta(
+      (tx) =>
+        tx`select table_name from information_schema.columns where table_schema='public' and column_name='tenant_id'
+      and table_name in (select table_name from information_schema.tables where table_schema='public' and table_type='BASE TABLE')`,
+    );
+    for (const { table_name } of tables)
+      for (const [mine, other] of [
+        [L, A],
+        [L, B],
+        [A, L],
+        [B, L],
+      ]) {
+        const [r] = await inT(mine, async (tx) => {
+          const [grant] =
+            await tx`select has_table_privilege(${table_name}, 'select') as ok`;
+          if (!grant!.ok) return [{ n: 0 }];
+          return tx`select count(*)::int as n from ${tx(table_name)} where tenant_id=${other}`;
+        });
+        assert.equal(r.n, 0, `${table_name} leaks ${other} into ${mine}`);
+      }
   },
 );
 

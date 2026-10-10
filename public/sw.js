@@ -90,6 +90,11 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     (async () => {
       if (event.request.mode === "navigate") {
+        // Diner and customer pages (public ordering, the kiosk, self-invoicing and loyalty's
+        // /club) are never the staff shell: network only (Wave 4 critic R32). A device that
+        // once ran the staff app must still open a receipt's QR as that page.
+        if (/^\/(kiosk|qr|f|factura|club)(\/|$)/.test(url.pathname))
+          return fetch(event.request);
         // Navigations always use this worker's own complete revision.
         const shell = await (await caches.open(CACHE)).match("/index.html");
         return shell || fetch(event.request);

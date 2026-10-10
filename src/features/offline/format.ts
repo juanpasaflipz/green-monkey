@@ -224,6 +224,8 @@ export function archivedDrawerAmounts(
   devicePrefix: string,
   drawerId: string,
 ): { cash: number; terminal: number } {
+  // payments (037): platform money is neither cash nor card, so it is left out. A record with
+  // no payment method is a v1/v2 sale, which was always cash.
   const totals = { cash: 0, terminal: 0 };
   for (const row of rows) {
     const body = row.body as OfflineRecord & {
@@ -237,8 +239,9 @@ export function archivedDrawerAmounts(
     )
       continue;
     const { amount, tip } = recordAmounts(body);
-    if (body.payment?.method === "external") totals.terminal += amount + tip;
-    else totals.cash += amount + tip;
+    const method = body.payment?.method ?? "cash";
+    if (method === "external") totals.terminal += amount + tip;
+    else if (method === "cash") totals.cash += amount + tip;
   }
   return totals;
 }

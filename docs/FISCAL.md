@@ -249,6 +249,12 @@ service's receipt slots (fiscal is their only caller), so the receipt modal and 
 the pre-bill, reprints, grouped receipts and offline local receipts all carry them. cfdi
 adds its block with `setFiscalFooterExtra`.
 
+**Payments 037.** The ticket's frozen `payments[]` entries gain optional `platform`, `label`
+(the terminal or the platform's name), `cardType`, `cardBrand` and `cardLast4`; older tickets lack
+them and every reader tolerates their absence. Platform orders get a fiscal ticket like any sale;
+the platform's commission is not part of the sale to the diner. Receipts print "Pagado en Uber
+Eats" or "Tarjeta · BBVA".
+
 - **Header:** razón social (only when it differs from the trade name, case- and
   accent-insensitively), RFC, régimen, address if set, "Lugar de expedición: C.P. …",
   **Folio**, "Fecha de expedición" (restaurant time zone). Without a ticket: the issuer from

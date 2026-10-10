@@ -13,6 +13,7 @@ import { api, ApiError } from "../../api";
 import { usePoll } from "../../serviceHooks";
 import { Button } from "../../components/ui";
 import { PaymentDialog } from "../PaymentDialog";
+import { usePaymentOptions } from "../payments/options";
 import { ReceiptModal, checkStateOf, moneyFormatter } from "../Receipt";
 import { KitchenTicketDocument, ticketsFromOrderRound } from "../KitchenTicket";
 import { currentBusinessDate, orderNumberText } from "../../labels";
@@ -83,6 +84,7 @@ export function PublicOrderInbox({
     lastRead?.scope === scope ? lastRead.data : null,
   );
   const [disabled, setDisabled] = useState(false);
+  const paymentOptions = usePaymentOptions(session, online);
   const busyInbox =
     !!data?.active ||
     (data?.holds.length ?? 0) > 0 ||
@@ -252,6 +254,10 @@ export function PublicOrderInbox({
           method: values.method,
           externalConfirmed: values.confirmed,
           reference: values.reference,
+          // payments (037): the named terminal of a manual card record (holds take no platform).
+          ...(values.method === "external" && values.terminalId
+            ? { terminalId: values.terminalId }
+            : {}),
         },
       });
       setPaying(null);
@@ -426,6 +432,8 @@ export function PublicOrderInbox({
           drawerOpen={paying.drawerOpen}
           error={paying.error}
           onConfirm={(values) => void pay(values)}
+          // payments (037): terminals for the card record; a hold is never paid by a platform.
+          paymentOptions={{ ...paymentOptions, platforms: [] }}
           onSplitItems={async () => null}
           onClose={() => setPaying(null)}
           onGoToCash={() => {

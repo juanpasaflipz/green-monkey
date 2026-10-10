@@ -1,7 +1,8 @@
 /**
- * Restaurant setup through the UI (specs/acceptance.md A1-A9, B1-B5): owner
- * signup with legal acceptance, support grant, fiscal profile, staff, money
- * controls, menu, devices and sign-in. No UUID is typed and no demo data used.
+ * Restaurant setup through the UI (specs/acceptance.md A1-A9, B1-B5, and
+ * branch L's L1-L2): owner signup with legal acceptance, support grant, fiscal
+ * profile, staff, money controls, menu, devices and sign-in. No UUID is typed
+ * and no demo data used.
  */
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -9,7 +10,12 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { connect } from "../../server/db.js";
 import { signInGoogleOwner } from "../../server/owner-accounts.js";
 import { supportDatabaseUrl, type RunState } from "./env.js";
-import { RESTAURANT_A, RESTAURANT_B, URL_NAMESPACE } from "./scenario.js";
+import {
+  RESTAURANT_A,
+  RESTAURANT_B,
+  RESTAURANT_L,
+  URL_NAMESPACE,
+} from "./scenario.js";
 import {
   allowing,
   checkpoint,
@@ -23,7 +29,10 @@ import {
 } from "./ui.js";
 import { activateCfdi } from "./cfdi-k.js";
 
-type Restaurant = typeof RESTAURANT_A | typeof RESTAURANT_B;
+type Restaurant =
+  | typeof RESTAURANT_A
+  | typeof RESTAURANT_B
+  | typeof RESTAURANT_L;
 
 /** RFC 4122 UUIDv5 (§3.7: Google subjects). */
 export function uuidv5(name: string, namespace = URL_NAMESPACE) {
@@ -300,7 +309,8 @@ async function fiscalProfile(
   const offered = (await regime.locator("option").allInnerTexts())
     .map((o) => o.slice(0, 3))
     .filter((c) => /^\d{3}$/.test(c));
-  if (r === RESTAURANT_A) {
+  // A and L are personas morales; B is a persona física.
+  if (r !== RESTAURANT_B) {
     expect(offered).toEqual(
       expect.arrayContaining(["601", "603", "620", "622", "623", "624", "626"]),
     );
@@ -317,7 +327,8 @@ async function fiscalProfile(
     0,
   );
   const tax = label(panel, "Impuesto predeterminado de los productos");
-  if (r === RESTAURANT_A) {
+  // A and L: the rest of the country (IVA 16%); B: the border region.
+  if (r !== RESTAURANT_B) {
     await expect(
       panel.getByRole("radio", { name: "Resto del país (IVA 16%)" }),
     ).toBeChecked();
@@ -1323,5 +1334,52 @@ export async function setupB(dev: Devices, state: RunState, save: () => void) {
     await expect(card).toContainText("Disponible");
   await checkpoint(caja, "B3-tables-empty");
   run.step = "B5.2";
+  await openDrawer(caja, r.openingCash);
+}
+
+/**
+ * Branch L (loyalty spec §9.4, lead decision LD-80): Restaurant L, created like
+ * A and B (signup, support grant, fiscal profile, staff, menu, a paired
+ * register), with Mariana signed in at an open drawer. Its club is turned on by
+ * the owner in the next test (tests/restaurant-day/club-l.ts).
+ */
+export async function setupL(dev: Devices, state: RunState, save: () => void) {
+  const r = RESTAURANT_L;
+  const owner = await dev("ownerL");
+  run.step = "L1.1";
+  await googleOwner(owner, r, state.baseUrl);
+  await signup(owner, r, state.cutoffL);
+  run.step = "L1.2";
+  state.tenantL = await readTenantId(owner);
+  expect(state.tenantL).not.toBe(state.tenantA);
+  expect(state.tenantL).not.toBe(state.tenantB);
+  save();
+  run.step = "L1.3";
+  await grantPro(state.tenantL, r, state.businessDateL, state.runId);
+  await proGranted(owner, state.runId, state.businessDateL);
+  run.step = "L1.4";
+  await fiscalProfile(owner, r, "L1-fiscal");
+  run.step = "L2.1";
+  await staff(owner, r);
+  run.step = "L2.2";
+  await menuNav(owner.page, "Menú");
+  await categoriesAndProducts(owner, r);
+  run.step = "L2.3";
+  const caja = await dev("cajaL");
+  {
+    const { code, dialog } = await pairingCode(owner, "Caja");
+    await pair(caja, code, r.name, "Caja");
+    await expect(
+      dialog.getByRole("status").filter({ hasText: "Vinculado: Caja" }),
+    ).toBeVisible();
+    await dialog.getByRole("button", { name: "Cerrar", exact: true }).click();
+  }
+  await rosterChecks(caja, r);
+  const mariana = r.staff.find((p) => p.key === "mariana")!;
+  await signIn(caja, mariana.name, mariana.pin);
+  await expect(
+    caja.page.getByRole("heading", { name: "Vender", level: 1 }),
+  ).toBeVisible();
+  run.step = "L2.4";
   await openDrawer(caja, r.openingCash);
 }

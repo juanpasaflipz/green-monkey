@@ -197,6 +197,19 @@ units are frozen on it and are not voidable (`void_exceeds_unpaid`), so
 | `promotion` | Promoción | Promotion |
 | `regular_customer` | Cliente frecuente | Regular customer |
 | `other` | Otro (explica en la nota) | Other (explain in the note) |
+| `loyalty_reward` | Recompensa del club | Loyalty reward |
+
+`loyalty_reward` (038, [Loyalty](LOYALTY.md)) is reserved: only loyalty's "Canjear premio" records it,
+through `recordDiscount` (the body of `applyDiscount` after `once()`, extracted unchanged for every other
+caller) with no approver and no step-up, because the member's ledger proves the entitlement under the
+member's lock. Descuento never offers it (`SELECTABLE_DISCOUNT_REASONS`), `applyDiscount` refuses it
+(`discount_reason_reserved`, 400), and `unapprovedDiscounts` leaves it out, so a reward never counts
+against a cashier's "Descuentos sin autorización" limit. Its rows read "Recompensa del club" on the ticket,
+Detalle and Vender (never "Cortesía"). Removing one keeps this area's rule (an approver);
+`reverseDiscount` then calls loyalty's `loyaltyRewardDiscountReversed` hook (a jobs insert keyed by the
+discount), and the reconcile returns the reward to the member. Payments P1 places `assertNoLiveAttempt`
+in `applyDiscount`; at the rebase it moves into `recordDiscount` (critic R17), so a redemption is
+refused while an attempt is live.
 
 | Refund code | es | en |
 | --- | --- | --- |
@@ -223,6 +236,12 @@ reason "Otro" with their original text.
 
 **Who:** any operator; cashiers and servers with a manager's approval (before
 028 only managers refunded).
+
+**Payments 037.** A refund of a platform tender ("Pagado por plataforma") is a `platform`
+portion of the batch: no drawer, no terminal confirmation, and the batch records it in
+`refund_batches.platform_amount` (the split check and the reconcile trigger count it). The
+dialog's result and the refund slip show «Reembolso por plataforma (sin efectivo)». The legacy
+`POST /refunds` refuses platform tenders (`payments_platform_refund_requires_batch`).
 
 **Refunds need a paid (or ticketed) check.** While a check without a ticket has
 a balance due the dialog shows only "Esta cuenta tiene saldo pendiente y aún no

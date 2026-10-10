@@ -29,7 +29,11 @@ import { serviceWorkerSupported } from "../service-worker";
 import { api } from "../api";
 import { Button, Field } from "../components/ui";
 import { errorNotice } from "../i18n";
-import { currentBusinessDate, orderNumberText } from "../labels";
+import {
+  currentBusinessDate,
+  offlineMethodKey,
+  orderNumberText,
+} from "../labels";
 import { dateTime } from "../datetime";
 import { ArchiveRecordForm } from "./offline/ArchiveRecordForm";
 import { OfflineTableServiceSetting } from "./offline/OfflineTableServiceSetting";
@@ -567,7 +571,11 @@ export function RecoveryQueue({
                     ? t("offlineReview")
                     : methodOf(row) === "external"
                       ? t("offlineReviewExternal")
-                      : t("offlineReviewCash")}
+                      : methodOf(row) === "platform"
+                        ? t("payReviewPlatform")
+                        : methodOf(row) === "cash"
+                          ? t("offlineReviewCash")
+                          : t("offlineReview")}
                 </Button>
                 <Button
                   disabled={busy || !net.canUseServer}
@@ -673,11 +681,7 @@ export function RecoveryQueue({
             </h3>
             <p>
               {format(attempt.payload.amount)} ·{" "}
-              {t(
-                attempt.payload.method === "external"
-                  ? "offlineMethodExternal"
-                  : "offlineMethodCash",
-              )}
+              {t(offlineMethodKey(attempt.payload.method))}
             </p>
             <p>
               {status?.state === "committed"

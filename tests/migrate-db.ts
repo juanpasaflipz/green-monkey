@@ -37,6 +37,7 @@ const suffix = randomBytes(4).toString("hex");
 const synthetic = `green_monkey_runner_${suffix}_test`;
 const real = `green_monkey_runner_${suffix}b_test`;
 const legacy = `green_monkey_runner_${suffix}c_test`;
+const payments = `green_monkey_runner_${suffix}p_test`;
 const migrator = `gm_test_migrator_${suffix}`;
 const migratorPassword = randomBytes(24).toString("hex");
 const dir = mkdtempSync(join(tmpdir(), "gm-migrations-"));
@@ -1133,6 +1134,92 @@ ALTER TABLE restaurants FORCE ROW LEVEL SECURITY;
     },
   );
 
+  await check(
+    "payments 037 applies to a database with rows: old tenders and refund batches are untouched, the replaced checks keep their names and every new check is validated",
+    async () => {
+      await admin.unsafe(`create database "${payments}"`);
+      const db = pool(urlFor(payments));
+      const all = readMigrations();
+      await applyMigrations(
+        db,
+        all.filter((f) => f.name < "037"),
+        { sleep: noSleep },
+      );
+      const t = randomUUID(),
+        e = randomUUID(),
+        d = randomUUID(),
+        c = randomUUID(),
+        o = randomUUID(),
+        cash = randomUUID(),
+        card = randomUUID();
+      // The superuser fixture login bypasses RLS: rows as an older revision left them.
+      await db.begin(async (tx) => {
+        await tx`insert into organizations(id,name) values(${randomUUID()},'Org 037')`;
+        await tx`insert into restaurants(id,organization_id,name)
+          select ${t},id,'R 037' from organizations limit 1`;
+        await tx`insert into employees(tenant_id,id,name,login,secret_hash,role)
+          values(${t},${e},'E','e037','x','owner')`;
+        await tx`insert into devices(tenant_id,id,name,token_hash) values(${t},${d},'Caja','x')`;
+        await tx`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening)
+          values(${t},${c},${d},${e},0)`;
+        await tx`insert into orders(tenant_id,id,number,business_date,employee_id,mode,name,note,channel,total)
+          values(${t},${o},1,current_date,${e},'takeaway','','','pos',3000)`;
+        await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference)
+          values(${t},${cash},${o},${c},'cash',1000,0,1000,null),
+                (${t},${card},${o},${c},'external',2000,100,2100,'AUT-1')`;
+        const batch = randomUUID();
+        await tx`insert into refund_batches(tenant_id,id,order_id,mode,amount,cash_amount,external_amount,
+            reason_code,actor_id,approver_id,device_id,business_date)
+          values(${t},${batch},${o},'amount',500,500,0,'charge_error',${e},${e},${d},current_date)`;
+        await tx`insert into refunds(tenant_id,id,tender_id,session_id,amount,reason,disposition,actor_id,method,batch_id,order_id)
+          values(${t},${randomUUID()},${cash},${c},500,'x','no_stock_return',${e},'cash',${batch},${o})`;
+      });
+      const before = await db`select * from tenders order by id`;
+      await applyMigrations(db, all, { sleep: noSleep });
+      const after =
+        await db`select id,tenant_id,order_id,session_id,method,amount,tip,received,
+          external_reference,group_id,created_at,source,source_id from tenders order by id`;
+      assert.deepEqual(
+        after.map((r) => ({ ...r })),
+        before.map((r) => ({ ...r })),
+        "old tenders untouched",
+      );
+      const extras =
+        await db`select terminal_id,platform,fee,attempt_id from tenders`;
+      assert.ok(
+        extras.every(
+          (r) =>
+            !r.terminal_id && !r.platform && r.fee === null && !r.attempt_id,
+        ),
+      );
+      const [b] = await db`select platform_amount from refund_batches`;
+      assert.equal(b.platform_amount, 0);
+      const constraints = await db`
+        select conname, convalidated from pg_constraint
+        where conrelid in ('tenders'::regclass,'refunds'::regclass,'refund_batches'::regclass)
+          and (conname like 'tenders\_%' or conname in ('refunds_method_valid','refund_batches_split'))
+          and contype in ('c','f')`;
+      const names = constraints.map((r) => r.conname);
+      for (const name of [
+        "tenders_method_check",
+        "tenders_platform_shape",
+        "tenders_terminal_shape",
+        "tenders_integrated_shape",
+        "tenders_card_shape",
+        "tenders_fee_shape",
+        "tenders_terminal_fk",
+        "tenders_attempt_fk",
+        "refunds_method_valid",
+        "refund_batches_split",
+      ])
+        assert.ok(names.includes(name), name);
+      assert.ok(constraints.every((r) => r.convalidated));
+      // The rows stay valid under the new checks (a no-op update re-checks them; refund batches
+      // are immutable, and VALIDATE already scanned them).
+      await db`update tenders set amount=amount`;
+    },
+  );
+
   console.log(`Migration runner DB checks passed: ${passed()} checks.`);
 } finally {
   for (const sql of pools) await sql.end({ timeout: 5 }).catch(() => undefined);
@@ -1145,6 +1232,9 @@ ALTER TABLE restaurants FORCE ROW LEVEL SECURITY;
     .catch(() => undefined);
   await admin
     .unsafe(`drop database if exists "${real}" with (force)`)
+    .catch(() => undefined);
+  await admin
+    .unsafe(`drop database if exists "${payments}" with (force)`)
     .catch(() => undefined);
   await admin
     .unsafe(`drop role if exists "${migrator}"`)

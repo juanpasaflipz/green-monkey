@@ -16,6 +16,7 @@ import {
 } from "./domain.js";
 import type { PayableUnit } from "./settlement.js";
 import type { RefundTaxScope } from "./fiscal.js";
+import type { TenderMethod } from "./payments.js";
 import { holdsTable } from "./service.js";
 
 export const DISCOUNT_REASONS = [
@@ -27,7 +28,16 @@ export const DISCOUNT_REASONS = [
   "promotion",
   "regular_customer",
   "other",
+  // loyalty (038 §4.5): a club reward. Recorded only by loyalty's redemption (no approver, never
+  // counted against a cashier's limit); applyDiscount refuses it (discount_reason_reserved).
+  "loyalty_reward",
 ] as const;
+/** The reason only loyalty's redemption records. */
+export const RESERVED_DISCOUNT_REASON = "loyalty_reward";
+/** The reasons Descuento offers (every reason but the reserved one). */
+export const SELECTABLE_DISCOUNT_REASONS = DISCOUNT_REASONS.filter(
+  (r) => r !== RESERVED_DISCOUNT_REASON,
+);
 export const REFUND_REASONS = [
   "customer_cancelled",
   "quality",
@@ -228,6 +238,12 @@ export const cashCloseInput = z
     // .optional() without a default: a legacy body parses to the same object,
     // so its once() fingerprint is unchanged (old bundles during a deploy).
     externalReported: money.nullable().optional(),
+    // payments (037): "Total del lote" per terminal; null terminalId = tenders
+    // recorded without a named terminal ("Otra terminal"). Optional, no default.
+    terminalReports: z
+      .array(z.object({ terminalId: id.nullable(), reported: money }).strict())
+      .max(40)
+      .optional(),
   })
   .strict();
 export const cashReviewInput = z
@@ -363,7 +379,12 @@ export function unapprovedDiscounts(order: Pick<Order, "discounts">): {
   count: number;
 } {
   const own = (order.discounts ?? []).filter(
-    (d) => !d.reversal && d.approverName === null && d.activeAmount > 0,
+    (d) =>
+      !d.reversal &&
+      d.approverName === null &&
+      d.activeAmount > 0 &&
+      // A club reward is proven by the member's ledger, not a staff decision (038 §2.6).
+      d.reasonCode !== RESERVED_DISCOUNT_REASON,
   );
   return { amount: sum(own.map((d) => d.activeAmount)), count: own.length };
 }
@@ -608,7 +629,7 @@ export type RefundLineView = {
 export type RefundRowView = {
   refundId: string;
   tenderId: string;
-  method: "cash" | "external";
+  method: TenderMethod;
   amount: number;
   reference: string | null;
 };
@@ -618,6 +639,8 @@ export type RefundBatchView = {
   amount: number;
   cashAmount: number;
   externalAmount: number;
+  /** payments (037): the platform tenders' part (no drawer, no terminal). */
+  platformAmount: number;
   reasonCode: string;
   note: string;
   restock: boolean;
@@ -670,7 +693,7 @@ export type AdjustmentRow = {
     refundId: string;
     tenderId: string;
     batchId: string | null;
-    method: "cash" | "external";
+    method: TenderMethod;
     amount: number;
     reference: string | null;
     reason: string;
@@ -683,6 +706,7 @@ export type AdjustmentRow = {
     amount: number;
     cashAmount: number;
     externalAmount: number;
+    platformAmount: number;
     reasonCode: string;
     note: string;
     restock: boolean;
@@ -803,6 +827,7 @@ export function composeOrderAdjustments(
         amount: r.amount,
         cashAmount: r.method === "cash" ? r.amount : 0,
         externalAmount: r.method === "external" ? r.amount : 0,
+        platformAmount: r.method === "platform" ? r.amount : 0,
         reasonCode: "other",
         note: r.reason,
         restock: false,
@@ -840,7 +865,7 @@ export type ItemRefundPlan = {
   units: { lineId: string; unit: number; tenderId: string; amount: number }[];
   byTender: {
     tenderId: string;
-    method: "cash" | "external";
+    method: TenderMethod;
     amount: number;
     reference: string | null;
   }[];

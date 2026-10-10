@@ -1,0 +1,34 @@
+{
+  "source": "pos-lite-loyalty",
+  "sourceTenantId": "fixture-pos-lite-tenant",
+  "sourceName": "Taquería Ficticia",
+  "sourceSubdomain": "ficticia",
+  "targetTenantId": "10000000-0000-4000-8000-000000000001",
+  "exportedAt": "2026-10-09T15:00:00.000Z",
+  "config": {
+    "stamps_required": 10,
+    "reward_description": "Free item of your choice",
+    "stamp_bonus_threshold": 400,
+    "referral_bonus_stamps": 2,
+    "sms_enabled": "true",
+    "google_review_target": ""
+  },
+  "summary": {
+    "members": 10,
+    "activeCardStamps": 22,
+    "completedCards": 3,
+    "completedUnredeemed": 2
+  },
+  "members": [
+    { "id": 101, "phone": "5550001001", "country_code": "MX", "name": "Ana Ficticia", "sms_opt_in": true, "created_at": "2025-03-01T18:00:00.000Z", "last_visit": "2026-09-30T19:00:00.000Z", "orders_count": 12, "total_spent": "1234.50", "active_card": { "stamps_earned": 7, "stamps_required": 10 }, "completed_cards": [], "next_card_stamps": 0 },
+    { "id": 102, "phone": "5215550001002", "country_code": "MX", "name": "  Beto   Ficticio ", "sms_opt_in": true, "created_at": "2025-04-01T18:00:00.000Z", "last_visit": "2026-09-20T19:00:00.000Z", "orders_count": 10, "total_spent": 980, "active_card": null, "completed_cards": [ { "completed_at": "2026-09-20T19:00:00.000Z", "redeemed": false } ], "next_card_stamps": 0 },
+    { "id": 103, "phone": "+52 555 000 1003", "country_code": "MX", "name": "Caro Ficticia", "sms_opt_in": false, "created_at": "2024-11-01T18:00:00.000Z", "last_visit": "2026-08-01T19:00:00.000Z", "orders_count": 14, "total_spent": "2100", "active_card": { "stamps_earned": 2, "stamps_required": 10 }, "completed_cards": [ { "completed_at": "2026-01-10T19:00:00.000Z", "redeemed": false } ], "next_card_stamps": 2 },
+    { "id": 104, "phone": "555000100", "country_code": "MX", "name": "Dani Corto", "sms_opt_in": true, "created_at": "2025-05-01T18:00:00.000Z", "last_visit": "2026-07-01T19:00:00.000Z", "orders_count": 1, "total_spent": "90", "active_card": { "stamps_earned": 1, "stamps_required": 10 }, "completed_cards": [], "next_card_stamps": 0 },
+    { "id": 105, "phone": "55 5000 1001", "country_code": "MX", "name": "Ana Repetida", "sms_opt_in": true, "created_at": "2025-06-01T18:00:00.000Z", "last_visit": "2026-06-01T19:00:00.000Z", "orders_count": 4, "total_spent": "400", "active_card": { "stamps_earned": 4, "stamps_required": 10 }, "completed_cards": [], "next_card_stamps": 0 },
+    { "id": 106, "phone": "2079460958", "country_code": "GB", "name": "Eli Extranjera", "sms_opt_in": true, "created_at": "2025-07-01T18:00:00.000Z", "last_visit": "2026-05-01T19:00:00.000Z", "orders_count": 2, "total_spent": "150", "active_card": null, "completed_cards": [], "next_card_stamps": 0 },
+    { "id": 107, "phone": "2125550147", "country_code": "US", "name": "Fer Visitante", "sms_opt_in": false, "created_at": "2025-08-01T18:00:00.000Z", "last_visit": "2026-09-01T19:00:00.000Z", "orders_count": 3, "total_spent": "310.25", "active_card": { "stamps_earned": 3, "stamps_required": 10 }, "completed_cards": [], "next_card_stamps": 0 },
+    { "id": 108, "phone": "5550001008", "country_code": "MX", "name": "Gil Antiguo", "sms_opt_in": true, "created_at": "2023-01-01T18:00:00.000Z", "last_visit": "2023-12-01T19:00:00.000Z", "orders_count": 6, "total_spent": "700", "active_card": { "stamps_earned": 5, "stamps_required": 10 }, "completed_cards": [], "next_card_stamps": 0 },
+    { "id": 109, "phone": "5550001009", "country_code": "MX", "name": "   ", "sms_opt_in": true, "created_at": "2025-09-01T18:00:00.000Z", "last_visit": "2026-04-01T19:00:00.000Z", "orders_count": 1, "total_spent": "60", "active_card": null, "completed_cards": [], "next_card_stamps": 0 },
+    { "id": 110, "phone": "5550001010", "country_code": "MX", "name": "Hugo Canjeado", "sms_opt_in": true, "created_at": "2025-02-01T18:00:00.000Z", "last_visit": "2026-09-25T19:00:00.000Z", "orders_count": 11, "total_spent": "1500", "active_card": null, "completed_cards": [ { "completed_at": "2026-09-25T19:00:00.000Z", "redeemed": true } ], "next_card_stamps": 0 }
+  ]
+}

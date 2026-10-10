@@ -11,6 +11,8 @@ import reports from "./i18n/reports";
 import cfdi from "./i18n/cfdi";
 import account from "./i18n/account";
 import publicOrdering from "./i18n/public-ordering";
+import payments from "./i18n/payments";
+import loyalty from "./i18n/loyalty";
 
 /** Area modules, merged after the base strings. */
 export const areas = {
@@ -25,6 +27,9 @@ export const areas = {
   cfdi,
   account,
   publicOrdering,
+  // Wave 4 areas register in this order: payments, loyalty, kiosk (critic R29).
+  payments,
+  loyalty,
 };
 const base = {
   es: {
@@ -552,6 +557,8 @@ export const strings = {
     ...cfdi.es,
     ...account.es,
     ...publicOrdering.es,
+    ...payments.es,
+    ...loyalty.es,
   },
   en: {
     ...base.en,
@@ -566,6 +573,8 @@ export const strings = {
     ...cfdi.en,
     ...account.en,
     ...publicOrdering.en,
+    ...payments.en,
+    ...loyalty.en,
   },
 };
 export type Key = keyof typeof strings.es;
@@ -704,6 +713,8 @@ export const errorText: Record<string, readonly [string, string]> = {
   ...cfdi.errors,
   ...account.errors,
   ...publicOrdering.errors,
+  ...payments.errors,
+  ...loyalty.errors,
 };
 export function translateError(code: string, locale: Locale) {
   return errorText[code]?.[locale === "es" ? 0 : 1] ?? strings[locale].error;

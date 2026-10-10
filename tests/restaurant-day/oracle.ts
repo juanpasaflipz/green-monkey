@@ -1,8 +1,10 @@
 /**
  * The independent money oracle of the restaurant-day gate (specs/acceptance.md
- * §5). It implements rules R1-R17 from the spec text and imports nothing from
- * shared/, server/ or src/: if the application and this file ever agree, it is
- * because both follow the rules, not because they share code.
+ * §5). It implements rules R1-R17 from the spec text, and R18-R19 for the
+ * club of branch L (loyalty spec §9.4; docs/LOYALTY.md "Stamp rules"), and
+ * imports nothing from shared/, server/ or src/: if the application and this
+ * file ever agree, it is because both follow the rules, not because they share
+ * code.
  *
  * Output is formatted the way the spec's literal tables print it, so
  * tests/restaurant-day/expected.ts (typed by hand from the spec) can be
@@ -10,10 +12,14 @@
  */
 import {
   CHECKS_B,
+  CLUB_L,
   ORDERS_A,
+  ORDERS_L,
   REFUNDS_A,
+  REFUNDS_L,
   RESTAURANT_A,
   RESTAURANT_B,
+  RESTAURANT_L,
   type Line,
   type OrderDef,
   type Payment,
@@ -115,7 +121,8 @@ export function allocate(total: number, weights: number[]): number[] {
 type Category = "iva16" | "iva8" | "iva0";
 const RATE: Record<Category, number> = { iva16: 1600, iva8: 800, iva0: 0 };
 
-type Restaurant = typeof RESTAURANT_A | typeof RESTAURANT_B;
+type Restaurant =
+  typeof RESTAURANT_A | typeof RESTAURANT_B | typeof RESTAURANT_L;
 
 function product(r: Restaurant, id: string): ProductDef {
   const p = (r.products as ProductDef[]).find((x) => x.id === id);
@@ -166,8 +173,10 @@ type SoldLine = {
   /** units voided with their ingredients returned */
   restocked: number;
   voidedAmount: number;
-  /** discount allocated to this line (R4, R5) */
+  /** discount allocated to this line (R4, R5, R18) */
   discount: number;
+  /** the line's index in the order book entry */
+  index: number;
 };
 
 type Ticket = {
@@ -228,11 +237,34 @@ function soldLines(r: Restaurant, o: OrderDef): SoldLine[] {
     const l = lines.find((x) => x.index === o.courtesy!.line)!;
     l.discount += l.unit * l.remaining; // R5
   }
+  if (o.reward) {
+    const l = lines.find((x) => x.index === o.reward!.line)!;
+    l.discount += rewardAmount(l.unit); // R18
+  }
   return lines;
 }
 
+/**
+ * R18 Club reward ("Canjear premio", loyalty §2.4): one unit of the chosen
+ * line, up to the program's cap. Within the cap it is a comp of the unit's due
+ * (the reports count it with the cortesías); above it, an amount discount equal
+ * to the cap. No PIN and no approver; IVA and folios follow R5-R6 as for any
+ * comp.
+ */
+function rewardAmount(unit: number) {
+  return Math.min(unit, CLUB_L.rewardCap);
+}
+
 function ticketFor(r: Restaurant, o: OrderDef): Omit<Ticket, "folio"> {
+  if ([o.discountBps, o.courtesy, o.reward].filter(Boolean).length > 1)
+    throw Error(`oracle: ${o.id} has more than one adjustment`);
   const lines = soldLines(r, o);
+  const adjusted = lines.reduce((s, l) => s + l.discount, 0);
+  const rewarded = o.reward
+    ? lines.find((l) => l.index === o.reward!.line)!
+    : null;
+  const rewardComp =
+    !!rewarded && rewardAmount(rewarded.unit) === rewarded.unit;
   const groups: Ticket["groups"] = {
     iva16: { gross: 0, base: 0, tax: 0 },
     iva8: { gross: 0, base: 0, tax: 0 },
@@ -254,8 +286,8 @@ function ticketFor(r: Restaurant, o: OrderDef): Omit<Ticket, "folio"> {
     number: o.number,
     lines,
     grossBeforeDiscount: grossBefore,
-    discount: o.discountBps ? lines.reduce((s, l) => s + l.discount, 0) : 0,
-    courtesy: o.courtesy ? lines.reduce((s, l) => s + l.discount, 0) : 0,
+    discount: o.discountBps || (o.reward && !rewardComp) ? adjusted : 0,
+    courtesy: o.courtesy || rewardComp ? adjusted : 0,
     total,
     groups,
     payments,
@@ -701,9 +733,229 @@ export function oracleB() {
   };
 }
 
+// ------------------------------------------------------------- Restaurant L
+
+/** R19 Stamps (docs/LOYALTY.md "Stamp rules" 1, 3, 5, 6): 0 for no base, else 1 + ⌊base / threshold⌋. */
+export function stampsFor(base: number) {
+  return base <= 0 ? 0 : 1 + Math.floor(base / CLUB_L.threshold);
+}
+
+/**
+ * R19 Club ledger, in the day's order: each member order posts its target minus
+ * what it posted (earn or earn_reversal) when it settles and again after each
+ * refund; its stamp base is its tenders net of their refunds, capped at the
+ * total. A card completes at stampsRequired (reward_earned, overflow carried);
+ * a reversal that leaves the card negative withdraws an available reward
+ * (reward_unearned). A redemption (reward_redeemed) precedes its order's
+ * settlement. A walk-in ("Sin club") posts nothing.
+ */
+function clubDay(
+  tickets: Ticket[],
+  refunds: Array<{ order: string; amount: number }>,
+) {
+  const required = CLUB_L.stampsRequired;
+  const ledger: Array<{
+    order: string;
+    kind: string;
+    stamps: number;
+    rewards: number;
+  }> = [];
+  const m = {
+    stamps: 0,
+    rewards: 0,
+    lifetimeStamps: 0,
+    rewardsEarned: 0,
+    rewardsRedeemed: 0,
+  };
+  const posted = new Map<string, number>();
+  const ticket = (key: string) => tickets.find((t) => t.key === key)!;
+  const member = (key: string) =>
+    ["enroll", "lookup"].includes(
+      ORDERS_L.find((o) => o.id === key)!.club ?? "",
+    );
+  /** The refunds recorded so far: a sale settles before any of its refunds. */
+  const done: Array<{ order: string; amount: number }> = [];
+  const base = (t: Ticket) => {
+    const refunded = sum(
+      done.filter((rf) => rf.order === t.key),
+      (rf) => rf.amount,
+    );
+    return Math.max(0, Math.min(t.total, t.cash + t.external - refunded));
+  };
+  const post = (key: string) => {
+    const delta = stampsFor(base(ticket(key))) - (posted.get(key) ?? 0);
+    if (!delta) return;
+    posted.set(key, (posted.get(key) ?? 0) + delta);
+    ledger.push({
+      order: key,
+      kind: delta > 0 ? "earn" : "earn_reversal",
+      stamps: delta,
+      rewards: 0,
+    });
+    m.stamps += delta;
+    m.lifetimeStamps += delta;
+    while (delta < 0 && m.stamps < 0 && m.rewards > 0) {
+      ledger.push({
+        order: key,
+        kind: "reward_unearned",
+        stamps: required,
+        rewards: -1,
+      });
+      m.stamps += required;
+      m.rewards--;
+      m.rewardsEarned--;
+    }
+    while (m.stamps >= required) {
+      ledger.push({
+        order: key,
+        kind: "reward_earned",
+        stamps: -required,
+        rewards: 1,
+      });
+      m.stamps -= required;
+      m.rewards++;
+      m.rewardsEarned++;
+    }
+  };
+  /** The member as the receipt shows her right after each of her checkouts. */
+  const checkouts: Record<
+    string,
+    { stamps: number; rewards: number; earned: number; completed: number }
+  > = {};
+  for (const o of ORDERS_L) {
+    if (!member(o.id)) continue;
+    const from = ledger.length;
+    if (o.reward) {
+      if (m.rewards < 1)
+        throw Error(`oracle: ${o.id} redeems a reward Rosa does not have`);
+      ledger.push({
+        order: o.id,
+        kind: "reward_redeemed",
+        stamps: 0,
+        rewards: -1,
+      });
+      m.rewards--;
+      m.rewardsRedeemed++;
+    }
+    post(o.id);
+    const mine = ledger.slice(from);
+    checkouts[o.id] = {
+      stamps: m.stamps,
+      rewards: m.rewards,
+      earned: sum(
+        mine.filter((x) => x.kind === "earn"),
+        (x) => x.stamps,
+      ),
+      completed: mine.filter((x) => x.kind === "reward_earned").length,
+    };
+  }
+  for (const rf of refunds) {
+    done.push(rf);
+    if (member(rf.order)) post(rf.order);
+  }
+  const memberOrders = tickets.filter((t) => member(t.key));
+  return {
+    checkouts,
+    ledger,
+    member: m,
+    report: {
+      members: 1,
+      new: 1,
+      active: 1,
+      stampsEarned: sum(
+        ledger.filter((x) => x.kind === "earn"),
+        (x) => x.stamps,
+      ),
+      stampsReversed: -sum(
+        ledger.filter((x) => x.kind === "earn_reversal"),
+        (x) => x.stamps,
+      ),
+      rewardsEarned: m.rewardsEarned,
+      rewardsRedeemed: m.rewardsRedeemed,
+      rewardValue: mxn(sum(memberOrders, (t) => t.courtesy + t.discount)),
+      memberSales: mxn(sum(memberOrders, base)),
+    },
+  };
+}
+
+export function oracleL() {
+  const r = RESTAURANT_L;
+  const tickets = issue(
+    r.fiscal.series,
+    ORDERS_L.map((o) => ticketFor(r, o)),
+  );
+  const refunds = REFUNDS_L.map((rf) => {
+    const t = tickets.find((x) => x.key === rf.order)!;
+    const split = refundTax(t.groups.iva16.gross, 0, rf.amount, RATE.iva16);
+    return { ...rf, folio: t.folio!, number: t.number, ...split };
+  });
+  const z = dayTotals(tickets);
+  const refundTotal = sum(refunds, (rf) => rf.amount);
+  const cashRefunds = sum(
+    refunds.filter((rf) => rf.method === "cash"),
+    (rf) => rf.amount,
+  );
+  const cardRefunds = refundTotal - cashRefunds;
+  return {
+    tickets: tickets.map(ticketRow),
+    adjustments: tickets
+      .filter((t) => t.discount || t.courtesy)
+      .map((t) => ({
+        folio: t.folio!,
+        discount: t.discount ? mxn(t.discount) : "—",
+        courtesy: t.courtesy ? mxn(t.courtesy) : "—",
+        grossBeforeDiscount: mxn(t.grossBeforeDiscount),
+      })),
+    refunds: refunds.map((rf) => ({
+      folio: rf.folio,
+      amount: mxn(rf.amount),
+      base: mxn(rf.base),
+      tax: mxn(rf.tax),
+    })),
+    day: {
+      tickets: tickets.length,
+      folios: `${tickets[0]!.folio} a ${tickets.at(-1)!.folio}`,
+      gross: mxn(z.gross),
+      discounts: mxn(z.discounts),
+      courtesies: mxn(sum(tickets, (t) => t.courtesy)),
+      net: mxn(z.net),
+      iva16: {
+        sales: mxn(z.iva16.gross),
+        base: mxn(z.iva16.base),
+        tax: mxn(z.iva16.tax),
+      },
+      tasa0: mxn(z.tasa0),
+      refunds: mxn(refundTotal),
+      cashRefunds: mxn(cashRefunds),
+      cardRefunds: mxn(cardRefunds),
+      refundBase: mxn(sum(refunds, (rf) => rf.base)),
+      refundTax: mxn(sum(refunds, (rf) => rf.tax)),
+      ivaNet: mxn(z.iva16.tax - sum(refunds, (rf) => rf.tax)),
+      cash: mxn(z.cash),
+      external: mxn(z.external),
+      opening: mxn(r.openingCash),
+      expectedCash: mxn(r.openingCash + z.cash + z.cashTips - cashRefunds), // R11
+      terminalNet: mxn(z.external + z.externalTips - cardRefunds), // R12
+      cogs: mxn(cogs(r, tickets)),
+    },
+    club: (({ checkouts, ...club }) => (void checkouts, club))(
+      clubDay(tickets, refunds),
+    ),
+  };
+}
+
+/** Branch L: Rosa's counts right after each of her checkouts (receipt status and block). */
+export function clubCheckouts() {
+  const tickets = issue(
+    RESTAURANT_L.fiscal.series,
+    ORDERS_L.map((o) => ticketFor(RESTAURANT_L, o)),
+  );
+  return clubDay(tickets, REFUNDS_L).checkouts;
+}
+
 /** The full expected day (§5.1, §13.3 oracle.json). */
 export function oracle() {
-  return { A: oracleA(), B: oracleB() };
+  return { A: oracleA(), B: oracleB(), L: oracleL() };
 }
 
 /** Per-ticket figures the browser and DB suites assert, keyed by order-book id (centavos). */
@@ -756,6 +1008,11 @@ export function ticketFigures() {
     CHECKS_B.map((c) => checkTicket(RESTAURANT_B, c)),
   ))
     add(RESTAURANT_B, t);
+  for (const t of issue(
+    RESTAURANT_L.fiscal.series,
+    ORDERS_L.map((o) => ticketFor(RESTAURANT_L, o)),
+  ))
+    add(RESTAURANT_L, t);
   return out;
 }
 

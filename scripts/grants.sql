@@ -166,3 +166,56 @@ DO $$ BEGIN
     next_self_invoice_from) ON cfdi_settings TO gm_app;
  END IF;
 END $$;
+
+-- 037 payments (Wave 4, LD-71/LD-72). Guarded: this manifest also runs on schemas before 037
+-- (tests/public-ordering-db.ts applies it at 033; the 036 pattern). No DELETE on any payments
+-- table for either role (tests/ops-db.ts PLATFORM-ROLES-5 lists every exception; none here).
+-- Runtime role: inserts configuration, attempts (created), events and drawer counts; updates only
+-- its own transition columns (037's trigger enforces which transitions, and order_id only for a
+-- kiosk hold's settle); never reads secrets.
+-- Worker (gm_jobs_worker): provider transitions, sealed secrets, device cache, platform row.
+DO $$ BEGIN
+ IF to_regclass('public.payment_attempts') IS NOT NULL THEN
+  GRANT SELECT, INSERT ON payment_terminals, payment_platforms, payment_platform_prices, payment_device_terminals,
+    payment_provider_accounts, payment_attempts, payment_attempt_events, drawer_terminal_counts TO gm_app;
+  GRANT UPDATE (name, fee_bp, active, archived_at, archived_by, version, updated_at, updated_by) ON payment_terminals TO gm_app;
+  GRANT UPDATE (enabled, commission_bp, version, updated_at, updated_by) ON payment_platforms TO gm_app;
+  GRANT UPDATE (price, version, updated_at, updated_by) ON payment_platform_prices TO gm_app;
+  GRANT UPDATE (terminal_id, updated_at, updated_by) ON payment_device_terminals TO gm_app;
+  GRANT UPDATE (state, hook_hash, upload_secret_id, error_code, version, updated_at, updated_by) ON payment_provider_accounts TO gm_app;
+  GRANT UPDATE (state, order_id, cancel_requested_at, cancel_requested_by, tender_id, settled_at, resolution,
+    resolution_note, resolved_by, resolved_at, provider_reference, error_code, version) ON payment_attempts TO gm_app;
+  GRANT INSERT (tenant_id, id, purpose, kid, payload_secret) ON payment_secrets TO gm_app;
+  -- Must stay after the blanket "GRANT SELECT ON ALL TABLES" at the top of this file (cfdi_secrets).
+  REVOKE SELECT ON payment_secrets FROM gm_app;
+  GRANT UPDATE (platform_payment_form) ON cfdi_settings TO gm_app;
+  GRANT SELECT, INSERT, UPDATE ON payments_platform TO gm_jobs_worker;
+  GRANT SELECT ON payment_terminals, payment_platforms TO gm_jobs_worker;
+  GRANT SELECT, UPDATE (state, account_label, provider_account_id, upload_secret_id, credential_secret_id, error_code,
+    verified_at, version, updated_at) ON payment_provider_accounts TO gm_jobs_worker;
+  GRANT SELECT, INSERT, UPDATE (kid, payload_secret, wiped_at) ON payment_secrets TO gm_jobs_worker;
+  GRANT SELECT, INSERT, UPDATE (operating_mode, status, store_id, pos_id, seen_at) ON payment_provider_devices TO gm_jobs_worker;
+  GRANT SELECT, UPDATE (state, sent_at, decided_at, provider_reference, provider_payment_id, provider_status, paid_amount,
+    fee, fee_source, card_type, card_brand, card_last4, error_code, version) ON payment_attempts TO gm_jobs_worker;
+  GRANT SELECT, INSERT ON payment_attempt_events TO gm_jobs_worker;
+ END IF;
+END $$;
+
+-- 038 loyalty. No DELETE on any loyalty table. The ledger is INSERT-only (and append-only by
+-- trigger); member balances are written only by loyalty_ledger_apply() (SECURITY DEFINER, 038), so
+-- the runtime role updates contact, consent-preference and redaction columns only. Nothing for the
+-- worker, support or backup roles (the backup reader's SELECT comes from the blanket grant). Guarded:
+-- this manifest also applies to schemas before 038 (tests/public-ordering-db.ts applies it at 033).
+-- Idempotent.
+DO $$ BEGIN
+ IF to_regclass('public.loyalty_members') IS NOT NULL THEN
+  GRANT SELECT, INSERT ON loyalty_settings, loyalty_members, loyalty_ledger, loyalty_order_links TO gm_app;
+  GRANT UPDATE (enabled, program_name, stamps_required, stamp_threshold, max_stamps_per_order,
+    reward_kind, reward_description, reward_amount, reward_max_amount, max_rewards_per_order,
+    prompt_at_checkout, receipt_join_qr, link_window_days, privacy_attested_at, privacy_attested_by,
+    version, updated_at, updated_by) ON loyalty_settings TO gm_app;
+  GRANT UPDATE (name, name_key, phone_e164, marketing_opt_in, marketing_changed_at, consent_notice_url,
+    redacted_at, redacted_by, redaction_reason, version, updated_at) ON loyalty_members TO gm_app;
+  GRANT UPDATE (member_id, changed_at, changed_by) ON loyalty_order_links TO gm_app;
+ END IF;
+END $$;

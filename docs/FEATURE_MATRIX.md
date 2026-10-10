@@ -13,7 +13,7 @@
 | Parked carts/templates, call names, fulfillment | POS Lite selling; Luma notes/table orders | Durable cart and service model | 2, required |
 | Kitchen/bar, status, seen acknowledgement | Both KDS; POS Lite KDS devices | One queue per station, reliable acknowledgements | 2–3, required |
 | Thermal receipts, kitchen printing, reprints | Both print bridges/jobs | One device-authorized durable print pipeline | 2–3, required; hardware validation gate |
-| Cash, separate external bank terminal recording | Both payment methods; POS Lite external terminals | One payment workspace; explicit manual recording | 2, required |
+| Cash, separate external bank terminal recording | Both payment methods; POS Lite external terminals | One payment workspace; explicit manual recording; named terminals with fee rates and the «Pagado por plataforma» tender with platform prices (payments 037 P1) | 2, required |
 | Integrated payments and terminal binding | POS Lite Stripe/MP/Getnet; Clip partial | Retain adapters, prove each enabled provider | 3, required for configured providers |
 | Split by items/amount; grouped settlement | Both splits; POS Lite payment groups | Canonical allocations; keep kitchen orders distinct | 3, required |
 | Full/partial refunds, cancellations, history | Both | Reversal records and scoped manager approval | 2–3, required |
@@ -35,9 +35,9 @@
 | CFDI invoice/customer self-service/cancellation | Both FacturAPI flows | Built (030) on fiscal 027, discounts 028 and reports 029; stamping, cancellation, self-invoice and credit notes are DB- and browser-tested against the Facturapi fake: Facturapi organization per restaurant, staff invoice, QR/code self-invoicing portal, global invoices by period, cancellation/substitution, credit notes, worker-only sealed credentials ([CFDI](CFDI.md)). Contract-tested, not sandbox-verified; disabled until keys are configured; live not enabled | 5, configured module; required before invoice cutover |
 | Uber Eats/Rappi/DiDi imports and connectors | POS Lite adapters; Luma delivery parser | Import-first plus verified live connectors | 4–5; live connectivity gated |
 | Courier dispatch (Uber Direct) | POS Lite | Retain distinct dispatch lifecycle and retries | Optional configured module |
-| Loyalty/stamps/referrals | POS Lite | Integrate after checkout; do not obstruct cash sale | 5, configured module |
-| Apple/Google wallet passes | POS Lite | Provider-gated loyalty extension | Optional configured module |
-| SMS/WhatsApp and voice operations | POS Lite Twilio/Meta | Retain adapter boundary and consent/preferences | Optional configured module |
+| Loyalty/stamps/referrals | POS Lite | Integrate after checkout; do not obstruct cash sale. Built (038, [Loyalty](LOYALTY.md)): members by phone, stamps on the paid amount, rewards as audited discounts, join QR, LFPDPPP consent and ARCO, pos-lite import. Referrals dropped for the pilot (LD-72). | 5, configured module (Pro) |
+| Apple/Google wallet passes | POS Lite | Provider-gated loyalty extension. Pilot: pos-lite keeps serving its passes and `/gr` (LD-72; [Loyalty](LOYALTY.md)). | Optional configured module |
+| SMS/WhatsApp and voice operations | POS Lite Twilio/Meta | Retain adapter boundary and consent/preferences. Pilot: none sent; the club records marketing consent only (LD-72). | Optional configured module |
 | AI receipt/menu parsing and recipe matching | Both Anthropic/AI parsers | Draft suggestions, confidence, human review before writes | 4–5, optional assist; manual flow required |
 | Kiosk suggestions, menu boards/displays | POS Lite | Use shared catalog/branding; no separate pricing logic | Optional follow-on |
 | Incident monitoring / AI sentinel | POS Lite sentinel | Basic operational monitoring required; automated fixes off by default | 6 baseline; advanced optional module |

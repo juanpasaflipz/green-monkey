@@ -361,6 +361,8 @@ export async function ticketForCfdi(
     payments: ticket.payments.map((p) => ({
       method: p.method,
       amount: p.amount,
+      // payments (037): credit/debit known from an integrated terminal (CFDI form 04/28, Q4).
+      ...(p.cardType ? { cardType: p.cardType } : {}),
     })),
     refunds,
   };

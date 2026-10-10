@@ -84,6 +84,18 @@ export function RefundSlip({
             <span>{money(r.amount)}</span>
           </div>
         ))}
+      {batch.rows.some((r) => r.method === "platform") && (
+        <div className="row between">
+          <span>{t.payRefundPlatform}</span>
+          <span>
+            {money(
+              batch.rows
+                .filter((r) => r.method === "platform")
+                .reduce((n, r) => n + r.amount, 0),
+            )}
+          </span>
+        </div>
+      )}
       <div className="row between doc-total">
         <span>{t.discountsSlipTotal}</span>
         <strong>{money(batch.amount)}</strong>

@@ -392,14 +392,17 @@ describe("8. paymentFormFor / needsCardForm", () => {
     expect(paymentFormFor([], "04")).toBe("01");
   });
   it("needsCardForm only when a card tender decides the form", () => {
-    expect(needsCardForm([{ method: "cash", amount: 500 }])).toBe(false);
+    expect(needsCardForm([{ method: "cash", amount: 500 }], "31")).toBe(false);
     expect(
-      needsCardForm([
-        { method: "cash", amount: 500 },
-        { method: "external", amount: 100 },
-      ]),
+      needsCardForm(
+        [
+          { method: "cash", amount: 500 },
+          { method: "external", amount: 100 },
+        ],
+        "31",
+      ),
     ).toBe(false);
-    expect(needsCardForm([{ method: "external", amount: 1 }])).toBe(true);
+    expect(needsCardForm([{ method: "external", amount: 1 }], "31")).toBe(true);
   });
 });
 
