@@ -301,9 +301,11 @@ async function kiosksSetup(owner: Device, state: RunState) {
     await row
       .getByLabel(/^Terminal/)
       .selectOption({ label: pay.terminals[KIOSKS_S[k].terminal].name });
+    // The till select marks each till «abierta» or «cerrada» (KIOSK-UX-10); Caja's drawer has
+    // been open since S2.4.
     await row
       .getByLabel(/^Caja que recibe los cobros/)
-      .selectOption({ label: "Caja" });
+      .selectOption({ label: "Caja · abierta" });
     await row
       .getByRole("button", { name: "Guardar estación", exact: true })
       .click();
