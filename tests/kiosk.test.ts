@@ -26,6 +26,12 @@ import {
   pairActionKey,
 } from "../src/features/public/KioskSettings";
 import { suggestionsDirty } from "../src/features/menu/ProductSuggestionsField";
+import {
+  ProductPhotoField,
+  photosOffNotice,
+} from "../src/features/menu/ProductPhotoField";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { kioskReportTiles } from "../src/features/public/KioskReport";
 import { moneyFormatter } from "../src/features/menu/format";
 import { orderModeKey } from "../src/labels";
@@ -1065,5 +1071,47 @@ describe("Configuración › Kiosco de autoservicio keeps unsaved edits and asks
     expect(suggestionsDirty(["a"], [])).toBe(true);
     expect(suggestionsDirty([], ["a"])).toBe(true);
     expect(suggestionsDirty(["b", "a"], ["a", "b"])).toBe(true);
+  });
+});
+
+describe("the product editor's photo honours /capabilities menuPhotos (KIOSK-OPS-10)", () => {
+  const product = {
+    id: id(),
+    name: { es: "Torta ficticia", en: "Fictional torta" },
+    image: null,
+    version: 1,
+  } as never;
+  const render = (capability: { enabled: boolean; reason?: string } | null) =>
+    renderToStaticMarkup(
+      createElement(ProductPhotoField, {
+        product,
+        locale: "es",
+        disabled: false,
+        onChanged: () => {},
+        capability,
+      }),
+    );
+  it("no store: no «Subir foto», a notice that says photos are not set up on this server", () => {
+    const html = render({
+      enabled: false,
+      reason: "media_store_not_configured",
+    });
+    expect(html).not.toContain("Subir foto");
+    expect(html).not.toContain('type="file"');
+    expect(html).toContain("Fotos no configuradas en este servidor");
+  });
+  it("switched off: its own notice; on, or unknown: «Subir foto»", () => {
+    const off = render({ enabled: false, reason: "switched_off" });
+    expect(off).not.toContain("Subir foto");
+    expect(off).toContain("apagadas en este servidor");
+    expect(render({ enabled: true })).toContain("Subir foto");
+    expect(render(null)).toContain("Subir foto");
+    expect(photosOffNotice({ enabled: true }, "en")).toBeNull();
+    expect(
+      photosOffNotice(
+        { enabled: false, reason: "media_store_not_configured" },
+        "en",
+      ),
+    ).toMatch(/^Photos aren't set up on this server/);
   });
 });

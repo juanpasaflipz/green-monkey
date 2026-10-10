@@ -190,7 +190,11 @@ KIOSK.md §4 and PILOT_SOP §10:
 4. **Photos**: the operator downloads pos-lite's product photos and writes the
    `gm-menu-media-v1` manifest (KIOSK.md §7); the owner runs Menú e inventario › **Importar
    fotos**, reviews the mapping and imports; the report lists what was not imported (re-running
-   is safe). Descriptions are typed in the product editor. Curated suggestions: per product
+   is safe). Uploads are capped at 30 per restaurant per 10 minutes: the import waits and
+   continues on its own (about 20 minutes for 52 photos); one by one in the product editor, the
+   31st within 10 minutes is refused until the window passes. Without the R2 media bucket the
+   product editor shows «Fotos no configuradas en este servidor» instead of «Subir foto».
+   Descriptions are typed in the product editor. Curated suggestions: per product
    («Sugerir con este producto») and for the cart (Configuración › Kiosco de autoservicio).
 5. Field checks (LAUNCH_HANDOFF, kiosk §8.4): one card sale, one declined card cancelled on the
    reader, one «Pagar en caja», the idle reset, and a tablet restart (re-pin). Log each.

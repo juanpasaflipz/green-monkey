@@ -105,6 +105,10 @@ export default defineArea({
     menuPhotoBrowser:
       "Este navegador no pudo preparar la foto. Intenta de nuevo o usa otro navegador.",
     menuPhotoSaveFirst: "Guarda el producto para agregarle una foto.",
+    menuPhotoNoStore:
+      "Fotos no configuradas en este servidor: todavía no tiene dónde guardarlas. El menú se muestra sin fotos.",
+    menuPhotoSwitchedOff:
+      "Las fotos del menú están apagadas en este servidor. El menú se muestra sin fotos.",
     menuDisplaySettings: "Pantalla",
     menuGridPhotosHint:
       "Solo en este dispositivo. Por omisión se ven en las terminales y no en los teléfonos; un producto sin foto muestra sus iniciales.",
@@ -448,6 +452,10 @@ export default defineArea({
     menuPhotoBrowser:
       "This browser couldn't prepare the photo. Try again or use another browser.",
     menuPhotoSaveFirst: "Save the product to add a photo.",
+    menuPhotoNoStore:
+      "Photos aren't set up on this server: it has nowhere to keep them yet. The menu shows without photos.",
+    menuPhotoSwitchedOff:
+      "Menu photos are turned off on this server. The menu shows without photos.",
     menuDisplaySettings: "Display",
     menuGridPhotosHint:
       "On this device only. By default they show on terminals and not on phones; a product without a photo shows its initials.",

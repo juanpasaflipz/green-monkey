@@ -196,6 +196,9 @@ staging and production while photos are on). Unset (anywhere, including a deploy
 before the owner provides the R2 media bucket): photos are unavailable. An upload is refused with
 `media_store_not_configured` («Este servidor todavía no tiene dónde guardar fotos»), `/capabilities`
 reports `menuPhotos` off with that reason, and the kiosk, the QR menu and the POS show text tiles.
+The product editor reads that entry and shows «Fotos no configuradas en este servidor» (or «Las
+fotos del menú están apagadas en este servidor» when `MENU_PHOTOS_ENABLED=false`) instead of «Subir
+foto» (KIOSK-OPS-10).
 `MEDIA_FS_ROOT` alone never selects the local driver, so a Railway service never writes photos to
 its ephemeral disk (tests/config.test.ts, tests/media.test.ts). Keys `m/<tenant>/<asset>/<thumb|card|hero>.webp|jpg`; ids are server-generated.
 The asset's type is stored per variant in `menu_media.variants` (`type`; absent = WebP) and as the

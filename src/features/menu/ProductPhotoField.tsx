@@ -4,7 +4,7 @@
 // carries no EXIF or GPS) and uploads them as one body: WebP, or JPEG where the browser cannot
 // encode WebP (desktop Safari and every iPadOS and iOS browser, KIOSK-UX-11). The server validates
 // and rebuilds each container (shared/webp.ts, shared/jpeg.ts).
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Locale, Product } from "../../../shared/domain";
 import {
   MEDIA_LIMITS,
@@ -18,6 +18,24 @@ import { api } from "../../api";
 import { Button } from "../../components/ui";
 
 type Result = { productId: string; version: number; image: Product["image"] };
+
+/** /capabilities' menuPhotos entry (server/kiosk-config.ts kioskCapabilities). */
+export type MenuPhotosCapability = { enabled: boolean; reason?: string };
+
+/**
+ * Why this server takes no photo, from /capabilities (KIOSK-OPS-10), or null when it takes them
+ * (or the entry is unknown: the upload's own error then says why).
+ */
+export function photosOffNotice(
+  cap: MenuPhotosCapability | null | undefined,
+  locale: Locale,
+): string | null {
+  if (!cap || cap.enabled) return null;
+  const t = strings[locale];
+  return cap.reason === "media_store_not_configured"
+    ? t.menuPhotoNoStore
+    : t.menuPhotoSwitchedOff;
+}
 
 const toBlob = (canvas: HTMLCanvasElement, type: string) =>
   new Promise<Blob | null>((r) => canvas.toBlob(r, type, MEDIA_LIMITS.quality));
@@ -76,16 +94,32 @@ export function ProductPhotoField({
   locale,
   disabled,
   onChanged,
+  capability,
 }: {
   product: Product;
   locale: Locale;
   disabled: boolean;
   onChanged: (r: Result) => void;
+  /** The server's menuPhotos entry; read from /capabilities when not given. */
+  capability?: MenuPhotosCapability | null;
 }) {
   const t = strings[locale];
   const input = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [cap, setCap] = useState<MenuPhotosCapability | null>(
+    capability ?? null,
+  );
+  useEffect(() => {
+    if (capability !== undefined) return;
+    let live = true;
+    api<{ menuPhotos?: MenuPhotosCapability }>("/capabilities")
+      .then((c) => live && setCap(c.menuPhotos ?? null))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [capability]);
   const message = (code: string) =>
     code === "media_type_unsupported"
       ? t.menuPhotoTypeError
@@ -93,6 +127,8 @@ export function ProductPhotoField({
         ? t.menuPhotoTooLarge
         : code === "media_unavailable"
           ? t.menuPhotoStoreDown
+          : code === "media_store_not_configured"
+            ? t.menuPhotoNoStore
           : code === "media_encode_unsupported"
             ? t.menuPhotoBrowser
             : translateError(code, locale);
@@ -135,6 +171,16 @@ export function ProductPhotoField({
     }
   }
   const image = product.image;
+  const off = photosOffNotice(cap, locale);
+  // No «Subir foto» on a server that cannot keep photos: say why instead (KIOSK-OPS-10).
+  if (off)
+    return (
+      <div className="menu-photo">
+        <p className="muted" role="note">
+          {off}
+        </p>
+      </div>
+    );
   return (
     <div className="menu-photo">
       {image ? (
