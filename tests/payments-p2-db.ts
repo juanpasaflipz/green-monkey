@@ -93,7 +93,11 @@ import {
 import { exceptionRows } from "../server/reports/exceptions.js";
 import { snapshotTenant } from "../server/reports/snapshot.js";
 import { businessDate, type Order, type Session } from "../shared/domain.js";
-import type { AttemptState, AttemptView } from "../shared/payments.js";
+import {
+  PAYMENTS_LIMITS,
+  type AttemptState,
+  type AttemptView,
+} from "../shared/payments.js";
 import type { SessionAccess } from "../shared/access.js";
 import { startPaymentsFake } from "./fakes/payments-fake.js";
 import { noRetries } from "./db-retries.js";
@@ -1819,12 +1823,34 @@ try {
     }
   });
 
-  await test("a slow Clip create lands after the first delete by serial (P2V-FIXES-2): a delete sent right after the timed-out create is no evidence (serial_early) and «No se cobró» stays refused; the settled check a minute after the send finds the request on the reader and withdraws it (cancelled, with its id); one create", async () => {
+  await test("a slow Clip create lands after the first delete by serial (P2V-FIXES-2): a delete sent right after the timed-out create is no evidence (serial_early) and «No se cobró» stays refused; the settled check 90 s after the send finds the request on the reader and withdraws it (cancelled, with its id); one create", async () => {
     const mgr = fresh(A, ids.manager, "manager");
     const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
     fake.next("clip", "timeoutLanding");
     const v = await start(cashier, o.id, terminals.clip, o.total);
     assert.equal(await drive(v.id, ["unknown", "cancelled"]), "unknown");
+    assert.equal((await attemptRow(v.id)).provider_status, "serial_early");
+    await rejects(
+      resolve(mgr, v.id, {
+        outcome: "not_charged",
+        note: NOTE,
+        confirmed: true,
+      }),
+      "payments_provider_may_charge",
+    );
+    // Seventy seconds after the send Clip may still be trying the reader (its create waits up
+    // to 60 s after our 15 s timeout): «Volver a consultar» deletes by serial again, and that is
+    // still no evidence. (The automatic settled delete is held for this step.)
+    await asOwner(
+      A,
+      (
+        tx,
+      ) => tx`update payment_attempts set sent_at = now() - interval '70 seconds'
+        where id=${v.id}`,
+    );
+    await hold(A, ["payments_webhook"]);
+    await resolve(cashier, v.id, { outcome: "check" });
+    await round(A, { due: false });
     assert.equal((await attemptRow(v.id)).provider_status, "serial_early");
     await rejects(
       resolve(mgr, v.id, {
@@ -1859,11 +1885,13 @@ try {
     const serial = (await eventsOf(v.id)).filter(
       (e) => e.kind === "cancel_by_serial",
     );
-    assert.equal(serial.length, 2);
+    assert.equal(serial.length, 3);
     assert.ok(
-      serial[0].detail.askedAfterMs < 60_000 &&
-        serial[1].detail.askedAfterMs >= 60_000,
-      "the second delete is the settled one",
+      serial[0].detail.askedAfterMs < PAYMENTS_LIMITS.clipSerialSettleMs &&
+        serial[1].detail.askedAfterMs >= 70_000 &&
+        serial[1].detail.askedAfterMs < PAYMENTS_LIMITS.clipSerialSettleMs &&
+        serial[2].detail.askedAfterMs >= PAYMENTS_LIMITS.clipSerialSettleMs,
+      "only the third delete is a settled one",
     );
   });
 
@@ -2658,7 +2686,7 @@ try {
       }),
       "payments_provider_may_charge",
     );
-    // The settled check, once the send is a minute old, finds nothing either: now it counts.
+    // The settled check, once the send is 90 s old, finds nothing either: now it counts.
     await asOwner(
       A,
       (

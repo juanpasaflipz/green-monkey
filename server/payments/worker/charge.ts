@@ -1204,10 +1204,11 @@ export const pushDead: JobDeadHook = async (ctx) => {
  * A Clip create with an unknown outcome: withdraw whatever the reader has not picked up yet
  * (documented delete by serial number). Best effort; recorded as an event either way.
  *
- * A delete sent right after a timed-out create proves nothing (P2V-FIXES-2): Clip's create talks
- * to the reader synchronously (developer.clip.mx post_payment documents 400
- * PINPAD_TERMINAL_TIMEOUT_EXCEPTION «Unable to connect to pinpad terminal»), so a create that
- * outlived our client timeout can still land on the reader after the delete found nothing. Only a
+ * A delete sent right after a timed-out create proves nothing (P2V-FIXES-2): Clip's create waits
+ * on the reader for up to 60 s (developer.clip.mx post_payment, read 2026-10-09: «Configurado a
+ * 60 segundos», then 504 PINPAD_TERMINAL_TIMEOUT_EXCEPTION «Unable to connect to pinpad
+ * terminal»), so a create that outlived our 15 s client timeout can still land on the reader
+ * after the delete found nothing. Only a
  * delete sent PAYMENTS_LIMITS.clipSerialSettleMs or more after the send counts as «nothing of this
  * attempt waits on the reader» (serial_clear); an earlier one is serial_early and queues the
  * second, settled delete. A 200 that withdrew another reference's request says nothing about this

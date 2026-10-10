@@ -72,10 +72,12 @@ export const PAYMENTS_LIMITS = {
   /**
    * A delete by serial number counts as «nothing of this attempt waits on the reader» only when
    * sent this long after the create (P2V-FIXES-2): longer than the worker's 15 s provider timeout
-   * plus the time Clip's create may still spend reaching the reader (its create waits on the
-   * reader: 400 PINPAD_TERMINAL_TIMEOUT_EXCEPTION). An earlier one queues a second, settled one.
+   * plus the 60 s Clip's create may still spend reaching the reader (developer.clip.mx
+   * post_payment, read 2026-10-09: the terminal wait is «Configurado a 60 segundos», after which
+   * Clip answers 504 PINPAD_TERMINAL_TIMEOUT_EXCEPTION; header Pinpad-Wait-Response). An earlier
+   * delete queues a second, settled one.
    */
-  clipSerialSettleMs: 60_000,
+  clipSerialSettleMs: 90_000,
   /**
    * After a manager's «No se cobró» of a charge with a provider reference, the worker keeps
    * reading it this often for this long (P2V-FIXES-2/-3): a payment the provider takes later is

@@ -515,9 +515,10 @@ completó»). Money may or may not have been taken. Nothing retries on its own.
      paid, and while it may still take the charge («La terminal todavía puede cobrar este
      cargo…»): MP until its order expires plus 2 minutes, counted from the last send; Clip with
      a request id until a cancel or a read ends it (cancel it on the reader, then **Volver a
-     consultar**); Clip without one until a delete by serial number sent at least a minute
-     after the send found nothing of it on the reader (an earlier one proves nothing: a slow
-     create can still land; the worker repeats it a minute after the send by itself).
+     consultar**); Clip without one until a delete by serial number sent at least 90 seconds
+     after the send found nothing of it on the reader (an earlier one proves nothing: Clip keeps
+     a create trying to reach the reader for up to 60 s after our 15 s timeout; the worker
+     repeats the delete 90 seconds after the send by itself).
    - Clip with a request id while Clip's API does not answer (an outage, or a Clip account
      that cannot be used): no read can end it, so **No se cobró** is accepted once 10 minutes
      have passed after the charge's deadline (about 20 minutes after the send) and either the
@@ -653,6 +654,10 @@ test merchant), charges are real and low-value:
    n. Clip notification: the body (`id`, `origin`, `event_type`) for an approval and a cancel.
    o. Clip `GET /payment` 404 timing for a fresh pinpad_request_id (right after the create).
    p. Account defaults on Juanberto's MP and Clip accounts for installments and DCC.
+   q. Clip create with the reader off: developer.clip.mx post_payment documents a 60 s wait
+      for the terminal, then 504 PINPAD_TERMINAL_TIMEOUT_EXCEPTION (the fake answers 400; the
+      worker treats a 5xx as an unknown outcome and withdraws by serial). Record the status,
+      the time it took, and whether a delete by serial during those 60 s finds the request.
 5. Evidence (timings, screenshots, attempt events with ids only) stays local under the LD-67
    evidence-directory pattern; nothing with a token, a key or a card beyond the last 4.
 6. Afterwards: disconnect both accounts in Configuración (the worker wipes the credentials)
