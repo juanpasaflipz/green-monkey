@@ -815,6 +815,20 @@ try {
         tx`explain (format json) select a.state from payment_attempts a where a.hold_id=${randomUUID()}`,
     );
     assert.match(byHold, /"Index Name":"payment_attempts_hold"/);
+    // KV-FIXES-5: the inbox's two sets (server/public-holds.ts inbox) are index reads: the live
+    // holds' 2-hour range, and the holds with a live or review attempt.
+    const shown = await plan(
+      (tx) =>
+        tx`explain (format json) select h.id from public_order_holds h
+          where h.state='pending' and h.created_at>now()-interval '2 hours' and h.expires_at>now()
+          union
+          select a.hold_id from payment_attempts a
+          where a.hold_id is not null
+            and a.state in ('created','sending','pending','unknown','approved','review')`,
+    );
+    assert.match(shown, /"Index Name":"public_order_holds_pending"/);
+    assert.match(shown, /"Index Name":"payment_attempts_hold_live"/);
+    assert.doesNotMatch(shown, /Seq Scan/);
   });
 
   await test("K2. holds: a kiosk hold may be dine-in without a table; a counter QR hold may not; decision_source 'kiosk' only on an accepted kiosk hold", async () => {
@@ -2923,6 +2937,17 @@ try {
       ),
       "not_found",
     );
+    // KV-SECURITY-2: a real asset of this restaurant claimed for a product it was not attached to.
+    await rejects(
+      write(manager, (tx) =>
+        recordMediaImport(tx, manager, {
+          ...report,
+          operationId: randomUUID(),
+          items: [{ ...report.items[0], productId: ids.taco }],
+        }),
+      ),
+      "not_found",
+    );
     const saved = await write(manager, (tx) =>
       recordMediaImport(tx, manager, report),
     );
@@ -3413,6 +3438,8 @@ try {
     await charge(k, o5.key);
     const a5 = await attemptOf(o5.key);
     await drive(a5.id, ["pending"]);
+    assert.equal((await inboxCard(h5.id))!.kiosk!.charging, true);
+    assert.equal((await inboxCard(h5.id))!.kiosk!.approved, false);
     await rejects(claim(h5.id), "kiosk_charge_in_progress");
     fake.decline(fake.chargeFor(a5.id)!.id);
     await drive(a5.id, ["declined"]);

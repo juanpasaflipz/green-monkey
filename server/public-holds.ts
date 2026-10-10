@@ -141,17 +141,26 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
       l.kind,l.label as link_label,l.revoke_reason as link_revoked,t.name as table_name,
       k.hold_id as checkout_hold,k.payment_choice,a.id as attempt_id,a.state as attempt_state,a.error_code as attempt_code,
       a.amount as attempt_amount,a.terminal_label as attempt_terminal,a.provider as attempt_provider
-    from public_order_holds h
+    from (
+      -- The live holds: an index range of public_order_holds_pending (GAP-4).
+      select h.id from public_order_holds h
+        where h.state='pending' and h.created_at>now()-interval '2 hours' and h.expires_at>now()
+      -- kiosk (039): money taken at the kiosk keeps its card in the inbox past expiry, and past
+      -- the 2-hour window while the attempt is live or in review (KIOSK-MONEY-4, R13: the red
+      -- card stays while it blocks the receiving till's corte). Found through 037's
+      -- payment_attempts_hold_live, never by walking expired holds (KV-FIXES-5). A hold has at
+      -- most one such attempt, and it is its checkout's latest.
+      union
+      select a.hold_id from payment_attempts a
+        where a.hold_id is not null
+          and a.state in ('created','sending','pending','unknown','approved','review')
+    ) shown
+    join public_order_holds h on h.id=shown.id
     join public_links l on l.tenant_id=h.tenant_id and l.id=h.link_id
     left join dining_tables t on t.tenant_id=h.tenant_id and t.id=h.table_id
     left join kiosk_checkouts k on k.tenant_id=h.tenant_id and k.hold_id=h.id
     left join payment_attempts a on a.tenant_id=k.tenant_id and a.id=k.attempt_id
     where h.state='pending'
-      and ((h.created_at>now()-interval '2 hours' and h.expires_at>now())
-        -- kiosk (039): money taken at the kiosk keeps its card in the inbox past expiry, and
-        -- past the 2-hour window while the attempt is live or in review (KIOSK-MONEY-4, R13:
-        -- the red card stays while it blocks the receiving till's corte)
-        or a.state in ('created','sending','pending','unknown','approved','review'))
     order by (a.state='review') desc nulls last,h.created_at,h.id limit 100`;
   // The recently expired count and the churning codes (ABUSE-2): diner
   // cancellations per scope (a table across its links, or a link) in the
@@ -228,6 +237,7 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
                 "approved",
               ].includes(r.attempt_state),
               unknown: r.attempt_state === "unknown",
+              approved: r.attempt_state === "approved",
               review:
                 r.attempt_state === "review"
                   ? {

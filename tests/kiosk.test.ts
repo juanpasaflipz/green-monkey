@@ -710,6 +710,7 @@ describe("a kiosk hold in the staff inbox (KIOSK-UX-04, KIOSK-MONEY-3)", () => {
     attemptId: null,
     charging: false,
     unknown: false,
+    approved: false,
     review: null,
     ...o,
   });
@@ -738,6 +739,11 @@ describe("a kiosk hold in the staff inbox (KIOSK-UX-04, KIOSK-MONEY-3)", () => {
       });
       expect(
         kioskChargingExits(kiosk({ paymentChoice: "card" }), role),
+      ).toEqual({ cancel: false, resolve: false });
+      // KV-FIXES-6: an approved charge is about to settle; payments refuses its cancel.
+      expect(
+        kioskChargingExits({ ...live, approved: true }, role),
+        role,
       ).toEqual({ cancel: false, resolve: false });
     }
     for (const role of ["cashier", "server"])

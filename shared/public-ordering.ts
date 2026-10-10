@@ -440,6 +440,8 @@ export type InboxHold = {
     charging: boolean;
     /** The charge's outcome is unknown (payments' 'unknown'): resolved, not cancelled. */
     unknown: boolean;
+    /** Approved and about to settle: payments can no longer cancel it (KV-FIXES-6). */
+    approved: boolean;
     review: null | {
       attemptId: string;
       code: string;
@@ -546,7 +548,8 @@ export function kioskChargingExits(
   const manager = role === "owner" || role === "manager";
   if (!k?.charging || !k.attemptId || !manager)
     return { cancel: false, resolve: false };
-  return { cancel: !k.unknown, resolve: k.unknown };
+  // An approved charge only settles (requestCancel answers payments_not_cancellable): no exit.
+  return { cancel: !k.unknown && !k.approved, resolve: k.unknown };
 }
 
 /**

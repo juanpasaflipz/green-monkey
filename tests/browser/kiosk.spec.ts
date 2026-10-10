@@ -68,6 +68,12 @@ async function integratedReady(page: Page) {
     expect(served, "CI runs the worker with the payments fake").toBe(true);
   return served;
 }
+/** Menu photos are on (KV-GATE-8): CI's web runs with MEDIA_STORE=fs, so there it never skips. */
+function photosReady(caps: { menuPhotos?: { enabled?: boolean } }) {
+  const on = !!caps.menuPhotos?.enabled;
+  if (process.env.CI) expect(on, "CI runs with MEDIA_STORE=fs").toBe(true);
+  return on;
+}
 
 /** A tiny RGB PNG with an eXIf chunk (fictional GPS text): a photo whose metadata must not survive. */
 function pngWithExif(w: number, h: number): Buffer {
@@ -520,10 +526,7 @@ test("menu photos @cross: the owner uploads through «Subir foto» (no EXIF reac
   test.setTimeout(150_000);
   await login(page);
   const caps = await call(page, "/capabilities");
-  test.skip(
-    !caps.menuPhotos?.enabled,
-    "needs MEDIA_STORE (fs in local runs and CI)",
-  );
+  test.skip(!photosReady(caps), "needs MEDIA_STORE (fs in local runs and CI)");
   const menu = await call(page, "/menu");
   const product = menu.products.find((p: any) => p.name.es === "Taco de asada");
   const before = {
@@ -662,10 +665,7 @@ test("Importar fotos: the owner picks a manifest and generated photos, reviews t
   test.setTimeout(180_000);
   await login(page);
   const caps = await call(page, "/capabilities");
-  test.skip(
-    !caps.menuPhotos?.enabled,
-    "needs MEDIA_STORE (fs in local runs and CI)",
-  );
+  test.skip(!photosReady(caps), "needs MEDIA_STORE (fs in local runs and CI)");
   const menu = await call(page, "/menu");
   const byName = (es: string) =>
     menu.products.find((p: any) => p.name.es === es);
@@ -800,10 +800,7 @@ test("selling-grid photos: on by default on this terminal, lazy, in a fixed box 
   test.setTimeout(120_000);
   await login(page);
   const caps = await call(page, "/capabilities");
-  test.skip(
-    !caps.menuPhotos?.enabled,
-    "needs MEDIA_STORE (fs in local runs and CI)",
-  );
+  test.skip(!photosReady(caps), "needs MEDIA_STORE (fs in local runs and CI)");
   const session = await call(page, "/session");
   const menu = await call(page, "/menu");
   const named = (es: string) =>

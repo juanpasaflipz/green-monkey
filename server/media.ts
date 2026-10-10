@@ -332,14 +332,24 @@ export async function recordMediaImport(
     const counts: Record<string, number> = {};
     for (const item of p.items)
       counts[item.outcome] = (counts[item.outcome] ?? 0) + 1;
-    // An item reported imported names an asset this restaurant attached to that product.
+    // An item reported imported names an asset this restaurant attached to that product: its
+    // upload's menu.media.attached audit row (KV-SECURITY-2), read in the last 7 days (the
+    // audit's (tenant_id, created_at) index; an import reports right after its run). Any run's
+    // row counts, so a replayed upload (same operation id, an earlier run) still matches.
     const claimed = p.items.filter((i) => i.outcome === "imported");
     if (claimed.some((i) => !i.assetId || !i.productId))
       throw new DomainError("invalid_input");
     if (claimed.length) {
-      const [found] = await tx`select count(*)::int as n from menu_media
-        where id=any(${tx.array(claimed.map((i) => i.assetId!))}::uuid[])`;
-      if (found.n !== new Set(claimed.map((i) => i.assetId)).size)
+      const [found] = await tx`select count(*)::int as n from (
+          select distinct a.entity_id,a.detail->>'assetId' from audit a
+          where a.created_at>now()-interval '7 days' and a.operation='menu.media.attached'
+            and (a.entity_id,a.detail->>'assetId') in (
+              select * from unnest(${tx.array(claimed.map((i) => i.productId!))}::text[],
+                ${tx.array(claimed.map((i) => i.assetId!))}::text[]))) x`;
+      if (
+        found.n !==
+        new Set(claimed.map((i) => `${i.productId}:${i.assetId}`)).size
+      )
         throw new DomainError("not_found", 404);
     }
     await audit(tx, s, "menu.media.import", p.operationId, {
