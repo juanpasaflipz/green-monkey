@@ -17,6 +17,8 @@ import {
   saveSuggestions,
 } from "../kiosk-settings.js";
 import { removeProductImage, uploadProductImage } from "../media.js";
+import { kioskReport } from "../kiosk-report.js";
+import { snapshotTenant } from "../reports/snapshot.js";
 
 function uploadRoute(app: express.Express, sql: postgres.Sql) {
   const raw = express.raw({
@@ -56,6 +58,19 @@ function uploadRoute(app: express.Express, sql: postgres.Sql) {
 }
 
 export function register({ app, sql, route }: RouteContext) {
+  // Finanzas › Kiosco: one read-only snapshot, never cached (loyalty's report pattern).
+  app.get("/api/kiosk/report", async (req, res, next) => {
+    try {
+      const s = (req as unknown as AuthRequest).session;
+      const out = await snapshotTenant(sql, s.tenantId, (tx) =>
+        kioskReport(tx, s, req.query as { from?: unknown; to?: unknown }),
+      );
+      res.set("Cache-Control", "no-store");
+      res.json(out);
+    } catch (e) {
+      next(e);
+    }
+  });
   app.use(
     [
       "/api/kiosk",

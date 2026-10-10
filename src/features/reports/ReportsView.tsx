@@ -21,6 +21,7 @@ import { ProductsTab } from "./tabs/ProductsTab";
 import { StaffTab } from "./tabs/StaffTab";
 import { SummaryTab } from "./tabs/SummaryTab";
 import { LoyaltyReport } from "../loyalty/LoyaltyReport";
+import { KioskReport } from "../public/KioskReport";
 import "./reports.css";
 
 export const REPORT_TABS = [
@@ -34,6 +35,8 @@ export const REPORT_TABS = [
   "audit",
   // loyalty (038, R27): after the existing tabs (payments' "Pagos" goes before it at P1's merge).
   "loyalty",
+  // kiosk (039, R27): after the club.
+  "kiosk",
 ] as const;
 export type ReportTab = (typeof REPORT_TABS)[number];
 const TAB_KEYS: Record<ReportTab, Key> = {
@@ -46,6 +49,7 @@ const TAB_KEYS: Record<ReportTab, Key> = {
   exceptions: "reportsTabExceptions",
   audit: "reportsTabAudit",
   loyalty: "loyaltyReportTitle",
+  kiosk: "kioskReportTitle",
 };
 /** Row lists read at most 31 days; summaries, breakdowns and cortes 92 (D9). */
 const LIST_TABS: readonly ReportTab[] = ["payments", "exceptions", "audit"];
@@ -209,6 +213,8 @@ export function ReportsView({
             <ExceptionsTab {...props} navigate={navigate} />
           ) : tab === "loyalty" ? (
             <LoyaltyReport {...props} />
+          ) : tab === "kiosk" ? (
+            <KioskReport {...props} />
           ) : (
             <AuditTab {...props} />
           )}

@@ -74,6 +74,7 @@ import {
   uploadProductImage,
 } from "../server/media.js";
 import { uploadBody } from "./fixtures/webp.js";
+import { kioskReport } from "../server/kiosk-report.js";
 import { LINK_HEADER, STATUS_HEADER } from "../shared/public-ordering.js";
 import { KIOSK_COOKIE, type KioskCheckoutView } from "../shared/kiosk.js";
 import type { SessionAccess } from "../shared/access.js";
@@ -2033,6 +2034,35 @@ try {
         tx`select count(*)::int as n, count(distinct order_id)::int as d from fiscal_tickets where tenant_id=${A}`,
     );
     assert.equal(tickets.n, tickets.d, "one ticket per order");
+  });
+
+  await test("K-report. Finanzas › Kiosco: orders by where they were paid, charges approved without an order and how they ended, accepted suggestion lines", async () => {
+    const day = new Intl.DateTimeFormat("en-CA", {
+      timeZone: restaurant.timezone,
+    }).format(new Date(Date.now() - restaurant.cutoff * 60_000));
+    const r = await write(manager, (tx) =>
+      kioskReport(tx, manager, { from: day, to: day }),
+    );
+    const counts = await one(
+      A,
+      (tx) => tx`select
+        count(*) filter (where state='accepted' and decision_source='kiosk')::int as kiosk,
+        count(*) filter (where state='accepted' and decision_source='staff')::int as staff
+      from public_order_holds where tenant_id=${A} and channel='kiosk'`,
+    );
+    assert.equal(r.paidAtKiosk, counts.kiosk);
+    assert.equal(r.paidAtCounter, counts.staff);
+    assert.equal(r.orders, counts.kiosk + counts.staff);
+    assert.ok(r.paidAtKiosk >= 8);
+    assert.equal(r.suggestions.lines, 1, "K9's suggested papas");
+    assert.equal(r.suggestions.amount, 3500);
+    assert.equal(r.review.refunded, 1);
+    assert.equal(r.review.refundedAmount, 3500);
+    assert.ok(r.review.resolved >= 3, "two retries and one refund");
+    await rejects(
+      write(cashier, (tx) => kioskReport(tx, cashier, { from: day, to: day })),
+      "forbidden",
+    );
   });
 
   assert.deepEqual(dead, [], "no job went dead");
