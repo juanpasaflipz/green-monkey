@@ -94,7 +94,7 @@ export function kioskWebConfig(env: Env, appEnv: string): void {
 
 /** /capabilities entries (critic R30): {enabled, reason?} with snake_case reasons. */
 export function kioskCapabilities(env: Env = process.env) {
-  let store: MediaStoreConfig | null = null;
+  let store: MediaStoreConfig | null;
   try {
     store = mediaStoreConfig(env);
   } catch {

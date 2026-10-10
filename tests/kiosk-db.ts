@@ -42,7 +42,6 @@ import { saveTerminal } from "../server/payments/settings.js";
 import {
   requestCancel,
   resolveAttempt,
-  syncAttemptCore,
 } from "../server/payments/terminal.js";
 import { publicOrdering } from "../server/public-ordering.js";
 import { createLink, revokeLink, rotateLink } from "../server/public-links.js";
