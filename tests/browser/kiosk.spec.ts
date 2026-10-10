@@ -14,6 +14,48 @@ const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"];
 const FAKE_URL = process.env.PAYMENTS_FAKE_URL ?? "http://127.0.0.1:4899";
 const CLIP_DEVICE = "P8220724FAKE01";
 const tag = () => "k" + Math.random().toString(36).slice(2, 7);
+// The menu photos test is @cross (CI's webkit-ipad project runs its JPEG leg). As in offline.spec
+// and public-ordering.spec: against a local plain-HTTP compiled server, Chromium treats loopback
+// as secure but WebKit does not (it upgrades every subresource under CSP upgrade-insecure-requests,
+// so /app stays blank, and refuses Secure cookies), so the WebKit project drops only that
+// directive and the Secure attribute of the login cookies; every other header is unchanged.
+test.beforeEach(async ({ context, browserName, baseURL }) => {
+  if (browserName !== "webkit" || !baseURL?.startsWith("http:")) return;
+  await context.route("**/*", async (route) => {
+    const request = route.request();
+    const login = new URL(request.url()).pathname === "/api/login";
+    if (request.resourceType() !== "document" && !login)
+      return route.fallback();
+    const response = await route.fetch();
+    const headers = response.headers();
+    if (headers["content-security-policy"])
+      headers["content-security-policy"] = headers["content-security-policy"]
+        .split(";")
+        .filter((part) => part.trim() !== "upgrade-insecure-requests")
+        .join(";");
+    const cookies = response
+      .headersArray()
+      .filter((header) => header.name.toLowerCase() === "set-cookie")
+      .map((header) => {
+        const [pair, ...attributes] = header.value.split(";");
+        const split = pair!.indexOf("=");
+        const maxAge = attributes
+          .map((a) => a.trim().match(/^max-age=(\d+)$/i)?.[1])
+          .find(Boolean);
+        return {
+          name: pair!.slice(0, split).trim(),
+          value: pair!.slice(split + 1).trim(),
+          url: new URL(request.url()).origin,
+          httpOnly: true,
+          sameSite: "Strict" as const,
+          expires: maxAge ? Math.floor(Date.now() / 1000) + Number(maxAge) : -1,
+        };
+      });
+    if (cookies.length) await context.addCookies(cookies);
+    delete headers["set-cookie"];
+    await route.fulfill({ response, headers });
+  });
+});
 kitchenHygiene();
 
 async function login(page: Page) {
