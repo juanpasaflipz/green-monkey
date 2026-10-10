@@ -1,0 +1,107 @@
+{
+  "date": "2026-10-10",
+  "env": "production",
+  "startedAt": "2026-10-10T13:37:04.962Z",
+  "sourceProject": "long-rain-47883423",
+  "pitr": {
+    "branch": "rehearsal-2026-10-10",
+    "pointInTime": "2026-10-10T12:37:04.962Z",
+    "totals": {
+      "orders": "0",
+      "order_total": "0",
+      "tenders": "0",
+      "tender_amount": "0",
+      "refunds": "0",
+      "refund_amount": "0",
+      "allocations": "0",
+      "allocation_amount": "0",
+      "stock_movements": "0",
+      "stock_quantity": "0",
+      "cash_sessions": "0",
+      "line_voids": "0",
+      "offline_recoveries": "0",
+      "audit": "0",
+      "restaurants": "0",
+      "migrations": [
+        "001_core.sql",
+        "002_management.sql",
+        "003_payment_allocations.sql",
+        "004_restaurant_configuration.sql",
+        "005_service_assignment.sql",
+        "006_entitlements.sql",
+        "007_oauth_attempts.sql",
+        "008_owner_accounts.sql",
+        "009_owner_signup_policy.sql",
+        "010_owner_session_lineage.sql",
+        "011_billing.sql",
+        "012_signup_billing_intent.sql",
+        "013_billing_location_identity.sql",
+        "014_locations_and_invitations.sql",
+        "015_location_billing_operations.sql",
+        "016_free_limits.sql",
+        "017_free_location_policy.sql",
+        "018_offline_recovery.sql",
+        "019_offline_lease_retention.sql",
+        "020_offline_recovery_retention.sql",
+        "021_line_voids.sql",
+        "022_ops.sql",
+        "023_access.sql",
+        "024_service_lifecycle.sql",
+        "025_menu.sql",
+        "026_offline_sync.sql",
+        "027_fiscal.sql",
+        "028_discounts.sql",
+        "029_reports.sql",
+        "030_cfdi.sql",
+        "031_account.sql",
+        "032_public_ordering.sql",
+        "033_state_checks_validate.sql",
+        "034_public_ordering_redaction.sql",
+        "035_kitchen_reopened.sql",
+        "036_cfdi_rehearsal_fixes.sql",
+        "037_payments.sql",
+        "038_loyalty.sql"
+      ]
+    }
+  },
+  "logical": {
+    "project": "blue-truth-12116408"
+  },
+  "verification": {
+    "ok": true,
+    "checks": [
+      {
+        "name": "restored schema_migrations latest equals bundled",
+        "ok": true
+      },
+      {
+        "name": "all public tables keep forced RLS; policy, trigger and index counts equal the source",
+        "ok": true
+      },
+      {
+        "name": "control totals equal the dump manifest",
+        "ok": true
+      },
+      {
+        "name": "runtime role sees one tenant at a time",
+        "ok": true
+      }
+    ]
+  },
+  "timings": {
+    "pitr_branch_ready_ms": 2290,
+    "provision_ms": 12449,
+    "download_ms": 2416,
+    "decrypt_ms": 35,
+    "pg_restore_ms": 134054,
+    "grants_ms": 1853,
+    "verify_ms": 1282
+  },
+  "rtoMs": 161841,
+  "rpo": {
+    "logicalMs": 1499209,
+    "dumpSnapshotAt": "2026-10-10T13:12:05.753Z",
+    "pitr": "any second within the history window (point in time used: one hour ago)"
+  },
+  "sourceDatabase": "green_monkey_production"
+}
