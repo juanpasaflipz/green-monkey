@@ -6,7 +6,7 @@
 // Lock order (ARCHITECTURE rows 57 and 59):
 //   kioskStartCharge   1 (the diner's attempt key) → 2 → 2b (hold → checkout) → startCharge (3: 933,
 //                      terminal row FOR SHARE; 11: the receiving till's drawer; attempt insert) →
-//                      checkout update
+//                      the expiry judged on the attempt's created_at → checkout update
 //   kioskCancelCharge  payments' requestCancel: 1 → 2 → 2c (the checkout is read, not locked)
 import type postgres from "postgres";
 import { tenant, type Tx } from "./db.js";
@@ -30,6 +30,7 @@ import {
   lockKioskHold,
   requireDevice,
 } from "./kiosk-diner.js";
+import { chargeTakenInTime } from "./public-holds.js";
 import {
   KIOSK_LIMITS,
   kioskCancelChargeInput,
@@ -140,6 +141,13 @@ export async function kioskStartCharge(
   } catch (e) {
     throw dinerChargeError(e);
   }
+  // The expiry as the settle will judge it (critic R12: attempt.created_at < hold.expires_at),
+  // after every lock startCharge waited on (933, the terminal row, the drawer). The check above
+  // reads the transaction's start, so a start that waited past expires_at would record an attempt
+  // the settle no longer exempts. Refusing rolls back the attempt and its push job; no provider
+  // has been called (KIOSK-CONCURRENCY-1).
+  if (!(await chargeTakenInTime(tx, h.id, attemptId)))
+    throw new DomainError("public_order_expired", 409);
   await tx`update kiosk_checkouts set payment_choice='card',attempt_id=${attemptId},
       attempt_count=attempt_count+1,updated_at=now()
     where hold_id=${h.id}`;

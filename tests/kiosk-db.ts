@@ -2682,6 +2682,77 @@ try {
     await becameTheOrder(u.key, ua.id, 4500);
   });
 
+  await test("K27. a start judges the hold's expiry as the settle does (KIOSK-CONCURRENCY-1): a charge that passed the check at its transaction's start but waited for the terminal row until the hold expired is refused (public_order_expired), and nothing is recorded: no attempt, the checkout untouched", async () => {
+    // The MP kiosk's link slot (PUBLIC_LIMITS.activeLinks): K26 is done with it.
+    const spent = await one(
+      A,
+      (tx) =>
+        tx`select id from public_links where kind='kiosk' and label=${"R12 MP " + run} and revoked_at is null`,
+    );
+    await write(manager, (tx) =>
+      revokeLink(tx, manager, spent.id, { operationId: randomUUID() }),
+    );
+    const k = await newKiosk("Expiry " + run);
+    await configure(k, terminals.clip);
+    await pair(k);
+    const o = await order(k, [line(ids.taco)], 4500);
+    const h = await holdOf(o.key);
+    const checkoutRow = () =>
+      one(
+        A,
+        (tx) =>
+          tx`select payment_choice,attempt_id,attempt_count,updated_at from kiosk_checkouts where hold_id=${h.id}`,
+      );
+    const before = await checkoutRow();
+    // The named-trigger pattern (LD-12), as in K24 and K26: the hold now expires in 5 seconds
+    // (created_at moves by the same span, inside public_order_holds_window).
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id', ${A}, true)`;
+      await tx`alter table public_order_holds disable trigger public_order_holds_transition`;
+      await tx`update public_order_holds
+        set created_at=created_at-(expires_at-(clock_timestamp()+interval '5 seconds')),
+          expires_at=clock_timestamp()+interval '5 seconds'
+        where tenant_id=${A} and id=${h.id}`;
+      await tx`alter table public_order_holds enable trigger public_order_holds_transition`;
+    });
+    // Another transaction holds the terminal row (as an archive does) until the hold expired: the
+    // start passes lockKioskHold's check, takes 933, waits on the row FOR SHARE, then inserts.
+    let waited = false;
+    let reply!: Promise<Reply>;
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id', ${A}, true)`;
+      await tx`select id from payment_terminals where id=${terminals.clip} for update`;
+      const [{ pid }] = await tx`select pg_backend_pid() as pid`;
+      reply = charge(k, o.key);
+      for (let i = 0; i < 400 && !waited; i++) {
+        const [w] = await admin`select count(*)::int as n from pg_locks
+          where not granted and ${pid}::int=any(pg_blocking_pids(pid))`;
+        waited = w.n > 0;
+        if (!waited) await sleep(10);
+      }
+      for (let i = 0; i < 400; i++) {
+        const x = await one(
+          A,
+          (q) =>
+            q`select expires_at<clock_timestamp() as past from public_order_holds where id=${h.id}`,
+        );
+        if (x.past) break;
+        await sleep(50);
+      }
+    });
+    const r = await reply;
+    assert.ok(waited, "the start passed the hold's check and waited for the terminal row");
+    assert.equal(r.status, 409);
+    assert.equal(r.body.error, "public_order_expired");
+    const attempts = await one(
+      A,
+      (tx) =>
+        tx`select count(*)::int as n from payment_attempts where hold_id=${h.id}`,
+    );
+    assert.equal(attempts.n, 0, "no attempt was recorded");
+    assert.deepEqual({ ...(await checkoutRow()) }, { ...before });
+  });
+
   assert.deepEqual(dead, [], "no job went dead");
   assert.deepEqual(fake.violations, [], "the fake saw no contract breach");
 } catch (e) {
