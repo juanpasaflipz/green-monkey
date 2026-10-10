@@ -1487,6 +1487,109 @@ test("KDS shows offline sales in the review lane with provisional and server num
   await expect(live).toHaveCount(1);
 });
 
+test("Sincronización shows a sale that syncs while the screen opens as synced", async ({
+  page,
+  context,
+}) => {
+  // Regression (main CI, the KDS review lane test above): Dexie 4.3's liveQuery
+  // listens for writes only after its first result, so a sale whose sync answer
+  // committed while Sincronización's first read ran stayed "Sincronizando" on
+  // that screen, though the server, the local row and the pill were right. The
+  // screen reads through liveRead (src/offline.ts), which adds a catch-up read.
+  // The order is forced, not timed: the first read's cache-key step is held
+  // until the sale is synced on the device.
+  await page.addInitScript(() => {
+    const w = window as unknown as {
+      __slowCacheKeys?: boolean;
+      __heldCacheKeys?: number;
+    };
+    w.__heldCacheKeys = 0;
+    for (const proto of [
+      IDBObjectStore.prototype,
+      IDBIndex.prototype,
+    ] as any[]) {
+      const getAllKeys = proto.getAllKeys;
+      proto.getAllKeys = function (
+        this: IDBObjectStore | IDBIndex,
+        ...args: unknown[]
+      ) {
+        const request: IDBRequest = getAllKeys.apply(this, args);
+        const store =
+          this instanceof IDBIndex ? this.objectStore.name : this.name;
+        if (!w.__slowCacheKeys || store !== "cache") return request;
+        w.__heldCacheKeys! += 1;
+        // Dexie's onsuccess runs only once the test clears the flag.
+        let handler: ((event: Event) => void) | null = null;
+        Object.defineProperty(request, "onsuccess", {
+          configurable: true,
+          get: () => handler,
+          set: (fn: ((event: Event) => void) | null) => {
+            handler = fn;
+          },
+        });
+        request.addEventListener("success", (event) => {
+          const release = () => {
+            if (w.__slowCacheKeys) setTimeout(release, 50);
+            else handler?.call(request, event);
+          };
+          release();
+        });
+        return request;
+      };
+    }
+  });
+  await login(page);
+  await openDrawer(page);
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await goOffline(context, page);
+  const number = await saveOfflineSale(page);
+  await nextSale(page);
+  const saleStatus = async () =>
+    (await allRows(page)).find((r) => r.body?.provisionalNumber === number)
+      ?.status;
+  // The sale's sync request is held on its way to the server: the row is "syncing".
+  let arrived = false,
+    release!: () => void;
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  await context.route("**/api/offline/sync", async (route) => {
+    arrived = true;
+    await gate;
+    await route.fallback();
+  });
+  await context.setOffline(false);
+  await expect.poll(() => arrived, { timeout: 30_000 }).toBe(true);
+  await expect.poll(saleStatus).toBe("syncing");
+  // Sincronización opens; its first read lists the cache keys and is held there.
+  await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+  await page.evaluate(() => {
+    (window as unknown as { __slowCacheKeys?: boolean }).__slowCacheKeys = true;
+  });
+  await pill(page, /^Conectado/).click();
+  await expect(
+    page.getByRole("heading", { name: "Sincronización", exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as unknown as { __heldCacheKeys?: number }).__heldCacheKeys,
+      ),
+    )
+    .toBeGreaterThan(0);
+  // The server answers and the sale is synced on the device during that read.
+  release();
+  await expect.poll(saleStatus, { timeout: 30_000 }).toBe("synced");
+  // The first read finishes with the sale still "syncing"; the screen must not keep it.
+  await page.evaluate(() => {
+    (window as unknown as { __slowCacheKeys?: boolean }).__slowCacheKeys =
+      false;
+  });
+  await expect(
+    page.locator(".workspace").getByText(new RegExp(`${number} → #\\d+`)),
+  ).toBeVisible({ timeout: 10_000 });
+  await expect(pill(page, /^Conectado$/)).toBeVisible();
+});
+
 test("The KDS review lane polls every 10 s with items and every 30 s while empty", async ({
   page,
   context,

@@ -26,10 +26,13 @@ staging and production run it.
   `gm_support_lead` is provisioned for the pilot's Pro grant (1.12).
   - **No restaurant is onboarded yet.** Owner signup stays paused (`signup_paused`)
     until the legal values are published (1.11, 1.12).
-  - **What remains:** step 10 (the first production backup and restore drill; it needs
-    your `gm-backups-production` bucket and token, 1.8), step 11
-    (`OPS_LIVE_ENVIRONMENTS="staging production"`, after the drill) and step 12 (the
-    pilot, with [the cutover checklist for Juanberto's](#4-cutover-checklist-for-juanbertos)).
+  - **Steps 10 and 11 done (2026-10-10).** The first production backup to your bucket
+    `gm-prod-backups` and the production restore drill passed (all four checks, RTO
+    162 s; [evidence](evidence/restore/2026-10-10-production.json)), and
+    `OPS_LIVE_ENVIRONMENTS="staging production"` turned on the scheduled production
+    backup and retention (1.8).
+  - **What remains:** step 12 (the pilot, with
+    [the cutover checklist for Juanberto's](#4-cutover-checklist-for-juanbertos)).
   - **Opened on your decision (LD-68).** Some of step 0's preconditions were still open at
     launch: the staging load test, the alert topic (1.7), the legal values (1.11, 1.12),
     the pilot hardware (1.16) and the contacts (1.17). They now gate step 12.
@@ -52,7 +55,7 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
 | 1.5 | Google OAuth client | Exists (prior staging client) | **Done:** production client on `web`; yours: rotate its secret at cutover |
 | 1.6 | GitHub protection and environment secrets | Done (2026-10-07, cutover step 8) | **Done for the deploy (2026-10-08)**; R2 and alert values follow 1.7 and 1.8 |
 | 1.7 | Alert channel (ntfy topic) | **Pending: none set** | **Pending: none set** |
-| 1.8 | Backup encryption key (age) and off-platform storage (R2) | **Staging live 2026-10-08** (backup, retention and a passed restore drill; scheduled); lifecycle rules, token renewal before 2026-11-07 and production remain | Yours: `gm-backups-production` and its token (step 10) |
+| 1.8 | Backup encryption key (age) and off-platform storage (R2) | **Staging live 2026-10-08; production live 2026-10-10** (backup, retention and a passed restore drill each; scheduled) | Yours: the lifecycle rules on both buckets, `gm-prod-backups`'s retention lock on `monthly/`, the staging token's replacement before 2026-11-07, and rotating the production keys that passed through the chat |
 | 1.9 | Error tracking (Sentry DSN): approve or decline | Off | Your decision |
 | 1.10 | Secrets you generate | `SIGNING_KEYS` done (2026-10-07) | **Done (2026-10-08)**; yours: an offline copy of `CREDENTIAL_ENCRYPTION_KEY` |
 | 1.11 | Legal entity data (LD-3) | Not set | **Not set: owner signup paused**; yours, after counsel (1.12) |
@@ -217,7 +220,8 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
   `ALERT_WEBHOOK_KIND`; the repository variables pin `RAILWAY_CLI_VERSION` and
   `RAILWAY_IAC_VERSION`.
 - **Required checks after the release merge (lead, not you).** `ops/github/main-ruleset.json`
-  also lists `restaurant-day` and `restaurant-day-cfdi`. The lead re-applies it with
+  also lists `restaurant-day`, `restaurant-day-cfdi` and `restaurant-day-payments` (the
+  payments and kiosk branches P and S, LD-104). The lead re-applies it with
   `github-protect.sh` right after the release pull request merges (applying it earlier
   would block pull requests before the workflow exists on `main`; LD-57). See section 3.
 - **Production: done for the deploy (2026-10-08, LD-69).** The `production` environment
@@ -270,8 +274,19 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
   (with your private key, on Neon: all four checks passed, RTO 117 s;
   [evidence](evidence/restore/2026-10-08-staging.json)) ran on 2026-10-08, and
   `OPS_LIVE_ENVIRONMENTS=staging` turned on the scheduled staging jobs (LD-67).
-- **Production: yours, for section 2 step 10.** The `gm-backups-production` bucket (with
-  `--lock`) and its bucket-scoped token; the same age key pair serves production.
+- **Production: live 2026-10-10.** You created the bucket `gm-prod-backups` and its
+  bucket-scoped Object Read & Write token; its keys are the production environment's
+  `R2_ACCESS_KEY_ID`/`R2_SECRET_ACCESS_KEY`, with `R2_ACCOUNT_ID` and
+  `R2_BUCKET=gm-prod-backups` as variables, and the same age key pair. The first backup,
+  then the restore drill with your private key on Neon (all four checks passed, RTO
+  162 s, pg_restore 134 s; [evidence](evidence/restore/2026-10-10-production.json)),
+  then `OPS_LIVE_ENVIRONMENTS="staging production"` (LD-99). Production's default branch
+  is protected, so Neon gives the drill's point-in-time branch its own role passwords;
+  the drill reads them (`scripts/ops/branch-url.ts`). Still yours: the bucket's lifecycle
+  rules (`daily/` 35 days, `monthly/` 1900 days) and the 5-year retention lock on
+  `monthly/` in the dashboard (the bucket was created by hand, not by
+  `provision-r2.sh --lock`); and, because the token and keys were pasted in the chat,
+  a new token at cutover (1.5).
 - **What you supply.**
   1. **The R2 buckets.** One per environment: `gm-backups-staging` and
      `gm-backups-production`, created by `scripts/ops/provision-r2.sh <env>` with their

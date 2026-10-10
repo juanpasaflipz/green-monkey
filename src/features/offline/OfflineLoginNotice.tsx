@@ -1,8 +1,7 @@
-import { liveQuery } from "dexie";
 import { useEffect, useState } from "react";
 import type { Locale } from "../../../shared/domain";
 import { setWorkOffline, useConnectivity } from "../../connectivity";
-import { db } from "../../offline";
+import { db, liveRead } from "../../offline";
 import { isResolved } from "../../offline-queue";
 import {
   backupFileName,
@@ -22,12 +21,14 @@ export function OfflineLoginNotice({ locale }: { locale: Locale }) {
   const t = translator(locale);
   const net = useConnectivity();
   const [unsynced, setUnsynced] = useState(0);
-  useEffect(() => {
-    const subscription = liveQuery(() =>
-      db.pending.filter((row) => !isResolved(row)).count(),
-    ).subscribe({ next: setUnsynced, error: () => {} });
-    return () => subscription.unsubscribe();
-  }, []);
+  useEffect(
+    () =>
+      liveRead(
+        () => db.pending.filter((row) => !isResolved(row)).count(),
+        setUnsynced,
+      ),
+    [],
+  );
   if (net.canUseServer && !unsynced) return null;
   return (
     <div className="warning-panel" role="status">

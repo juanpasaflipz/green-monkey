@@ -1,8 +1,8 @@
-import { liveQuery } from "dexie";
 import { useEffect, useState } from "react";
 import type { Locale, Order, Session } from "../../../shared/domain";
 import { translateError } from "../../i18n";
 import { orderNumberLabel } from "../../labels";
+import { liveRead } from "../../offline";
 import { guardOnlineCharges, OnlineChargeRefused } from "../../offline-queue";
 import { chargeBlockFromRows, deviceRows } from "../../offline-records";
 
@@ -26,9 +26,11 @@ export function useOnlineChargeBlocks(
       return;
     }
     // One direct Dexie query (liveQuery tracks only Dexie calls); the codes
-    // are computed from the rows it observed.
-    const subscription = liveQuery(deviceRows(session)).subscribe({
-      next: (rows) => {
+    // are computed from the rows it observed. liveRead adds the catch-up read
+    // so a sync committed during the first read never leaves a stale block.
+    return liveRead(
+      deviceRows(session),
+      (rows) => {
         const next: Record<string, string> = {};
         for (const order of orders) {
           const code = chargeBlockFromRows(session, order, rows);
@@ -36,9 +38,8 @@ export function useOnlineChargeBlocks(
         }
         setBlocks(next);
       },
-      error: () => {},
-    });
-    return () => subscription.unsubscribe();
+      () => {},
+    );
   }, [orders, session.id]);
   const outdated = Object.keys(blocks)
     .filter((id) => blocks[id] === "offline_order_outdated")

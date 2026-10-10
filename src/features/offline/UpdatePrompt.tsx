@@ -1,7 +1,6 @@
-import { liveQuery } from "dexie";
 import { useEffect, useState } from "react";
 import type { Locale, Session } from "../../../shared/domain";
-import { db } from "../../offline";
+import { db, liveRead } from "../../offline";
 import { isResolved } from "../../offline-queue";
 import { applyUpdate, onUpdateReady } from "../../service-worker";
 import { Button } from "../../components/ui";
@@ -40,11 +39,13 @@ export function UpdatePrompt({
   useEffect(() => onUpdateReady(setReady), []);
   useEffect(() => {
     if (!ready) return;
-    const subscription = liveQuery(() => hasUnsyncedWork(session)).subscribe({
-      next: setBlocked,
-      error: () => setBlocked(true),
-    });
-    return () => subscription.unsubscribe();
+    // Two unindexed scans: liveRead's catch-up read covers a record saved or
+    // synced while the first one runs, which liveQuery alone would miss.
+    return liveRead(
+      () => hasUnsyncedWork(session),
+      setBlocked,
+      () => setBlocked(true),
+    );
   }, [ready, session.tenantId, session.deviceId]);
   if (!ready) return null;
   return (

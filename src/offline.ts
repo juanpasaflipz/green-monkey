@@ -1,4 +1,4 @@
-import Dexie, { type EntityTable } from "dexie";
+import Dexie, { liveQuery, type EntityTable } from "dexie";
 import type { OrderInput, Session, Product } from "../shared/domain";
 import type {
   OfflineRecord,
@@ -76,6 +76,41 @@ export {
   isAttemptKey,
 } from "./offline-keys";
 export { syncPending, isResolved, unsyncedCount } from "./offline-queue";
+
+/**
+ * liveQuery plus one catch-up read. Dexie 4.3 listens for writes only after the
+ * first result (liveQuery attaches its storagemutated listener when that result
+ * resolves), so a write committed during that first read (a sale that syncs as
+ * Sincronización opens) would never re-run it and the screen would keep the
+ * stale value. The catch-up read starts once the listener is on; a later live
+ * result always wins over it. Returns the unsubscribe function.
+ */
+export function liveRead<T>(
+  querier: () => Promise<T>,
+  next: (value: T) => void,
+  error?: (e: Error) => void,
+): () => void {
+  let results = 0,
+    closed = false;
+  const subscription = liveQuery(querier).subscribe({
+    next: (value) => {
+      results += 1;
+      next(value);
+      if (results === 1)
+        void querier().then(
+          (again) => {
+            if (!closed && results === 1) next(again);
+          },
+          () => {},
+        );
+    },
+    error: (e: Error) => error?.(e),
+  });
+  return () => {
+    closed = true;
+    subscription.unsubscribe();
+  };
+}
 
 export async function clearPaymentAttempt(key: string, evidence: unknown) {
   await db.transaction("rw", db.cache, async () => {
