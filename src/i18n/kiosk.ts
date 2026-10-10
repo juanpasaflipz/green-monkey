@@ -117,6 +117,17 @@ export default defineArea({
     kioskSettleErrorCard:
       "{label} pagó {amount} con tarjeta ({terminal}) y no se pudo enviar a cocina: {reason}.",
     kioskResolve: "Resolver cobro del kiosco",
+    kioskAcceptWithCharge: "Aceptar con el pago del kiosco",
+    kioskRejectAndRefund: "Rechazar y reembolsar",
+    kioskAcceptTotals:
+      "Total del pedido: {total} · Cobrado en el kiosco: {charge}",
+    kioskAcceptPriceUnknown:
+      "Revisa los precios del pedido en su tarjeta antes de aceptarlo.",
+    kioskAcceptRest:
+      "Falta cobrar {rest}: al aceptar lo cobras en efectivo o con una terminal.",
+    kioskAcceptCollectRest: "Aceptar y cobrar {rest}",
+    kioskRejectRefundHint:
+      "Antes de confirmar, reembolsa los {amount} completos en la app de la terminal ({terminal}) y anota el folio del reembolso.",
     kioskEatIn: "Comer aquí",
     kioskReportTitle: "Kiosco",
     kioskReportOrders: "Pedidos del kiosco",
@@ -248,6 +259,16 @@ export default defineArea({
     kioskSettleErrorCard:
       "{label} paid {amount} by card ({terminal}) but could not be sent to the kitchen: {reason}.",
     kioskResolve: "Resolve kiosk payment",
+    kioskAcceptWithCharge: "Accept with the kiosk payment",
+    kioskRejectAndRefund: "Reject and refund",
+    kioskAcceptTotals: "Order total: {total} · Charged at the kiosk: {charge}",
+    kioskAcceptPriceUnknown:
+      "Check the order's prices on its card before accepting it.",
+    kioskAcceptRest:
+      "{rest} is still due: collect it in cash or on a terminal when you accept.",
+    kioskAcceptCollectRest: "Accept and collect {rest}",
+    kioskRejectRefundHint:
+      "Before you confirm, refund the full {amount} in the terminal's app ({terminal}) and note the refund's reference.",
     kioskEatIn: "Eat in",
     kioskReportTitle: "Kiosk",
     kioskReportOrders: "Kiosk orders",
@@ -300,6 +321,10 @@ export default defineArea({
     kiosk_charge_attempts: [
       "Se alcanzó el número de intentos con tarjeta. Paga en caja.",
       "Too many card attempts. Please pay at the counter.",
+    ],
+    kiosk_charge_above_total: [
+      "El pedido suma menos que lo cobrado en el kiosco y no hay reembolsos parciales. Incluye productos hasta igualar el cobro, o rechaza y reembolsa.",
+      "The order totals less than the kiosk charge and there are no partial refunds. Include items until it matches the charge, or reject and refund.",
     ],
     kiosk_till_closed: [
       "La caja del kiosco está cerrada. Paga en caja.",

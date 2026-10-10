@@ -125,6 +125,36 @@ export function kioskSettleCode(code: string): KioskSettleCode {
   }
 }
 
+/**
+ * «Aceptar con el pago del kiosco» (critic R13): how the hold's total, as its card includes it
+ * now, fits the approved charge. v1 has no partial refund, so a total below the charge cannot be
+ * accepted (restore lines, or «Rechazar y reembolsar»); a total above it collects the rest.
+ */
+export type KioskChargeFit =
+  | { kind: "unknown" }
+  | { kind: "below"; missing: number }
+  | { kind: "fits"; rest: number };
+export function kioskChargeFit(
+  total: number | null,
+  charge: number,
+): KioskChargeFit {
+  if (total === null) return { kind: "unknown" };
+  return total < charge
+    ? { kind: "below", missing: charge - total }
+    : { kind: "fits", rest: total - charge };
+}
+
+/** «Rechazar y reembolsar»'s reject reason: an item that ran out is "unavailable". */
+export function kioskRejectReason(
+  reviewCode: string | null,
+): "unavailable" | "other" {
+  return reviewCode === "kiosk_settle_unavailable" ||
+    reviewCode === "kiosk_settle_insufficient_stock" ||
+    reviewCode === "kiosk_settle_invalid_modifier"
+    ? "unavailable"
+    : "other";
+}
+
 // ---- inputs ----------------------------------------------------------------------------------
 
 /** A kiosk line may say it came from a suggestion (report attribution only, §2.8). */

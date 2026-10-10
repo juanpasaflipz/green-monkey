@@ -39,10 +39,7 @@ import { setPaymentsRuntime } from "../server/payments/worker/runtime.js";
 import { parseCredentialKeyring } from "../server/cfdi/config.js";
 import { saveCredentials } from "../server/payments/providers.js";
 import { saveTerminal } from "../server/payments/settings.js";
-import {
-  requestCancel,
-  resolveAttempt,
-} from "../server/payments/terminal.js";
+import { requestCancel, resolveAttempt } from "../server/payments/terminal.js";
 import { publicOrdering } from "../server/public-ordering.js";
 import { createLink, revokeLink, rotateLink } from "../server/public-links.js";
 import { acceptHold, inbox, rejectHold } from "../server/public-holds.js";
@@ -2062,6 +2059,329 @@ try {
       write(cashier, (tx) => kioskReport(tx, cashier, { from: day, to: day })),
       "forbidden",
     );
+  });
+
+  await test("K24. R13 amount mismatches: a total above the charge collects the exact rest in the same accept (manager, recent PIN, the charge as its card tender); a total below it is refused until lines are restored, or «Rechazar y reembolsar» rejects the hold and records the provider refund; the operator retry needs no PIN and works long after the hold expired", async () => {
+    const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
+    const staleManager = session(A, ids.manager, "manager", ids.till, {
+      authenticatedAt: hourAgo,
+    });
+    const staleCashier = session(A, ids.cashier, "cashier", ids.till, {
+      authenticatedAt: hourAgo,
+    });
+    const NOTE = "Cobro revisado en la app del proveedor";
+    // Its own kiosk (the main link's per-window order cap is spent by now), on the Clip reader.
+    const desk = await newKiosk("Resolver " + run);
+    await configure(desk, terminals.clip);
+    await pair(desk);
+    /** An approved kiosk charge left in review: the hold, its attempt and the review code. */
+    async function inReview(
+      lines: ReturnType<typeof line>[],
+      total: number,
+      breakIt: () => Promise<unknown>,
+    ) {
+      const o = await order(desk, lines, total);
+      assert.equal((await charge(desk, o.key)).status, 200);
+      const a = await attemptOf(o.key);
+      await drive(a.id, ["pending"]);
+      await breakIt();
+      fake.approve(fake.chargeFor(a.id)!.id, { ...TEST_CARD });
+      await drive(a.id, ["review"]);
+      return { key: o.key, hold: await holdOf(o.key), attemptId: a.id };
+    }
+    const setPrice = (productId: string, price: number) =>
+      asOwner(
+        A,
+        (tx) =>
+          tx`update catalog set data=jsonb_set(data,'{price}',to_jsonb(${price}::int)) where id=${productId}`,
+      );
+    const accept = (
+      s: Session,
+      holdId: string,
+      body: Record<string, unknown>,
+    ) =>
+      write(s, (tx) =>
+        acceptHold(tx, s, holdId, {
+          target: { kind: "new" },
+          ...body,
+        }),
+      );
+    async function untouched(key: string, attemptId: string) {
+      const h = await holdOf(key);
+      assert.equal(h.state, "pending");
+      assert.equal(h.order_id, null);
+      const a = await one(
+        A,
+        (tx) =>
+          tx`select state,tender_id,order_id from payment_attempts where id=${attemptId}`,
+      );
+      assert.deepEqual(
+        { ...a },
+        { state: "review", tender_id: null, order_id: null },
+      );
+    }
+
+    // (a) Total above the charge: the price rose between the start and the approval.
+    const up = await inReview([line(ids.agua, 2)], 600, () =>
+      setPrice(ids.agua, 350),
+    );
+    assert.equal(
+      (await attemptOf(up.key)).error_code,
+      "kiosk_settle_price_changed",
+    );
+    const cashRest = { amount: 100, tip: 0, received: 200, method: "cash" };
+    const withCharge = (rest: unknown) => ({
+      method: "attempt",
+      attemptId: up.attemptId,
+      note: NOTE,
+      rest,
+    });
+    await rejects(
+      accept(cashier, up.hold.id, {
+        operationId: randomUUID(),
+        acknowledgedTotal: 700,
+        payment: withCharge(cashRest),
+      }),
+      "forbidden",
+    );
+    await rejects(
+      accept(staleManager, up.hold.id, {
+        operationId: randomUUID(),
+        acknowledgedTotal: 700,
+        payment: withCharge(cashRest),
+      }),
+      "step_up_required",
+    );
+    for (const rest of [null, { ...cashRest, amount: 50, received: 50 }])
+      await rejects(
+        accept(manager, up.hold.id, {
+          operationId: randomUUID(),
+          acknowledgedTotal: 700,
+          payment: withCharge(rest),
+        }),
+        "public_payment_must_cover_total",
+      );
+    // The new total must be acknowledged, as on any card (MONEY-1).
+    await rejects(
+      accept(manager, up.hold.id, {
+        operationId: randomUUID(),
+        payment: withCharge(cashRest),
+      }),
+      "public_hold_price_changed",
+    );
+    await untouched(up.key, up.attemptId);
+    const op = randomUUID();
+    const body = {
+      operationId: op,
+      acknowledgedTotal: 700,
+      payment: withCharge(cashRest),
+    };
+    const done = await accept(manager, up.hold.id, body);
+    assert.equal(done.order.total, 700);
+    assert.equal(done.order.paid, 700);
+    const replay = await accept(manager, up.hold.id, body);
+    assert.equal(replay.order.id, done.order.id, "the accept's key replays it");
+    const ha = await holdOf(up.key);
+    assert.equal(ha.state, "accepted");
+    assert.equal(ha.decision_source, "staff");
+    assert.equal(ha.decided_by, ids.manager);
+    assert.equal(ha.paid_at_accept, true);
+    assert.equal(ha.accepted_total, 700);
+    const tenders = await asOwner(
+      A,
+      (
+        tx,
+      ) => tx`select method,amount,tip,received,session_id,attempt_id,provider,card_last4
+        from tenders where order_id=${done.order.id} order by amount desc`,
+    );
+    assert.deepEqual(
+      tenders.map((t: any) => ({ ...t })),
+      [
+        {
+          method: "external",
+          amount: 600,
+          tip: 0,
+          received: 600,
+          session_id: ids.drawer,
+          attempt_id: up.attemptId,
+          provider: (await attemptOf(up.key)).provider,
+          card_last4: "4242",
+        },
+        {
+          method: "cash",
+          amount: 100,
+          tip: 0,
+          received: 200,
+          session_id: ids.drawer,
+          attempt_id: null,
+          provider: null,
+          card_last4: null,
+        },
+      ],
+    );
+    const settled = await attemptOf(up.key);
+    assert.equal(settled.state, "settled");
+    assert.equal(settled.order_id, done.order.id);
+    assert.equal(settled.resolution, "recorded");
+    assert.equal(settled.resolution_note, NOTE);
+    assert.equal(settled.resolved_by, ids.manager);
+    await setPrice(ids.agua, 300);
+
+    // (b) Total below the charge: an 86'd line left out is refused (no partial refund);
+    // restoring it so the total equals the charge accepts with the charge alone.
+    const down = await inReview([line(ids.taco), line(ids.agua)], 4800, () =>
+      setAvailable(ids.agua, false),
+    );
+    const agua = (down.hold.lines as { id: string; productId: string }[]).find(
+      (l) => l.productId === ids.agua,
+    )!;
+    for (const rest of [null, cashRest])
+      await rejects(
+        accept(manager, down.hold.id, {
+          operationId: randomUUID(),
+          excludeLineIds: [agua.id],
+          acknowledgedTotal: 4500,
+          payment: {
+            method: "attempt",
+            attemptId: down.attemptId,
+            note: NOTE,
+            rest,
+          },
+        }),
+        "kiosk_charge_above_total",
+      );
+    await untouched(down.key, down.attemptId);
+    await setAvailable(ids.agua, true);
+    const restored = await accept(manager, down.hold.id, {
+      operationId: randomUUID(),
+      payment: { method: "attempt", attemptId: down.attemptId, note: NOTE },
+    });
+    assert.equal(restored.order.total, 4800);
+    assert.equal(restored.order.paid, 4800);
+    assert.equal(
+      (
+        await one(
+          A,
+          (tx) =>
+            tx`select count(*)::int as n,sum(amount)::int as paid from tenders where order_id=${restored.order.id}`,
+        )
+      ).n,
+      1,
+    );
+
+    // (c) «Rechazar y reembolsar»: managers with a recent PIN and a note; the hold is rejected
+    // and the charge dismissed as refunded at the provider, in one transaction.
+    const gone = await inReview([line(ids.papas)], 3500, () =>
+      setAvailable(ids.papas, false),
+    );
+    const reject = (s: Session, refund: Record<string, unknown>) =>
+      write(s, (tx) =>
+        rejectHold(tx, s, gone.hold.id, {
+          operationId: randomUUID(),
+          reason: "unavailable",
+          refund,
+        }),
+      );
+    const refund = {
+      attemptId: gone.attemptId,
+      note: "Reembolso completo hecho en la app de Mercado Pago",
+      confirmed: true,
+    };
+    await rejects(reject(cashier, refund), "forbidden");
+    await rejects(reject(staleManager, refund), "step_up_required");
+    await assert.rejects(reject(manager, { ...refund, confirmed: undefined }));
+    await assert.rejects(reject(manager, { ...refund, note: "corto" }));
+    await rejects(
+      reject(manager, { ...refund, attemptId: up.attemptId }),
+      "payments_attempt_not_found",
+    );
+    await untouched(gone.key, gone.attemptId);
+    await reject(manager, refund);
+    const hr = await holdOf(gone.key);
+    assert.equal(hr.state, "rejected");
+    assert.equal(hr.reject_reason, "unavailable");
+    assert.equal(hr.order_id, null);
+    const dismissed = await attemptOf(gone.key);
+    assert.equal(dismissed.state, "dismissed");
+    assert.equal(dismissed.resolution, "refunded_at_provider");
+    assert.equal(dismissed.resolution_note, refund.note);
+    assert.equal(dismissed.resolved_by, ids.manager);
+    assert.equal(dismissed.tender_id, null);
+    const audits = await asOwner(
+      A,
+      (tx) => tx`select operation,detail from audit
+        where (operation='public.hold_rejected' and entity_id=${gone.hold.id})
+           or (operation='payment.terminal_resolved' and detail->>'attemptId'=${gone.attemptId})
+        order by operation`,
+    );
+    assert.deepEqual(
+      audits.map((r: any) => [
+        r.operation,
+        r.detail.refundedAttemptId ?? r.detail.outcome,
+      ]),
+      [
+        ["payment.terminal_resolved", "refunded_at_provider"],
+        ["public.hold_rejected", gone.attemptId],
+      ],
+    );
+    await setAvailable(ids.papas, true);
+
+    // (d) The operator retry (R13): no PIN, from review with the provider's data once the checks
+    // pass, also 30 minutes after the hold expired (money taken in time, R12). The manager's
+    // record keeps payments' step-up.
+    const late = await inReview([line(ids.papas)], 3500, () =>
+      setAvailable(ids.papas, false),
+    );
+    // The named-trigger pattern (LD-12): both rows are immutable evidence for every role.
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id', ${A}, true)`;
+      await tx`alter table public_order_holds disable trigger public_order_holds_transition`;
+      await tx`alter table payment_attempts disable trigger payment_attempts_transition`;
+      // Everything moves back by the same span, so the hold expired 30 minutes ago and the
+      // charge still started while it was valid.
+      await tx`update payment_attempts a
+        set created_at=a.created_at-(h.expires_at-now()+interval '30 minutes')
+        from public_order_holds h
+        where a.tenant_id=${A} and a.id=${late.attemptId} and h.tenant_id=a.tenant_id and h.id=a.hold_id`;
+      await tx`update public_order_holds
+        set created_at=created_at-(expires_at-now()+interval '30 minutes'),
+          expires_at=now()-interval '30 minutes'
+        where tenant_id=${A} and id=${late.hold.id}`;
+      await tx`alter table payment_attempts enable trigger payment_attempts_transition`;
+      await tx`alter table public_order_holds enable trigger public_order_holds_transition`;
+    });
+    assert.ok(
+      (
+        await one(
+          A,
+          (tx) =>
+            tx`select expires_at<now()-interval '20 minutes' as long_ago from public_order_holds where id=${late.hold.id}`,
+        )
+      ).long_ago,
+    );
+    await setAvailable(ids.papas, true);
+    await rejects(
+      write(staleManager, (tx) =>
+        resolveAttempt(tx, staleManager, late.attemptId, {
+          operationId: randomUUID(),
+          outcome: "record",
+          note: NOTE,
+          confirmed: true,
+        }),
+      ),
+      "step_up_required",
+    );
+    const retried = await write(staleCashier, (tx) =>
+      resolveAttempt(tx, staleCashier, late.attemptId, {
+        operationId: randomUUID(),
+        outcome: "retry",
+      }),
+    );
+    assert.equal(retried.attempt.state, "settled");
+    const hl = await holdOf(late.key);
+    assert.equal(hl.state, "accepted");
+    assert.equal(hl.decision_source, "kiosk");
+    assert.equal(retried.order?.paid, 3500);
   });
 
   assert.deepEqual(dead, [], "no job went dead");

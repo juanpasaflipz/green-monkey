@@ -8,8 +8,10 @@ import {
   KIOSK_SETTLE_CODES,
   idleDeadline,
   kioskLineInput,
+  kioskChargeFit,
   kioskOrderInput,
   kioskPaymentState,
+  kioskRejectReason,
   kioskSettleCode,
   maskTypedPhone,
   payButtons,
@@ -24,6 +26,9 @@ import {
   watchDevice,
 } from "../src/features/public/kiosk/kioskDevice";
 import kiosk from "../src/i18n/kiosk";
+import { resolveChoices } from "../src/features/payments/attempt-text";
+import type { AttemptView } from "../shared/payments";
+import { acceptInput, rejectInput } from "../shared/public-ordering";
 
 const id = () => crypto.randomUUID();
 
@@ -244,6 +249,120 @@ describe("inputs", () => {
   it("the phone is never echoed in full", () => {
     expect(maskTypedPhone("5555550123")).toBe("•• •• •• 01 23");
     expect(maskTypedPhone("55")).toBe("•• •• ••");
+  });
+});
+
+describe("a kiosk charge approved without an order (critic R13)", () => {
+  const review = (o: Partial<AttemptView> = {}): AttemptView => ({
+    id: "a1",
+    state: "review",
+    target: "kiosk_hold",
+    origin: "kiosk",
+    orderId: null,
+    holdId: "h1",
+    orderNumber: null,
+    holdLabel: "Kiosco · K-14",
+    terminalId: "t1",
+    terminalLabel: "Clip Kiosco",
+    provider: "clip",
+    amount: 24500,
+    tip: 0,
+    paidAmount: 24500,
+    providerReference: "ref-ficticia-1",
+    providerStatus: "completed",
+    cardType: "credit_card",
+    cardBrand: "visa",
+    cardLast4: "4242",
+    errorCode: "kiosk_settle_unavailable",
+    cancelRequested: false,
+    resolution: null,
+    createdAt: "2026-10-09T18:00:00.000Z",
+    decidedAt: null,
+    ...o,
+  });
+  it("the hold's total against the charge: no partial refund, a total above it leaves a rest", () => {
+    expect(kioskChargeFit(null, 24500)).toEqual({ kind: "unknown" });
+    expect(kioskChargeFit(20000, 24500)).toEqual({
+      kind: "below",
+      missing: 4500,
+    });
+    expect(kioskChargeFit(24500, 24500)).toEqual({ kind: "fits", rest: 0 });
+    expect(kioskChargeFit(26000, 24500)).toEqual({ kind: "fits", rest: 1500 });
+  });
+  it("from its inbox card a manager accepts with the charge or rejects and refunds; a cashier only retries; the banner keeps payments' own outcomes", () => {
+    const manager = { manager: true, viaHold: true };
+    expect(resolveChoices(review(), manager)).toEqual([
+      "kiosk_accept",
+      "kiosk_reject",
+    ]);
+    expect(
+      resolveChoices(
+        review({ errorCode: "payments_refunded_before_settle" }),
+        manager,
+      ),
+    ).toEqual(["kiosk_reject"]);
+    expect(resolveChoices(review(), { manager: false, viaHold: true })).toEqual(
+      [],
+    );
+    expect(resolveChoices(review(), { manager: true, viaHold: false })).toEqual(
+      ["record", "refunded_at_provider"],
+    );
+    expect(
+      resolveChoices(review({ target: "order", holdId: null }), manager),
+    ).toEqual(["record", "refunded_at_provider"]);
+  });
+  it("an item that ran out rejects as unavailable; anything else as other", () => {
+    expect(kioskRejectReason("kiosk_settle_unavailable")).toBe("unavailable");
+    expect(kioskRejectReason("kiosk_settle_insufficient_stock")).toBe(
+      "unavailable",
+    );
+    expect(kioskRejectReason("kiosk_settle_price_changed")).toBe("other");
+    expect(kioskRejectReason(null)).toBe("other");
+  });
+  it("the accept's payment is a union on method: the charge with a note and an optional counter rest; the reject's refund is attested", () => {
+    const base = { operationId: id(), target: { kind: "new" } };
+    const charge = {
+      method: "attempt",
+      attemptId: id(),
+      note: "Revisado en Clip",
+    };
+    expect(acceptInput.parse({ ...base, payment: charge }).payment).toEqual({
+      ...charge,
+      rest: null,
+    });
+    const cash = { amount: 1500, received: 2000, method: "cash" };
+    expect(
+      acceptInput.parse({ ...base, payment: { ...charge, rest: cash } })
+        .payment,
+    ).toMatchObject({ rest: { ...cash, tip: 0 } });
+    for (const bad of [
+      { ...charge, note: "corta" },
+      { ...charge, rest: { ...charge } },
+      { ...charge, rest: { ...cash, method: "platform" } },
+      { ...charge, amount: 100 },
+    ])
+      expect(acceptInput.safeParse({ ...base, payment: bad }).success).toBe(
+        false,
+      );
+    // A counter payment parses exactly as before 039 (the accept's once() fingerprint).
+    expect(acceptInput.parse({ ...base, payment: cash }).payment).toEqual({
+      amount: 1500,
+      tip: 0,
+      received: 2000,
+      method: "cash",
+      externalConfirmed: false,
+      reference: "",
+    });
+    const reject = { operationId: id(), reason: "unavailable" };
+    expect("refund" in rejectInput.parse(reject)).toBe(false);
+    const refund = { attemptId: id(), note: "Reembolso completo en Clip" };
+    expect(
+      rejectInput.safeParse({
+        ...reject,
+        refund: { ...refund, confirmed: true },
+      }).success,
+    ).toBe(true);
+    expect(rejectInput.safeParse({ ...reject, refund }).success).toBe(false);
   });
 });
 

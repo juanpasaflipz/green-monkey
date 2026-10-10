@@ -13,7 +13,12 @@ import { createHash } from "node:crypto";
 import type { Tx } from "./db.js";
 import { DomainError, type Order, type Session } from "../shared/domain.js";
 import { audit, getOrder, once } from "./orders.js";
-import { createHoldOrder, finishHoldAccept, lockHold } from "./public-holds.js";
+import {
+  chargeTakenInTime,
+  createHoldOrder,
+  finishHoldAccept,
+  lockHold,
+} from "./public-holds.js";
 import { linkFromKiosk } from "./loyalty/links.js";
 import {
   applyApprovedAttempt,
@@ -128,13 +133,11 @@ export async function settleKioskHoldCharge(
   )
     throw new DomainError("settings_changed", 409);
   // LO-2b: the hold, then its checkout (lockHold). Money taken while the hold was valid passes
-  // its expiry by PAID_ACCEPT_GRACE_SECONDS (critic R12).
+  // its expiry (critic R12), also on a retry from review long after it.
   const holdId = attempt.hold_id!;
-  const [h0] =
-    await tx`select expires_at from public_order_holds where id=${holdId}`;
-  const takenInTime =
-    !!h0 && new Date(attempt.created_at) < new Date(h0.expires_at as Date);
-  const h = await lockHold(tx, holdId, { paidGrace: takenInTime });
+  const h = await lockHold(tx, holdId, {
+    paidInTime: await chargeTakenInTime(tx, holdId, attempt.id),
+  });
   // LO-2c: the attempt row, fresh under its lock.
   const [a] = await tx<
     AttemptRow[]

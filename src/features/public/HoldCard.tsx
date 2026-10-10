@@ -11,6 +11,11 @@ import { api } from "../../api";
 import { translateError } from "../../i18n";
 import { ResolveDialog } from "../payments/ResolveDialog";
 import type { AttemptView } from "../../../shared/payments";
+import type { RejectReason } from "../../../shared/public-ordering";
+import { kioskRejectReason } from "../../../shared/kiosk";
+
+/** The kiosk charge a manager resolves through its hold, with the note (critic R13). */
+export type KioskCharge = { attemptId: string; note: string };
 
 const MANAGERS = ["owner", "manager"];
 
@@ -42,6 +47,8 @@ export function HoldCard({
   onPay,
   onReject,
   onKioskChanged,
+  onKioskAccept,
+  onKioskReject,
 }: {
   hold: InboxHold;
   session: Session;
@@ -57,6 +64,14 @@ export function HoldCard({
   onReject: () => void;
   /** Kiosk (039): a kiosk charge was cancelled or resolved; the inbox reloads. */
   onKioskChanged?: () => void;
+  /** «Aceptar con el pago del kiosco» (critic R13): the rest is collected when above zero. */
+  onKioskAccept?: (
+    body: AcceptBody,
+    charge: KioskCharge,
+    rest: number,
+  ) => Promise<void>;
+  /** «Rechazar y reembolsar» (critic R13). */
+  onKioskReject?: (charge: KioskCharge, reason: RejectReason) => Promise<void>;
 }) {
   const t = (k: Key, values?: Record<string, string | number>) =>
     values ? fill(strings[locale][k], values) : strings[locale][k];
@@ -285,6 +300,19 @@ export function HoldCard({
           locale={locale}
           online={online}
           onChanged={() => onKioskChanged?.()}
+          // The resolve dialog shows this total; accepting there acknowledges it (MONEY-1), and
+          // the guest already paid, so a code deactivated as abuse since still gets its order.
+          total={current}
+          onAccept={
+            onKioskAccept &&
+            ((charge, rest) =>
+              onKioskAccept(
+                { ...body(true), abuseAcknowledged: abuse },
+                charge,
+                rest,
+              ))
+          }
+          onReject={onKioskReject}
         />
       ) : (
         <div className="row wrap hold-actions">
@@ -343,9 +371,10 @@ export function HoldCard({
 /**
  * Kiosk (039, §2.5, §2.7; critic R12/R13): while the guest pays at the kiosk the card has no
  * accept or reject ("Pagando en el kiosco…"; a manager may cancel the charge). A charge approved
- * without an order is a red card: "Resolver cobro del kiosco" opens payments' resolve dialog
- * (any operator retries once the order fits again; a manager records a refund at the provider,
- * after which the hold can be rejected).
+ * without an order is a red card: "Resolver cobro del kiosco" opens payments' resolve dialog. Any
+ * operator retries once the order fits again; a manager accepts the hold as the card includes it
+ * now with the charge as its payment (a total above the charge collects the rest; one below it is
+ * refused, no partial refunds), or rejects it and records the full refund at the provider.
  */
 function KioskHoldBlock({
   hold,
@@ -353,12 +382,18 @@ function KioskHoldBlock({
   locale,
   online,
   onChanged,
+  total,
+  onAccept,
+  onReject,
 }: {
   hold: InboxHold;
   session: Session;
   locale: Locale;
   online: boolean;
   onChanged: () => void;
+  total: number | null;
+  onAccept?: (charge: KioskCharge, rest: number) => Promise<void>;
+  onReject?: (charge: KioskCharge, reason: RejectReason) => Promise<void>;
 }) {
   const t = strings[locale];
   const money = moneyFormatter(session.restaurant.currency, locale);
@@ -419,6 +454,20 @@ function KioskHoldBlock({
             locale={locale}
             money={money}
             manager={manager}
+            kiosk={
+              onAccept && onReject
+                ? {
+                    total,
+                    accept: (note, rest) =>
+                      onAccept({ attemptId: attempt.id, note }, rest),
+                    reject: (note) =>
+                      onReject(
+                        { attemptId: attempt.id, note },
+                        kioskRejectReason(k.review?.code ?? null),
+                      ),
+                  }
+                : undefined
+            }
             onClose={() => setAttempt(null)}
             onResolved={() => {
               setAttempt(null);

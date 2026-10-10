@@ -52,10 +52,23 @@ unbound kiosk works exactly as before 039 plus the para aquí question: counter 
 **Staff.** While a charge is live the inbox card reads "Pagando en el kiosco…" with no accept or
 reject (`kiosk_charge_in_progress`, critic R12; the diner's cancel is refused too); a manager may
 "Cancelar cobro en curso". A charge approved without an order is a red card first in the inbox:
-"Resolver cobro del kiosco" opens payments' resolve dialog — any operator retries once the order
-fits again (the product is back), a manager records a refund done in the provider's app, after
-which the hold can be rejected (critic R13: no partial refunds in v1). A drawer with a live or
-review kiosk charge cannot close (payments' `payments_attempt_unresolved`).
+"Resolver cobro del kiosco" opens payments' resolve dialog (critic R13):
+
+- **Reintentar** (any operator, no PIN): once the order fits again (the product is back, the price
+  is the charged one). It works however long ago the hold expired, because the charge started
+  while it was valid (R12).
+- **Aceptar con el pago del kiosco** (managers, recent PIN, a note): the hold as its card includes
+  it now (lines left out, the current prices) becomes a new check with the card charge as its
+  tender (payments' manager record, into the kiosk till's drawer). A total above the charge
+  collects the rest in the same accept, in cash or on a manual terminal, through the payment
+  dialog (into this device's drawer). A total below the charge is refused
+  (`kiosk_charge_above_total`): v1 has no partial refund, so the manager includes lines until the
+  total equals the charge, or:
+- **Rechazar y reembolsar** (managers, recent PIN, a note naming the refund): the manager refunds
+  the whole charge in the Mercado Pago or Clip app first; the reject then records it (payments'
+  `refunded_at_provider`) and rejects the hold in one transaction.
+
+A drawer with a live or review kiosk charge cannot close (payments' `payments_attempt_unresolved`).
 
 ## 3. Settings (Configuración → Pedidos en línea → Kiosco de autoservicio)
 
@@ -164,6 +177,6 @@ order (open, resolved, refunded), and suggestion lines accepted with their amoun
 |---|---|
 | The kiosk only offers "Pagar en caja" | Tablet paired (Configuración shows "Tableta vinculada"), the receiving till's drawer open, a terminal on the station, the provider connected, "Cobro en el kiosco" not "Solo en caja", `KIOSK_SELF_CHECKOUT_ENABLED`. |
 | "La terminal está ocupada" | Another charge is live on that reader (another kiosk or the POS). Wait, or a manager cancels it. |
-| A red card "pagó … y no se pudo enviar a cocina" | Resolver cobro del kiosco: retry once the product is back, or refund in the provider app and record it, then reject the hold. |
+| A red card "pagó … y no se pudo enviar a cocina" | Resolver cobro del kiosco: retry once the product is back; or a manager accepts with the kiosk payment (collecting any rest); or refunds the whole charge in the provider app and chooses «Rechazar y reembolsar». |
 | "Sin señal desde las …" | The tablet is off, unpinned, asleep or offline. |
 | Photos do not show | `MEDIA_STORE` and its credentials; `MENU_PHOTOS_ENABLED`; the media route's 503 means the store is down (the menu falls back to text tiles). |

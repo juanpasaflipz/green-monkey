@@ -203,7 +203,7 @@ const holdPayment = <M extends z.ZodTypeAny>(method: M) => ({
   externalConfirmed: z.boolean().default(false),
   reference: z.string().max(120).default(""),
 });
-export const holdPaymentInput = z.discriminatedUnion("method", [
+const counterPayments = [
   z.object(holdPayment(z.literal("cash"))).strict(),
   z
     .object({
@@ -211,6 +211,31 @@ export const holdPaymentInput = z.discriminatedUnion("method", [
       terminalId: id.optional(),
     })
     .strict(),
+] as const;
+/** What staff collect at the counter: cash or a manual terminal record. */
+export const holdCounterPaymentInput = z.discriminatedUnion(
+  "method",
+  counterPayments,
+);
+/**
+ * «Aceptar con el pago del kiosco» (039, critic R13): a manager accepts a kiosk hold whose card
+ * charge was approved without an order (payments' review), with that charge as its payment. The
+ * note names what the manager checked (payments' record). v1 has no partial refund: the accepted
+ * total is at least the charge, and a total above it collects `rest` (cash or a manual terminal)
+ * in the same accept.
+ */
+export const holdAttemptPaymentInput = z
+  .object({
+    method: z.literal("attempt"),
+    attemptId: id,
+    note: z.string().trim().min(10).max(500),
+    rest: holdCounterPaymentInput.nullable().default(null),
+  })
+  .strict();
+export type HoldAttemptPayment = z.output<typeof holdAttemptPaymentInput>;
+export const holdPaymentInput = z.discriminatedUnion("method", [
+  ...counterPayments,
+  holdAttemptPaymentInput,
 ]);
 export const acceptInput = z
   .object({
@@ -243,6 +268,19 @@ export const rejectInput = z
     operationId: id,
     reason: z.enum(REJECT_REASONS),
     revokeLink: z.boolean().default(false),
+    /**
+     * «Rechazar y reembolsar» (039, critic R13): a kiosk hold whose card charge was approved
+     * without an order. A manager with a recent PIN refunded the whole charge in the provider's
+     * app; the reject records it (payments' refunded_at_provider) in the same transaction.
+     */
+    refund: z
+      .object({
+        attemptId: id,
+        note: z.string().trim().min(10).max(500),
+        confirmed: z.literal(true),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

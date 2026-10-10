@@ -1018,35 +1018,59 @@ export async function resolveAttempt(
         }
       } else if (a.state !== "review")
         throw new DomainError("payments_not_approved", 409);
-      const resolution =
-        p.outcome === "not_charged" ? "not_charged" : "refunded_at_provider";
-      const [row] = await tx<AttemptRow[]>`update payment_attempts
-        set state='dismissed',resolution=${resolution},resolution_note=${p.note!},
-          resolved_by=${s.employeeId},resolved_at=now(),version=version+1
-        where id=${attemptId} returning *`;
-      await event(tx, s, attemptId, "resolved", s.employeeId, {
-        outcome: resolution,
-        ...(attested ? { attested: "reader_cleared" } : {}),
-      });
-      // The late watch (P2V-FIXES-2/-3): the worker keeps reading a dismissed charge that has a
-      // provider reference, so a payment the provider takes later is alerted and listed in
-      // Excepciones (a late_approval), never lost.
-      if (resolution === "not_charged" && row.provider_reference)
-        await enqueueJob(tx, s, {
-          kind: "payments_poll",
-          dedupeKey: `${attemptId}:late:1`,
-          payload: { attemptId, chain: "late", seq: 1 },
-          runAt: new Date(Date.now() + PAYMENTS_LIMITS.lateWatchMs),
-        });
-      await audit(tx, s, "payment.terminal_resolved", a.order_id ?? attemptId, {
-        attemptId,
-        outcome: resolution,
-        note: p.note,
-        ...(attested ? { attested: "reader_cleared" } : {}),
-      });
+      const row = await dismissAttempt(
+        tx,
+        s,
+        a,
+        p.outcome === "not_charged" ? "not_charged" : "refunded_at_provider",
+        p.note!,
+        attested,
+      );
       return { attempt: await viewOf(tx, row) };
     },
   );
+}
+
+/**
+ * The dismissal itself (a manager's not_charged or refunded_at_provider): the attempt to
+ * dismissed with the manager's note, the event, the late watch and the audit row. The caller
+ * checked the role, the recent PIN and the state, and holds the attempt (LO-2c). The kiosk's
+ * «Rechazar y reembolsar» (039, critic R13) calls it after the hold and its checkout (LO-2b).
+ */
+export async function dismissAttempt(
+  tx: Tx,
+  s: Session,
+  a: AttemptRow,
+  resolution: "not_charged" | "refunded_at_provider",
+  note: string,
+  attested = false,
+): Promise<AttemptRow> {
+  const attemptId = a.id;
+  const [row] = await tx<AttemptRow[]>`update payment_attempts
+    set state='dismissed',resolution=${resolution},resolution_note=${note},
+      resolved_by=${s.employeeId},resolved_at=now(),version=version+1
+    where id=${attemptId} returning *`;
+  await event(tx, s, attemptId, "resolved", s.employeeId, {
+    outcome: resolution,
+    ...(attested ? { attested: "reader_cleared" } : {}),
+  });
+  // The late watch (P2V-FIXES-2/-3): the worker keeps reading a dismissed charge that has a
+  // provider reference, so a payment the provider takes later is alerted and listed in
+  // Excepciones (a late_approval), never lost.
+  if (resolution === "not_charged" && row.provider_reference)
+    await enqueueJob(tx, s, {
+      kind: "payments_poll",
+      dedupeKey: `${attemptId}:late:1`,
+      payload: { attemptId, chain: "late", seq: 1 },
+      runAt: new Date(Date.now() + PAYMENTS_LIMITS.lateWatchMs),
+    });
+  await audit(tx, s, "payment.terminal_resolved", a.order_id ?? attemptId, {
+    attemptId,
+    outcome: resolution,
+    note,
+    ...(attested ? { attested: "reader_cleared" } : {}),
+  });
+  return row;
 }
 
 /** After commit: a started, cancelled or checked attempt reaches the worker without the sweep. */

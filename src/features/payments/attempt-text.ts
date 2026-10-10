@@ -185,6 +185,34 @@ export function attemptStatus(
 }
 
 /** The manager outcomes the resolve dialog offers for this attempt (server resolveAttempt). */
+/**
+ * The manager's outcomes as the dialog offers them. A kiosk hold resolved from its inbox card
+ * (039, critic R13) turns «registrar» into «Aceptar con el pago del kiosco» and «se reembolsó»
+ * into «Rechazar y reembolsar»; elsewhere (the Cobros en terminal banner) payments' own apply.
+ */
+export function resolveChoices(
+  a: AttemptView,
+  o: { manager: boolean; viaHold: boolean },
+): (
+  | "record"
+  | "not_charged"
+  | "refunded_at_provider"
+  | "kiosk_accept"
+  | "kiosk_reject"
+)[] {
+  if (!o.manager) return [];
+  const hold = o.viaHold && a.target === "kiosk_hold";
+  return resolveOptions(a).map((x) =>
+    !hold
+      ? x
+      : x === "record"
+        ? "kiosk_accept"
+        : x === "refunded_at_provider"
+          ? "kiosk_reject"
+          : x,
+  );
+}
+
 export function resolveOptions(
   a: AttemptView,
 ): ("record" | "not_charged" | "refunded_at_provider")[] {

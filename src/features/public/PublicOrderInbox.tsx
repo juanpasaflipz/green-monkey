@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { Locale, Order, Session } from "../../../shared/domain";
-import type { InboxHold, InboxResponse } from "../../../shared/public-ordering";
+import type {
+  InboxHold,
+  InboxResponse,
+  RejectReason,
+} from "../../../shared/public-ordering";
 import type { PaymentValues } from "../../../shared/service";
 import {
   errorNotice,
@@ -19,7 +23,7 @@ import { KitchenTicketDocument, ticketsFromOrderRound } from "../KitchenTicket";
 import { currentBusinessDate, orderNumberText } from "../../labels";
 import { printDocument, readPrintSettings } from "../../print";
 import { fill } from "../menu/format";
-import { HoldCard, type AcceptBody } from "./HoldCard";
+import { HoldCard, type AcceptBody, type KioskCharge } from "./HoldCard";
 import { RejectDialog } from "./RejectDialog";
 import {
   refreshPublicInbox,
@@ -105,6 +109,8 @@ export function PublicOrderInbox({
     due: number;
     drawerOpen: boolean;
     error: string;
+    /** Kiosk (critic R13): the rest of an accept with the kiosk's charge. */
+    charge?: KioskCharge;
   } | null>(null);
   const [receipt, setReceipt] = useState<Order | null>(null);
   const [pauseBusy, setPauseBusy] = useState(false);
@@ -228,7 +234,12 @@ export function PublicOrderInbox({
       setBusy(null);
     }
   }
-  async function startPay(hold: InboxHold, body: AcceptBody, due: number) {
+  async function startPay(
+    hold: InboxHold,
+    body: AcceptBody,
+    due: number,
+    charge?: KioskCharge,
+  ) {
     // This device's drawer (id and closed_at stay visible to every role).
     const drawerOpen = await api<{
       id?: string;
@@ -236,29 +247,33 @@ export function PublicOrderInbox({
     } | null>("/cash")
       .then((d) => !!d?.id && !d.closed_at)
       .catch(() => false);
-    setPaying({ hold, body, due, drawerOpen, error: "" });
+    setPaying({ hold, body, due, drawerOpen, error: "", charge });
   }
   async function pay(values: PaymentValues | null) {
     if (!paying || !values) return;
-    const { hold, body } = paying;
+    const { hold, body, charge } = paying;
     setBusy(hold.id);
+    const counter = {
+      amount: values.amount,
+      tip: values.tip,
+      received: values.received,
+      method: values.method,
+      externalConfirmed: values.confirmed,
+      reference: values.reference,
+      // payments (037): the named terminal of a manual card record (holds take no platform).
+      ...(values.method === "external" && values.terminalId
+        ? { terminalId: values.terminalId }
+        : {}),
+    };
     try {
       const r = await api<AcceptResult>(`/ordering/holds/${hold.id}/accept`, {
         operationId: keyFor(hold.id),
         ...body,
-        // No payment key: the accept's own key covers the payment.
-        payment: {
-          amount: values.amount,
-          tip: values.tip,
-          received: values.received,
-          method: values.method,
-          externalConfirmed: values.confirmed,
-          reference: values.reference,
-          // payments (037): the named terminal of a manual card record (holds take no platform).
-          ...(values.method === "external" && values.terminalId
-            ? { terminalId: values.terminalId }
-            : {}),
-        },
+        // No payment key: the accept's own key covers the payment. With the kiosk's charge the
+        // counter payment is the rest of the total (critic R13).
+        payment: charge
+          ? { method: "attempt", ...charge, rest: counter }
+          : counter,
       });
       setPaying(null);
       accepted(hold, r);
@@ -296,6 +311,49 @@ export function PublicOrderInbox({
     } finally {
       setBusy(null);
     }
+  }
+  /**
+   * «Aceptar con el pago del kiosco» (critic R13): with nothing left to collect the accept runs
+   * now (an error stays in the resolve dialog); otherwise the payment dialog collects the rest.
+   */
+  async function kioskAccept(
+    hold: InboxHold,
+    body: AcceptBody,
+    charge: KioskCharge,
+    rest: number,
+  ) {
+    if (rest > 0) return startPay(hold, body, rest, charge);
+    setBusy(hold.id);
+    try {
+      const r = await api<AcceptResult>(`/ordering/holds/${hold.id}/accept`, {
+        operationId: keyFor(hold.id),
+        ...body,
+        payment: { method: "attempt", ...charge, rest: null },
+      });
+      accepted(hold, r);
+      setReceipt(r.order);
+    } catch (e) {
+      if ((e as Error).message === "operation_conflict")
+        keys.current.delete(hold.id);
+      if (REFRESH.has((e as Error).message)) refresh();
+      throw e;
+    } finally {
+      setBusy(null);
+    }
+  }
+  /** «Rechazar y reembolsar» (critic R13): the reject records the provider refund. */
+  async function kioskReject(
+    hold: InboxHold,
+    charge: KioskCharge,
+    reason: RejectReason,
+  ) {
+    await api(`/ordering/holds/${hold.id}/reject`, {
+      operationId: crypto.randomUUID(),
+      reason,
+      refund: { ...charge, confirmed: true },
+    });
+    setNotice(t("publicRejectedNotice", { label: hold.label }));
+    refresh();
   }
   async function setPaused(paused: boolean) {
     setPauseBusy(true);
@@ -399,6 +457,16 @@ export function PublicOrderInbox({
             onPay={(body, due) => void startPay(hold, body, due)}
             onReject={() => setRejecting(hold)}
             onKioskChanged={refresh}
+            onKioskAccept={
+              manager
+                ? (body, charge, rest) => kioskAccept(hold, body, charge, rest)
+                : undefined
+            }
+            onKioskReject={
+              manager
+                ? (charge, reason) => kioskReject(hold, charge, reason)
+                : undefined
+            }
           />
         ))}
       </div>

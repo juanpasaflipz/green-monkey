@@ -24,6 +24,12 @@ import {
 import { lockLinks, revokeLinkRow, staffOnlineSql } from "./public-links.js";
 import { liveAttemptForHold } from "./payments/guards.js";
 import {
+  applyApprovedAttempt,
+  dismissAttempt,
+  type AttemptRow,
+} from "./payments/terminal.js";
+import { linkFromKiosk } from "./loyalty/links.js";
+import {
   DomainError,
   quote,
   sum,
@@ -269,12 +275,14 @@ export type HoldDecisionRow = {
  * (HOLD_EXPIRY_GRACE_SECONDS, CONCURRENCY-2). An accept that carries the
  * payment of a pay-first hold passes up to PAID_ACCEPT_GRACE_SECONDS after
  * expires_at: the cashier already charged the terminal when it arrives
- * (LD-41, PUBLIC-MONEY-2).
+ * (LD-41, PUBLIC-MONEY-2). `paidInTime` (kiosk, critic R12): a card charge
+ * started while the hold was valid passes at any time, so the money always
+ * becomes an order or a review, and a review stays resolvable (R13).
  */
 export async function lockHold(
   tx: Tx,
   holdId: string,
-  o: { withPayment?: boolean; paidGrace?: boolean } = {},
+  o: { withPayment?: boolean; paidInTime?: boolean } = {},
 ): Promise<HoldDecisionRow> {
   const [h] = await tx<
     HoldDecisionRow[]
@@ -285,11 +293,9 @@ export async function lockHold(
     await tx`select hold_id from kiosk_checkouts where hold_id=${holdId} for update`;
   if (h.state !== "pending")
     throw new DomainError("public_order_not_pending", 409);
-  // paidGrace: the kiosk's hold settle, for money taken while the hold was valid (critic R12).
+  if (o.paidInTime) return h;
   const grace =
-    (o.withPayment && h.policy === "pay_first") || o.paidGrace
-      ? PAID_ACCEPT_GRACE_SECONDS
-      : 0;
+    o.withPayment && h.policy === "pay_first" ? PAID_ACCEPT_GRACE_SECONDS : 0;
   // A second statement: the lock statement's own expressions may be computed
   // before it waited for the row.
   const [clock] =
@@ -319,6 +325,13 @@ export async function acceptHold(
 ): Promise<AcceptResult> {
   permit(s, operators);
   const p = acceptInput.parse(raw);
+  const pay = p.payment;
+  // «Aceptar con el pago del kiosco» is a manager's resolution of an approved charge (critic
+  // R13: payments' record, with its recent PIN).
+  if (pay?.method === "attempt") {
+    permit(s, managers);
+    requireRecentAuth(s);
+  }
   return once(
     tx,
     s,
@@ -326,25 +339,118 @@ export async function acceptHold(
     "public.hold.accept",
     { holdId, ...p },
     async () => {
-      const h = await lockHold(tx, holdId, { withPayment: !!p.payment });
+      if (pay?.method === "attempt") {
+        // «Aceptar con el pago del kiosco» (039; critic R13, kiosk §2.7): a kiosk hold whose
+        // card charge was approved without an order (review) becomes a new check with that
+        // charge as its payment. Lines may be excluded and current prices acknowledged as on
+        // any card. No partial refund in v1 (Q5): the total is at least the charge
+        // (kiosk_charge_above_total: restore lines, or «Rechazar y reembolsar»); a total above
+        // it collects the rest (cash or a manual terminal) here. The charge is payments' manager
+        // record into the attempt's own drawer; the rest goes into this device's drawer.
+        // Locks: 1 → 2 → 2b (hold → checkout) → 2c (attempt) → 1′ (the hold's order key) →
+        // createOrder → linkFromKiosk → 11 (the attempt's drawer) → tender → [12] → [the rest:
+        // recordPayment's 11 → tender → 12]: row 58's shape (E8).
+        if (p.target.kind !== "new") throw new DomainError("invalid_input");
+        const h = await lockHold(tx, holdId, {
+          paidInTime: await chargeTakenInTime(tx, holdId, pay.attemptId),
+        });
+        if (h.channel !== "kiosk") throw new DomainError("invalid_input");
+        const a = await lockReviewAttempt(tx, holdId, pay.attemptId);
+        if (a.error_code === "payments_refunded_before_settle")
+          throw new DomainError("payments_refunded_before_settle", 409);
+        const [other] =
+          await tx`select id from payment_attempts where hold_id=${holdId} and id<>${a.id}
+            and state in ('created','sending','pending','unknown','approved','review') limit 1`;
+        if (other) throw new DomainError("kiosk_charge_in_progress", 409);
+        const r = await createHoldOrder(tx, s, h, p, true);
+        // The member the guest identified at the kiosk (critic R23), as the hold settle does.
+        const [c] =
+          await tx`select loyalty_member_id from kiosk_checkouts where hold_id=${holdId}`;
+        if (c?.loyalty_member_id)
+          await linkFromKiosk(tx, s, r.order.id, c.loyalty_member_id as string);
+        const due = r.order.total - r.order.paid;
+        if (due < a.amount)
+          throw new DomainError("kiosk_charge_above_total", 409);
+        if ((pay.rest?.amount ?? 0) !== due - a.amount)
+          throw new DomainError("public_payment_must_cover_total", 409);
+        const out = await applyApprovedAttempt(
+          tx,
+          s,
+          a,
+          "manager",
+          { employeeId: s.employeeId, note: pay.note, reference: null },
+          r.order.id,
+        );
+        if (out.state !== "settled")
+          throw new DomainError("payments_settle_order_changed", 409);
+        r.order = out.order;
+        await audit(tx, s, "payment.terminal_resolved", r.order.id, {
+          attemptId: a.id,
+          outcome: "recorded",
+          note: pay.note,
+          via: { kind: "kiosk_accept", holdId },
+        });
+        if (pay.rest)
+          r.order = await recordPayment(tx, s, r.order.id, {
+            ...pay.rest,
+            operationId: randomUUID(),
+          });
+        return finishHoldAccept(tx, s, h, p, r, {
+          paid: true,
+          decisionSource: "staff",
+        });
+      }
+      const h = await lockHold(tx, holdId, { withPayment: !!pay });
       await assertNoKioskCharge(tx, h);
-      const r = await createHoldOrder(tx, s, h, p, !!p.payment);
-      if (p.payment) {
-        if (p.payment.amount !== r.order.total - r.order.paid)
+      const r = await createHoldOrder(tx, s, h, p, !!pay);
+      if (pay) {
+        if (pay.amount !== r.order.total - r.order.paid)
           throw new DomainError("public_payment_must_cover_total", 409);
         // Server-fresh key (LO-R5, the recordSettlement pattern); the outer
         // once() makes the whole accept, payment included, idempotent.
         r.order = await recordPayment(tx, s, r.order.id, {
-          ...p.payment,
+          ...pay,
           operationId: randomUUID(),
         });
       }
       return finishHoldAccept(tx, s, h, p, r, {
-        paid: !!p.payment,
+        paid: !!pay,
         decisionSource: "staff",
       });
     },
   );
+}
+
+/**
+ * Whether a hold's card charge started while the hold was valid (critic R12): a plain read
+ * before lockHold (the attempt's created_at and the hold's expires_at never change).
+ */
+export async function chargeTakenInTime(
+  tx: Tx,
+  holdId: string,
+  attemptId: string,
+): Promise<boolean> {
+  const [x] = await tx`select a.created_at<h.expires_at as in_time
+    from payment_attempts a join public_order_holds h on h.tenant_id=a.tenant_id and h.id=a.hold_id
+    where a.id=${attemptId} and h.id=${holdId}`;
+  return x?.in_time === true;
+}
+
+/**
+ * LO-2c after the hold and its checkout: the hold's own attempt in review with what the provider
+ * reported (critic R13). A charge refunded before it was recorded is only ever refunded.
+ */
+async function lockReviewAttempt(
+  tx: Tx,
+  holdId: string,
+  attemptId: string,
+): Promise<AttemptRow> {
+  const [a] = await tx<AttemptRow[]>`select * from payment_attempts
+    where id=${attemptId} and hold_id=${holdId} for update`;
+  if (!a) throw new DomainError("payments_attempt_not_found", 404);
+  if (a.state !== "review" || a.paid_amount === null)
+    throw new DomainError("payments_not_approved", 409);
+  return a;
 }
 
 /**
@@ -597,6 +703,13 @@ export async function rejectHold(
   permit(s, operators);
   const p = rejectInput.parse(raw);
   if (p.revokeLink) permit(s, managers);
+  // «Rechazar y reembolsar» (critic R13): payments' refunded_at_provider, a manager's with a
+  // recent PIN.
+  if (p.refund) {
+    permit(s, managers);
+    requireRecentAuth(s);
+  }
+  const refund = p.refund;
   return once(
     tx,
     s,
@@ -604,7 +717,21 @@ export async function rejectHold(
     "public.hold.reject",
     { holdId, ...p },
     async () => {
-      const h = await lockHold(tx, holdId);
+      const h = await lockHold(
+        tx,
+        holdId,
+        refund
+          ? {
+              paidInTime: await chargeTakenInTime(tx, holdId, refund.attemptId),
+            }
+          : {},
+      );
+      if (refund) {
+        // LO-2c after the hold and its checkout; the dismissal names the provider refund.
+        if (h.channel !== "kiosk") throw new DomainError("invalid_input");
+        const a = await lockReviewAttempt(tx, holdId, refund.attemptId);
+        await dismissAttempt(tx, s, a, "refunded_at_provider", refund.note);
+      }
       await assertNoKioskCharge(tx, h);
       await tx`update public_order_holds set state='rejected',reject_reason=${p.reason},
           decided_at=clock_timestamp(),decided_by=${s.employeeId}
@@ -620,6 +747,7 @@ export async function rejectHold(
         reason: p.reason,
         label,
         revokedLink,
+        ...(refund ? { refundedAttemptId: refund.attemptId } : {}),
       });
       return {
         hold: { id: holdId, label, state: "rejected" as const },

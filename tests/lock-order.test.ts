@@ -95,6 +95,8 @@ const PERMANENT: Record<string, string> = {
     "E8 LO-R5 the hold's own order key (createOrder(h.order_operation_id)) after the hold and its checkout",
   "server/kiosk-accept.ts#settleKioskHoldCharge:2c>1":
     "E8 LO-R5 the hold's own order key after the attempt row (2c), which the hold settle locks before createOrder",
+  "server/public-holds.ts#acceptHold:2c>1":
+    "E8 LO-R5 «Aceptar con el pago del kiosco» (critic R13): the hold's own order key after the attempt row (2c), as settleKioskHoldCharge",
   "server/kiosk-accept.ts#settleKioskHoldCharge:12>11":
     "E8 (as E5) createOrder's closing refresh cannot issue; applyApprovedAttempt then takes the attempt's drawer and issues the ticket (LO-12) last",
 };
