@@ -10,7 +10,11 @@ import {
   jobErrorCode,
 } from "../server/jobs/queue.js";
 import { createJobRunner, resolveOutcome } from "../server/jobs/runner.js";
-import { createWorkerRunners } from "../server/jobs/worker-lanes.js";
+import {
+  createWorkerRunners,
+  WORKER_LANES,
+} from "../server/jobs/worker-lanes.js";
+import { PAYMENTS_JOB_OPTIONS } from "../server/payments/worker/job-options.js";
 import {
   clearJobHandlers,
   enqueueJob,
@@ -638,6 +642,73 @@ describe("runner limits and liveness (PLATFORM-OPS-1, OPS-3, OPS-5, OPS-6)", () 
       ran,
       "the charge reached the provider while cfdi held 4 slots",
     ).toContain("push");
+    release();
+    await drain;
+    await runners.stop(100);
+  });
+
+  it("payments lane (P2V-JOBS-2): reads that never finish (8 polls and 4 re-reads, a provider timing out) leave slots for a payments_push and a payments_cancel in the same drain", async () => {
+    const queues = new Map([
+      [
+        "t-1",
+        [
+          ...Array.from({ length: 8 }, (_, n) => ({
+            kind: "payments_poll",
+            id: `poll-${n}`,
+          })),
+          ...Array.from({ length: 4 }, (_, n) => ({
+            kind: "payments_webhook",
+            id: `hook-${n}`,
+          })),
+          { kind: "payments_push", id: "push" },
+          { kind: "payments_cancel", id: "cancel" },
+        ],
+      ],
+    ]);
+    let release!: () => void;
+    const provider = new Promise<void>((r) => (release = r));
+    const ran: string[] = [];
+    const stub = (slow: boolean) =>
+      (async ({ job }: { job: { id: string } }) => {
+        ran.push(job.id);
+        if (slow) await provider; // a read that hangs until its timeout
+      }) as never;
+    // The real limits server/payments/worker/register.ts registers, polls first (they are the
+    // kinds that pile up).
+    const registry = new Map<string, RegisteredHandler>(
+      (
+        [
+          "payments_poll",
+          "payments_webhook",
+          "payments_push",
+          "payments_cancel",
+        ] as const
+      ).map((kind) => [
+        kind,
+        jobRegistration(
+          kind,
+          stub(kind === "payments_poll" || kind === "payments_webhook"),
+          PAYMENTS_JOB_OPTIONS[kind],
+        ),
+      ]),
+    );
+    const runners = createWorkerRunners(queueSql({ queues }) as never, {
+      handlers: () => registry,
+      discover: async () => [],
+      sweepMs: 1000,
+    });
+    const drain = runners.drainTenant("t-1");
+    for (
+      let i = 0;
+      i < 100 && !(ran.includes("push") && ran.includes("cancel"));
+      i++
+    )
+      await new Promise((r) => setTimeout(r, 5));
+    expect(
+      ran.filter((id) => !id.startsWith("poll-") && !id.startsWith("hook-")),
+      "the cashier's push and cancel got a slot while the reads hung",
+    ).toEqual(expect.arrayContaining(["push", "cancel"]));
+    expect(runners.running()).toBeLessThanOrEqual(WORKER_LANES.payments);
     release();
     await drain;
     await runners.stop(100);

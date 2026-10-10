@@ -18,49 +18,32 @@ import {
   devicesHandler,
   wipeHandler,
 } from "./setup.js";
+import { PAYMENTS_JOB_OPTIONS } from "./job-options.js";
 
-// A push that goes dead with the attempt still `sending` leaves it `unknown` (pushDead).
+const o = PAYMENTS_JOB_OPTIONS;
 registerWorkerJobHandler("payments_push", pushHandler, {
-  leaseSeconds: 30,
-  concurrency: 4,
-  maxAttempts: 3,
+  ...o.payments_push,
   onDead: pushDead,
 });
-registerWorkerJobHandler("payments_poll", pollHandler, {
-  leaseSeconds: 30,
-  concurrency: 8,
-  maxAttempts: 100,
-});
-// 15 claims: a cancel waits (2 s apart) while the push is still recording the provider's answer.
-registerWorkerJobHandler("payments_cancel", cancelHandler, {
-  leaseSeconds: 30,
-  concurrency: 4,
-  maxAttempts: 15,
-});
-registerWorkerJobHandler("payments_webhook", webhookHandler, {
-  leaseSeconds: 20,
-  concurrency: 8,
-  maxAttempts: 3,
-});
-// A credentials job that goes dead wipes its upload and fails a still-verifying account.
+registerWorkerJobHandler("payments_poll", pollHandler, o.payments_poll);
+registerWorkerJobHandler("payments_cancel", cancelHandler, o.payments_cancel);
+registerWorkerJobHandler(
+  "payments_webhook",
+  webhookHandler,
+  o.payments_webhook,
+);
 registerWorkerJobHandler("payments_credentials", credentialsHandler, {
-  leaseSeconds: 60,
-  concurrency: 2,
-  maxAttempts: 3,
+  ...o.payments_credentials,
   onDead: credentialsDead,
 });
-registerWorkerJobHandler("payments_devices", devicesHandler, {
-  leaseSeconds: 30,
-  concurrency: 2,
-  maxAttempts: 2,
-});
-registerWorkerJobHandler("payments_device_mode", deviceModeHandler, {
-  leaseSeconds: 30,
-  concurrency: 1,
-  maxAttempts: 2,
-});
-registerWorkerJobHandler("payments_wipe", wipeHandler, {
-  leaseSeconds: 20,
-  concurrency: 1,
-  maxAttempts: 3,
-});
+registerWorkerJobHandler(
+  "payments_devices",
+  devicesHandler,
+  o.payments_devices,
+);
+registerWorkerJobHandler(
+  "payments_device_mode",
+  deviceModeHandler,
+  o.payments_device_mode,
+);
+registerWorkerJobHandler("payments_wipe", wipeHandler, o.payments_wipe);
