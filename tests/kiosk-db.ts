@@ -48,9 +48,9 @@ import {
   inbox,
   rejectHold,
 } from "../server/public-holds.js";
-import { closeCash } from "../server/cash.js";
+import { cashSummary, closeCash } from "../server/cash.js";
 import { saveFiscalProfile } from "../server/fiscal.js";
-import { getOrder, recordPayment } from "../server/orders.js";
+import { createOrder, getOrder, recordPayment } from "../server/orders.js";
 import {
   createPairing,
   kioskSettingsView,
@@ -79,6 +79,8 @@ import {
   uploadsInFlight,
 } from "../server/media.js";
 import { uploadRoute } from "../server/routes/kiosk.js";
+import { loadDrawers } from "../server/reports/drawers.js";
+import { restaurantOf } from "../server/reports/restaurant.js";
 import { riff, uploadBody, vp8l } from "./fixtures/webp.js";
 import { jpeg, jpegUploadBody } from "./fixtures/jpeg.js";
 import { kioskReport } from "../server/kiosk-report.js";
@@ -3598,6 +3600,153 @@ try {
           and t.attempt_id is null)`,
     );
     assert.ok(both.n >= 1, "a kiosk charge plus a counter rest counts in both");
+    await write(manager, (tx) =>
+      revokeLink(tx, manager, k.linkId, { operationId: randomUUID() }),
+    );
+  });
+
+  await test("K31. the corte's «Del kiosco» line (KV-GATE-4, R47): in the receiving till's drawer, the corte X/Z (loadDrawers) and the close summary (cashSummary) count, per terminal, every card tender of a kiosk order: the kiosk's own on its reader and a «Pagar en caja» order paid at the counter on a manual terminal, amounts without tips; a POS order on that terminal never; both equal the tenders", async () => {
+    type Line = { n: number; amount: number };
+    const [open] = await asOwner(
+      A,
+      (tx) => tx`select id from cash_sessions
+        where tenant_id=${A} and device_id=${ids.till} and closed_at is null`,
+    );
+    assert.ok(open, "the receiving till's drawer is open");
+    const drawerId = open.id as string;
+    // Both SQL paths, per terminal: {count, kiosk line}.
+    const corte = async () => {
+      const [d] = await write(manager, async (tx) =>
+        loadDrawers(tx, manager, await restaurantOf(tx, manager), {
+          id: drawerId,
+        }),
+      );
+      return d.terminals;
+    };
+    const summary = async () =>
+      (await write(manager, (tx) => cashSummary(tx, manager, drawerId)))!
+        .byTerminal;
+    const kioskLines = (
+      rows: { terminalId: string | null; kioskCount: number; kioskAmount: number }[],
+    ): Record<string, Line> =>
+      Object.fromEntries(
+        rows
+          .filter((r) => r.kioskCount !== 0 || r.kioskAmount !== 0)
+          .map((r) => [String(r.terminalId), { n: r.kioskCount, amount: r.kioskAmount }]),
+      );
+    const counts = (rows: { terminalId: string | null; count: number }[]) =>
+      Object.fromEntries(rows.map((r) => [String(r.terminalId), r.count]));
+    const fromTenders = async (): Promise<Record<string, Line>> =>
+      Object.fromEntries(
+        (
+          await asOwner(
+            A,
+            (tx) => tx`select t.terminal_id,count(*)::int as n,sum(t.amount)::int as amount
+              from tenders t join orders o on o.tenant_id=t.tenant_id and o.id=t.order_id
+              where t.tenant_id=${A} and t.session_id=${drawerId} and t.method='external'
+                and o.channel='kiosk'
+              group by t.terminal_id`,
+          )
+        ).map((r: any) => [String(r.terminal_id), { n: r.n, amount: r.amount }]),
+      );
+    const lineOf = (lines: Record<string, Line>, terminalId: string): Line =>
+      lines[terminalId] ?? { n: 0, amount: 0 };
+    const before = { corte: await corte(), summary: await summary() };
+    // A kiosk of its own (as K29).
+    const spent = await one(
+      A,
+      (tx) => tx`select l.id from public_links l where l.tenant_id=${A} and l.kind='kiosk'
+        and l.revoked_at is null and l.id<>${main.linkId} and not exists (select 1 from public_order_holds h
+          where h.link_id=l.id and h.state='pending')
+        order by l.created_at limit 1`,
+    );
+    if (spent)
+      await write(manager, (tx) =>
+        revokeLink(tx, manager, spent.id, { operationId: randomUUID() }),
+      );
+    const k = await newKiosk("Corte " + run);
+    await configure(k, terminals.clip);
+    await pair(k);
+    // (a) The kiosk's own card on its reader.
+    const a = await order(k, [line(ids.taco)], 4500);
+    await charge(k, a.key);
+    const aa = await attemptOf(a.key);
+    assert.equal(aa.cash_session_id, drawerId);
+    await drive(aa.id, ["pending"]);
+    fake.approve(fake.chargeFor(aa.id)!.id, { ...TEST_CARD });
+    await drive(aa.id, ["settled"]);
+    // (b) «Pagar en caja», paid at the counter on the manual terminal, with a tip.
+    const b = await order(k, [line(ids.taco)], 4500);
+    await call("POST", "/kiosk/counter", {
+      link: k.link,
+      tablet: k.tablet,
+      body: { statusKey: b.key },
+    });
+    const bh = await holdOf(b.key);
+    const card = {
+      method: "external",
+      amount: 4500,
+      tip: 500,
+      received: 5000,
+      externalConfirmed: true,
+      reference: "AUT-0031",
+      terminalId: terminals.manual,
+    };
+    const bo = await write(cashier, (tx) =>
+      acceptHold(tx, cashier, bh.id, {
+        operationId: randomUUID(),
+        target: { kind: "new" },
+        payment: card,
+      }),
+    );
+    assert.equal(bo.order.paid, 4500);
+    // (c) A POS order on the same manual terminal.
+    const pos = await write(cashier, (tx) =>
+      createOrder(tx, cashier, {
+        operationId: randomUUID(),
+        lines: [line(ids.taco)],
+        mode: "takeaway",
+      }),
+    );
+    await write(cashier, (tx) =>
+      recordPayment(tx, cashier, pos.id, {
+        ...card,
+        operationId: randomUUID(),
+        amount: pos.total,
+        received: pos.total + 500,
+      }),
+    );
+    const after = { corte: await corte(), summary: await summary() };
+    for (const path of ["corte", "summary"] as const) {
+      const was = kioskLines(before[path]);
+      const now = kioskLines(after[path]);
+      assert.deepEqual(
+        {
+          clip: {
+            n: lineOf(now, terminals.clip).n - lineOf(was, terminals.clip).n,
+            amount:
+              lineOf(now, terminals.clip).amount - lineOf(was, terminals.clip).amount,
+          },
+          manual: {
+            n: lineOf(now, terminals.manual).n - lineOf(was, terminals.manual).n,
+            amount:
+              lineOf(now, terminals.manual).amount -
+              lineOf(was, terminals.manual).amount,
+          },
+        },
+        { clip: { n: 1, amount: 4500 }, manual: { n: 1, amount: 4500 } },
+        path,
+      );
+      // The POS order counts on the manual terminal, outside «Del kiosco».
+      assert.equal(
+        (counts(after[path])[terminals.manual] ?? 0) -
+          (counts(before[path])[terminals.manual] ?? 0),
+        2,
+        path,
+      );
+      // The whole drawer reconciles with its tenders.
+      assert.deepEqual(now, await fromTenders(), path);
+    }
     await write(manager, (tx) =>
       revokeLink(tx, manager, k.linkId, { operationId: randomUUID() }),
     );
