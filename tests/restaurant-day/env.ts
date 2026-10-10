@@ -166,12 +166,16 @@ export type RunState = {
   /** Restaurant P (branch P, payments spec §12.4): Mexico City, like A */
   cutoffP: string;
   businessDateP: string;
+  /** Restaurant S (branch S, kiosk 039, after P in the payments job): Mexico City, like A */
+  cutoffS: string;
+  businessDateS: string;
   /** Branch P: the payments fake's base URL (scripted over HTTP, /__fake/…) */
   paymentsFakeUrl?: string;
   tenantA?: string;
   tenantB?: string;
   tenantL?: string;
   tenantP?: string;
+  tenantS?: string;
   /** order-book id (A01…, B1…) → orders.id */
   orders: Record<string, string>;
   /** order-book id → order number shown on screen */

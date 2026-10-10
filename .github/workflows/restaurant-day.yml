@@ -213,8 +213,11 @@ jobs:
   # fake (APP_ENV=test, the only place server/payments/config.ts accepts a loopback base) and a
   # CREDENTIAL_ENCRYPTION_KEY it generates per run and holds in memory, like SIGNING_KEYS; the
   # web stays production. Acceptance §3's env table governs the A/B job only; P deviates by
-  # design (LD-80). G1 and Restaurant P, then the DB reconciliation DP1-DP8. The lead adds
-  # restaurant-day-payments to ops/github/main-ruleset.json once it is green on main.
+  # design (LD-80). G1 and Restaurant P, then branch S (kiosk self-checkout 039, critic R47,
+  # LD-89): Restaurant S's two kiosk tablets on the same fake's readers, in this job because it
+  # needs the same fake and providers (no job of its own). Then the DB reconciliation DP1-DP8 and
+  # DS1-DS6. The lead adds restaurant-day-payments to ops/github/main-ruleset.json once it is
+  # green on main.
   day-payments:
     name: restaurant-day-payments
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/')
@@ -277,7 +280,7 @@ jobs:
           commit="$(git rev-parse HEAD)"
           node scripts/ops/stamp-build.mjs "$commit"
           echo "RD_BUILD_COMMIT=$commit" >> "$GITHUB_ENV"
-      - name: Restaurant day, branch P
+      - name: Restaurant day, branches P and S
         run: npm run test:acceptance:day
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()

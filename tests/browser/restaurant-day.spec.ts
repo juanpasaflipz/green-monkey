@@ -31,6 +31,7 @@ import {
   setupB,
   setupL,
   setupP,
+  setupS,
 } from "../restaurant-day/setup-flows.js";
 import { preflight } from "../restaurant-day/preflight.js";
 import { serviceB } from "../restaurant-day/service-b.js";
@@ -47,6 +48,9 @@ import { serviceL } from "../restaurant-day/club-l.js";
 import { serviceP } from "../restaurant-day/payments-p.js";
 import { EXPECTED_P } from "../restaurant-day/expected-p.js";
 import { oracleP } from "../restaurant-day/oracle-p.js";
+import { serviceS } from "../restaurant-day/kiosk-s.js";
+import { EXPECTED_S } from "../restaurant-day/expected-s.js";
+import { oracleS } from "../restaurant-day/oracle-s.js";
 
 test.skip(
   process.env.RD_ACCEPTANCE !== "1",
@@ -140,12 +144,10 @@ test.describe("restaurant day", () => {
       run.step = "§11";
       run.timing = timings;
       const budgets = assertTimingBudgets();
-      test
-        .info()
-        .annotations.push({
-          type: "timing",
-          description: budgets.rows.join("\n"),
-        });
+      test.info().annotations.push({
+        type: "timing",
+        description: budgets.rows.join("\n"),
+      });
       expect(timings).toHaveLength(5);
       await guard(["GAP-4", "DB-3", "FOH-10"], async () => {
         expect(budgets.problems, "§11 tap and latency budgets").toEqual([]);
@@ -205,6 +207,26 @@ test.describe("restaurant day", () => {
     test("P payments day (P3–P6)", async () => {
       test.setTimeout(12 * 60_000);
       await serviceP(dev, state);
+    });
+  });
+
+  // Branch S (kiosk self-checkout 039, critic R47, LD-80/LD-89): its own restaurant, after P in
+  // the same job against the same payments fake, with its own hand-typed table (expected-s.ts)
+  // and DB checks (DS1-DS6).
+  test.describe("S: Antojitos La Pitaya", () => {
+    test.skip(
+      !BRANCH_P,
+      "branch S runs after branch P in the restaurant-day-payments job",
+    );
+    test("S setup (S1–S2) and the S oracle self-check", async () => {
+      test.setTimeout(6 * 60_000);
+      run.step = "S0";
+      expect(oracleS(), "oracle S vs expected-s.ts").toEqual(EXPECTED_S);
+      await setupS(dev, state, saveState);
+    });
+    test("S kiosk day (S3–S6)", async () => {
+      test.setTimeout(12 * 60_000);
+      await serviceS(dev, state);
     });
   });
 });
