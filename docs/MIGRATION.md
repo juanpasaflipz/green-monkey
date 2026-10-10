@@ -112,7 +112,14 @@ points here. Who: the owner, with the operator; the cashier only where a step sa
 menu re-keyed and price-checked, staff and PINs, devices paired, the printer tests and the outage
 drill passed, the money defaults written down, the CFDI ranges agreed with the accountant, the
 club's legal texts published, and the integrated charging device rehearsal (critic R44) passed on
-staging. Keep a **cutover log** (a private document, never in Git): time, step, who, and what
+staging. For the kiosk (steps 1.2, 7.1, 7.4 and 7.5 depend on it), every precondition of
+[LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) 1.16a and 1.21 met in production: `PAYMENTS_PROVIDERS`
+deployed on the production worker; the production media bucket set (`MEDIA_STORE=r2` and the
+four `MEDIA_R2_*` values on web); R44b, the combined Wave 4 rehearsal, passed; and the reviewed
+`railway.ts` switch-on deployed, with production's `/capabilities` reporting `kioskSelfCheckout`
+and `menuPhotos` enabled. If any is missing, keep the pos-lite kiosk running: skip step 1.2 and
+postpone step 7 to another day (the rest of the cutover does not depend on it). Keep a **cutover
+log** (a private document, never in Git): time, step, who, and what
 each check showed. Choose a quiet hour; pos-lite stays reachable read-only afterwards
 (LAUNCH_HANDOFF §4.2).
 

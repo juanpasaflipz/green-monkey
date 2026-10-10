@@ -75,8 +75,8 @@ the diner's cancel is refused too); a manager may tap "Cancelar cobro" on that c
 approved without an order is a red card first in the inbox:
 "Resolver cobro del kiosco" opens payments' resolve dialog (critic R13):
 
-- **Reintentar** (any operator, no PIN): once the order fits again (the product is back, the price
-  is the charged one). It works however long ago the hold expired, because the charge started
+- **Registrar el cobro aprobado** (any operator, no PIN): once the order fits again (the product is
+  back, the price is the charged one). «Volver a consultar» only asks the provider again. It works however long ago the hold expired, because the charge started
   while it was valid (R12).
 - **Aceptar con el pago del kiosco** (managers, recent PIN, a note): the hold as its card includes
   it now (lines left out, the current prices) becomes a new check with the card charge as its
@@ -279,8 +279,11 @@ Invalid values refuse to start (`kiosk_flag_invalid`, `media_flag_invalid`, `med
 `MEDIA_R2_ACCESS_KEY_ID` and `MEDIA_R2_SECRET_ACCESS_KEY` are forbidden on the worker
 (`forbiddenCredentials.worker` in server/config-rules.ts, critic R36). `.railway/railway.ts` declares the kiosk's
 variables on web only (KIOSK-OPS-1). The two switches are `preserve()` on staging and `"false"` in
-production until the field checks and the R44a device rehearsal pass; switching production on is
-one reviewed change there plus a deploy (RUNBOOK "Kiosk self-checkout and menu photos").
+production until the steps of [LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) 1.16a pass in their order
+(R44a, `PAYMENTS_PROVIDERS` on the production worker, the media bucket, the field checks, R44b;
+LD-96); switching production on is one reviewed change there plus a deploy (RUNBOOK "Kiosk
+self-checkout and menu photos"). After it, the immediate stop is «Cobro en el kiosco» = «Solo en
+caja» in Configuración (RUNBOOK "Kill switch").
 `MEDIA_STORE` and `MEDIA_R2_*` are `preserve()` in both environments, and `MEDIA_FS_ROOT` is never
 declared.
 

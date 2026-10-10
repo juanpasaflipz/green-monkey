@@ -674,6 +674,10 @@ test merchant), charges are real and low-value:
       for the terminal, then 504 PINPAD_TERMINAL_TIMEOUT_EXCEPTION (the fake answers 400; the
       worker treats a 5xx as an unknown outcome and withdraws by serial). Record the status,
       the time it took, and whether a delete by serial during those 60 s finds the request.
+   r. MP fee timing: whether an approved payment's read ever returns `fee_details: []` before
+      MP has computed the fee. The worker records an empty array as a zero fee, so the tender
+      and the corte would then show no MP fee for that charge. Record the payment's
+      `fee_details` on the first read after approval and again a minute later.
 5. Evidence (timings, screenshots, attempt events with ids only) stays local under the LD-67
    evidence-directory pattern; nothing with a token, a key or a card beyond the last 4.
 6. Afterwards: disconnect both accounts in Configuración (the worker wipes the credentials)
@@ -988,8 +992,9 @@ Area doc: [KIOSK.md](KIOSK.md) (troubleshooting table in §11).
   is not `false`. Meanwhile the kiosk takes counter orders.
 - **"Terminal ocupada."** Another live charge on the reader (a POS charge or another kiosk). Wait, or a
   manager cancels it from the inbox card («Cancelar cobro») or Cobros en terminal.
-- **"Cobrado sin pedido" (red card).** «Resolver cobro del kiosco»: «Reintentar» once the product
-  is back (any operator); or a manager «Aceptar con el pago del kiosco»; or the manager refunds the
+- **"Cobrado sin pedido" (red card).** «Resolver cobro del kiosco»: «Registrar el cobro aprobado»
+  once the product is back (any operator; «Volver a consultar» only asks the provider again); or a
+  manager «Aceptar con el pago del kiosco»; or the manager refunds the
   whole charge in the provider app and chooses «Rechazar y reembolsar» (PIN, a note with the refund
   folio). For a charge outside a hold, payments' resolve dialog records «Se cobró y se reembolsó en
   la terminal». The drawer cannot close until it is resolved.
@@ -1000,16 +1005,25 @@ Area doc: [KIOSK.md](KIOSK.md) (troubleshooting table in §11).
   once the owner provides the media bucket (LAUNCH_HANDOFF 1.16a): `MEDIA_STORE=r2` together
   with the four values. Never set `MEDIA_STORE=fs` or `MEDIA_FS_ROOT` on Railway. Without the
   bucket, uploads answer `media_store_not_configured` and the menus show text tiles.
-- **Kill switch.** Staging: `KIOSK_SELF_CHECKOUT_ENABLED=false` on web (railway-vars.sh, redeploy)
-  turns card at the kiosk off; charges already taken still settle; `preserve()` keeps it through
-  later applies. Production: off until the switch-on. After it, the switch is a reviewed change
-  of that line back to `"false"` plus a deploy. A value set by hand there is overwritten by the
-  next apply.
-- **Switching production on.** Do this only after the kiosk field checks (LAUNCH_HANDOFF 1.16a)
-  and the R44a device rehearsal ("Payments: real-device rehearsal") have passed, and after the
-  production worker has `PAYMENTS_PROVIDERS` (card at the kiosk needs integrated charging). For
-  photos, the production web also needs `MEDIA_STORE=r2` and the four `MEDIA_R2_*` values set
-  with `railway-vars.sh production`. Then make one reviewed change to `.railway/railway.ts`: the
+- **Kill switch.** In a production incident after the switch-on, act in the app first: the owner
+  or a manager sets Configuración › Kiosco de autoservicio › «Cobro en el kiosco» to «Solo en
+  caja» and taps «Guardar configuración» (PIN). The server reads it on every `/charge` and
+  `/state`, so the next charge is refused at once and the kiosks offer only «Pagar en caja»; a
+  single tablet can also be cut off with «Desvincular» on its station. Charges already taken
+  still settle. As a stopgap, `KIOSK_SELF_CHECKOUT_ENABLED=false` may be set by hand on the
+  production web (railway-vars.sh, redeploy); the next apply overwrites it, so land the reviewed
+  change of that `railway.ts` line back to `"false"` before the next production deploy.
+  Staging: `KIOSK_SELF_CHECKOUT_ENABLED=false` on web (railway-vars.sh, redeploy) turns card at
+  the kiosk off, and `preserve()` keeps it through later applies. Production stays off until the
+  switch-on.
+- **Switching production on.** Follow [LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) 1.16a in its order
+  (LD-96), each step passed and recorded before the next: (1) the R44a device rehearsal
+  ("Payments: real-device rehearsal"); (2) `PAYMENTS_PROVIDERS` on the production worker (card at
+  the kiosk needs integrated charging); (3) the R2 media bucket, with `MEDIA_STORE=r2` and the
+  four `MEDIA_R2_*` values set with `railway-vars.sh production`; (4) the kiosk field checks;
+  (5) R44b, the combined Wave 4 rehearsal (a member stamped at the kiosk, a drawer close with
+  the kiosk reader's batch and «Del kiosco», a corte reprint). Only then (6) the switches: one
+  reviewed change to `.railway/railway.ts`: the
   production side of the kiosk spread declares `"true"` for the switches being turned on.
   `preserve()` would keep the `"false"` already applied. Update the kiosk assertion in
   `tests/workflows.test.ts` in the same pull request and merge to main. The production deploy

@@ -743,8 +743,8 @@ kiosco de POS Lite (paso 1).
   Si se quedó atorado, un gerente toca **Cancelar cobro** en esa tarjeta.
 - **Tarjeta roja «pagó … y no se pudo enviar a cocina».** El cliente pagó pero un producto se
   acabó o cambió de precio. Toca **Resolver cobro del kiosco**:
-  - si el producto ya está y el precio es el cobrado, cualquiera toca **Reintentar** y se crea el
-    pedido;
+  - si el producto ya está y el precio es el cobrado, cualquiera toca **Registrar el cobro
+    aprobado** y se crea el pedido («Volver a consultar» solo vuelve a preguntar al proveedor);
   - un gerente puede **Aceptar con el pago del kiosco** con el pedido como está en su tarjeta
     (sin lo agotado, con el precio de hoy). Si el total es mayor que lo cobrado, cobra la
     diferencia en efectivo o terminal en ese momento. Si es menor, no se puede (no hay reembolsos

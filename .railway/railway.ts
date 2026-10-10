@@ -98,8 +98,9 @@ export default defineRailway((ctx) => {
       ...(production ? {} : { DEMO_TENANT_ID: preserve() }),
       // kiosk (039; KIOSK-OPS-1, LD-95): card at the kiosk and menu photos. Unset or "true" means
       // on, "false" off (server/kiosk-config.ts), so production declares "false" (undeclared
-      // would mean on) until the kiosk field checks and the R44a device rehearsal pass
-      // (LAUNCH_HANDOFF.md 1.16a). Staging keeps them on, and a "false" set there as the
+      // would mean on) until LAUNCH_HANDOFF.md 1.16a's steps pass in order: R44a,
+      // PAYMENTS_PROVIDERS on the production worker, the media bucket, the field checks, R44b
+      // (LD-96). Staging keeps them on, and a "false" set there as the
       // RUNBOOK kill switch survives an apply. Switching production on is one reviewed change
       // here (production declares "true"; preserve() would keep the "false" already applied),
       // then a deploy (RUNBOOK.md "Kiosk self-checkout and menu photos").

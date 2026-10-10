@@ -110,9 +110,10 @@ rotate the
    "Payments: real-device rehearsal" step 7). Kiosk (039) `KIOSK_SELF_CHECKOUT_ENABLED`
    and `MENU_PHOTOS_ENABLED` are not in this file either: `railway.ts` declares both
    `"false"` in production (unset means on, so leaving them undeclared would turn card at
-   the kiosk and photos on) and `preserve()` on staging, until the kiosk field checks and
-   the R44a device rehearsal pass ([LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) 1.16a); then one
-   reviewed change to `railway.ts` plus a deploy switches production on
+   the kiosk and photos on) and `preserve()` on staging, until the steps of
+   [LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) 1.16a pass in their order (R44a,
+   `PAYMENTS_PROVIDERS` on the production worker, the media bucket, the field checks, R44b;
+   LD-96); then one reviewed change to `railway.ts` plus a deploy switches production on
    ([RUNBOOK.md](RUNBOOK.md) "Kiosk self-checkout and menu photos"). The menu photos
    bucket is the owner's: a private R2 bucket separate from the backup bucket and a
    bucket-scoped Object Read & Write token **that does not expire**. They go in this file
