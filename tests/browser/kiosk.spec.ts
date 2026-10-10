@@ -653,3 +653,140 @@ test("Importar fotos: the owner picks a manifest and generated photos, reviews t
     }
   }
 });
+
+test("selling-grid photos: on by default on this terminal, lazy, in a fixed box that does not move when the photo arrives; a photo that fails to load leaves the initials and the tile still sells; «Pantalla» turns them off for this device", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await login(page);
+  const caps = await call(page, "/capabilities");
+  test.skip(
+    !caps.menuPhotos?.enabled,
+    "needs MEDIA_STORE (fs in local runs and CI)",
+  );
+  const session = await call(page, "/session");
+  const menu = await call(page, "/menu");
+  const named = (es: string) =>
+    menu.products.find((p: any) => p.name.es === es);
+  const guacamole = named("Guacamole");
+  const ensalada = named("Ensalada verde");
+  async function upload(id: string, png: Buffer) {
+    const result = await page.evaluate(
+      async ({ id, png }) => {
+        const s = await (await fetch("/api/session")).json();
+        const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
+        const bitmap = await createImageBitmap(
+          new Blob([bytes], { type: "image/png" }),
+        );
+        const parts: Blob[] = [];
+        for (const width of [160, 480, 1200]) {
+          const w = Math.min(width, bitmap.width);
+          const h = Math.round((bitmap.height * w) / bitmap.width);
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          canvas.getContext("2d")!.drawImage(bitmap, 0, 0, w, h);
+          parts.push(
+            await new Promise<Blob>((r) =>
+              canvas.toBlob((b) => r(b!), "image/webp", 0.8),
+            ),
+          );
+        }
+        const r = await fetch(`/api/menu/products/${id}/image`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "x-csrf-token": s.csrf,
+            "x-gm-operation-id": crypto.randomUUID(),
+          },
+          body: new Blob(parts),
+        });
+        return { status: r.status, body: await r.json() };
+      },
+      { id, png: png.toString("base64") },
+    );
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    return result.body.image as { id: string; w: number; h: number };
+  }
+  const image = await upload(guacamole.id, pngWithExif(400, 300));
+  const broken = await upload(ensalada.id, pngWithExif(300, 300));
+  // Guacamole's photo is held back until its box was measured: the box must not move when it
+  // lands. Ensalada's photo is refused from the first request (never cached): its tile keeps the
+  // initials and still sells.
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  await page.route(`**/media/${image.id}/**`, async (route) => {
+    await held;
+    await route.continue();
+  });
+  const refused: string[] = [];
+  await page.route(`**/media/${broken.id}/**`, (route) => {
+    refused.push(route.request().url());
+    return route.fulfill({ status: 404, body: "" });
+  });
+  try {
+    await page.getByRole("button", { name: "Operación", exact: true }).click();
+    await page.getByRole("button", { name: "Vender", exact: true }).click();
+    const grid = page.locator(".product-grid");
+    const tile = grid.getByRole("button", { name: /Guacamole/ });
+    const photo = tile.locator("img.product-photo");
+    await expect(photo).toHaveAttribute("loading", "lazy");
+    await expect(photo).toHaveAttribute("decoding", "async");
+    await expect(photo).toHaveAttribute("alt", "");
+    expect(session.access?.deviceKind ?? "terminal").toBe("terminal");
+    const before = await tile.boundingBox();
+    const art = await tile.locator(".product-art").boundingBox();
+    const plainArt = await grid
+      .getByRole("button", { name: /Bowl de la casa/ })
+      .locator(".product-art")
+      .boundingBox();
+    expect(art!.height).toBe(plainArt!.height);
+    release();
+    await expect
+      .poll(() =>
+        photo.evaluate(
+          (img: HTMLImageElement) => img.complete && img.naturalWidth,
+        ),
+      )
+      .toBeGreaterThan(0);
+    expect(await tile.boundingBox()).toEqual(before);
+    expect(await tile.locator(".product-art").boundingBox()).toEqual(art);
+    // A photo the server cannot serve: dropped once it fails, the initials stay, the tile sells.
+    const plain = grid.getByRole("button", { name: /Ensalada verde/ });
+    await plain.scrollIntoViewIfNeeded();
+    await expect.poll(() => refused.length).toBeGreaterThan(0);
+    await expect(plain.locator("img")).toHaveCount(0);
+    await expect(plain.locator(".dish-mark")).toHaveText("Ev");
+    await plain.click();
+    await expect(plain).toContainText("1 en la orden");
+    // «Pantalla»: this device turns grid photos off (and back on).
+    await page.getByRole("button", { name: "Pantalla", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Pantalla" });
+    const box = dialog.getByLabel("Fotos en la cuadrícula de venta");
+    await expect(box).toBeChecked();
+    await axe(page);
+    await box.uncheck();
+    await dialog.getByRole("button", { name: "Listo", exact: true }).click();
+    await expect(tile.locator("img")).toHaveCount(0);
+    expect((await tile.locator(".product-art").boundingBox())!.height).toBe(
+      art!.height,
+    );
+    await page.getByRole("button", { name: "Pantalla", exact: true }).click();
+    await dialog.getByLabel("Fotos en la cuadrícula de venta").check();
+    await dialog.getByRole("button", { name: "Listo", exact: true }).click();
+    await expect(photo).toHaveCount(1);
+  } finally {
+    await page.unroute(`**/media/${image.id}/**`).catch(() => {});
+    await page.unroute(`**/media/${broken.id}/**`).catch(() => {});
+    await page.evaluate(() => localStorage.removeItem("gm-display-settings"));
+    const fresh = await call(page, "/menu");
+    for (const id of [guacamole.id, ensalada.id]) {
+      const p = fresh.products.find((x: any) => x.id === id);
+      if (p.image)
+        await call(page, `/menu/products/${id}/image/remove`, {
+          operationId: uuid(),
+          expectedVersion: p.version,
+        });
+    }
+  }
+});

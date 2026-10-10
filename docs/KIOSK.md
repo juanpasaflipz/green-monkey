@@ -144,6 +144,16 @@ max-age=31536000, immutable`, ETag = the variant's sha256, `nosniff`, `default-s
 within the 10-minute cache). Web jobs: `media_purge` deletes the objects 7 days after removal;
 `media_stale` sweeps an upload that never finished (1 hour).
 
+**Where photos show.** The kiosk (cards, the product sheet's hero, suggestions), the QR menu
+(thumbnail) and Vender's selling grid; never receipts, comandas or reports. In Vender, **Pantalla**
+(the screen icon next to the printer) sets «Fotos en la cuadrícula de venta» for this device only
+(localStorage `gm-display-settings`): on by default on a shared terminal, off on a personal device
+(a phone). The photo sits inside the tile's fixed-size art box over the product's initials, loads
+lazily (`loading="lazy"`, `decoding="async"`, the 160 px thumbnail or the 480 px card by
+`srcset`), is decorative (`alt=""`: the tile's text names the product), and one that fails to load
+is dropped, leaving the initials: selling never waits on a photo. With `MENU_PHOTOS_ENABLED=false`
+`GET /api/catalog` carries no photos.
+
 **Importing photos from the previous system (critic R42/Q7, «Importar fotos»).** An in-app owner
 import replaces the support CLI (no support write path, no store credentials on an operator's
 machine). The operator downloads the old system's product photos into one folder and writes a

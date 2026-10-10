@@ -4,7 +4,6 @@ import { normalizePaymentAttempt } from "../../shared/offline-recovery";
 import { useEffect, useRef, useState } from "react";
 import {
   Search,
-  Plus,
   ArrowUpRight,
   ShoppingBag,
   Send,
@@ -12,7 +11,11 @@ import {
   Printer,
   SlidersHorizontal,
   Gift,
+  Monitor,
 } from "lucide-react";
+import { ProductArt } from "./ProductArt";
+import { DisplaySettingsDialog } from "./DisplaySettingsDialog";
+import { gridPhotosOn, useDisplaySettings } from "../display";
 import {
   listPrice,
   type Session,
@@ -212,6 +215,10 @@ export function Selling({
   /** The order whose note "Editar nota" is editing (cart or receipt). */
   const [noteFor, setNoteFor] = useState<Order | null>(null);
   const [printOpen, setPrintOpen] = useState(false);
+  // «Pantalla» (kiosk 039, §2.9): grid photos per device.
+  const [displayOpen, setDisplayOpen] = useState(false);
+  const [display] = useDisplaySettings();
+  const gridPhotos = gridPhotosOn(display, session.access?.deviceKind);
   /** The order whose open comandas can be reprinted after a note edit. */
   const [noteReprint, setNoteReprint] = useState<Order | null>(null);
   /** SVC-R2: one payment request at a time, from the tap until it settles. */
@@ -263,7 +270,10 @@ export function Selling({
    * The club's after-payment result (stamps, a completed card or a link failure), shown in the
    * receipt dialog of its order, where the cashier looks (LOYALTY-UX-3).
    */
-  const [clubResult, setClubResult] = useState<{ orderId: string; text: string } | null>(null);
+  const [clubResult, setClubResult] = useState<{
+    orderId: string;
+    text: string;
+  } | null>(null);
   const currentRef = useRef(current);
   currentRef.current = current;
   /** ACC-PR-2: the payment dialog and the receipt, as a late answer sees them. */
@@ -1645,6 +1655,14 @@ export function Selling({
           >
             <Printer size={18} />
           </Button>
+          <Button
+            variant="ghost"
+            className="round"
+            aria-label={t("menuDisplaySettings")}
+            onClick={() => setDisplayOpen(true)}
+          >
+            <Monitor size={18} />
+          </Button>
         </div>
       </div>
       <div className="service-tabs">
@@ -1682,7 +1700,9 @@ export function Selling({
                   <Gift size={14} aria-hidden="true" />{" "}
                   {loyalty.member.rewards === 1
                     ? t("loyaltyChipRewardOne")
-                    : fillText(t("loyaltyChipRewardMany"), { n: loyalty.member.rewards })}
+                    : fillText(t("loyaltyChipRewardMany"), {
+                        n: loyalty.member.rewards,
+                      })}
                 </strong>
               )}
               <button
@@ -2141,18 +2161,12 @@ export function Selling({
               key={p.id}
               onClick={() => (pickerNeeded(p) ? setPicker(p) : add(p))}
             >
-              <div className={`product-art art-${i % 4}`} aria-hidden="true">
-                <div className="dish-mark">
-                  {p.name[locale]
-                    .split(" ")
-                    .map((w) => w[0])
-                    .slice(0, 2)
-                    .join("")}
-                </div>
-                <span className="add-mark">
-                  <Plus size={18} />
-                </span>
-              </div>
+              <ProductArt
+                product={p}
+                locale={locale}
+                index={i}
+                photos={gridPhotos}
+              />
               <span className="product-category">{p.category[locale]}</span>
               <strong>{p.name[locale]}</strong>
               <span className="product-price">
@@ -2320,7 +2334,9 @@ export function Selling({
           locale={locale}
           onNext={reset}
           onBack={() => setReceipt(null)}
-          status={clubResult?.orderId === receipt.id ? clubResult.text : undefined}
+          status={
+            clubResult?.orderId === receipt.id ? clubResult.text : undefined
+          }
           label={offline.receiptProps(receipt)?.label}
           labelHint={offline.receiptProps(receipt)?.labelHint}
           printLabel={offline.receiptProps(receipt)?.printLabel}
@@ -2466,6 +2482,13 @@ export function Selling({
           locale={locale}
           scope="selling"
           close={() => setPrintOpen(false)}
+        />
+      )}
+      {displayOpen && (
+        <DisplaySettingsDialog
+          locale={locale}
+          deviceKind={session.access?.deviceKind}
+          close={() => setDisplayOpen(false)}
         />
       )}
     </div>

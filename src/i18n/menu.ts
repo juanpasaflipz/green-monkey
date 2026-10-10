@@ -105,6 +105,9 @@ export default defineArea({
     menuPhotoBrowser:
       "Este navegador no puede preparar la foto. Súbela desde Chrome o Edge.",
     menuPhotoSaveFirst: "Guarda el producto para agregarle una foto.",
+    menuDisplaySettings: "Pantalla",
+    menuGridPhotosHint:
+      "Solo en este dispositivo. Por omisión se ven en las terminales y no en los teléfonos; un producto sin foto muestra sus iniciales.",
     menuImportPhotos: "Importar fotos",
     menuImportTitle: "Importar fotos del sistema anterior",
     menuImportIntro:
@@ -445,6 +448,9 @@ export default defineArea({
     menuPhotoBrowser:
       "This browser can't prepare the photo. Upload it from Chrome or Edge.",
     menuPhotoSaveFirst: "Save the product to add a photo.",
+    menuDisplaySettings: "Display",
+    menuGridPhotosHint:
+      "On this device only. By default they show on terminals and not on phones; a product without a photo shows its initials.",
     menuImportPhotos: "Import photos",
     menuImportTitle: "Import photos from the previous system",
     menuImportIntro:

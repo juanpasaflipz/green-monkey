@@ -32,7 +32,6 @@ import {
   managers,
 } from "./auth.js";
 import {
-  catalog,
   getOrder,
   getOrders,
   createOrder,
@@ -43,6 +42,7 @@ import {
   stock,
 } from "./orders.js";
 import { saveProduct, saveEmployee, receive } from "./management.js";
+import { sellingCatalog } from "./menu-read.js";
 import { activeTables } from "./floor.js";
 import { previewImport } from "../shared/import.js";
 import { commitImport } from "./imports.js";
@@ -192,7 +192,7 @@ route("post", "/imports/preview", async (_tx, s, req) => {
 route("post", "/imports/commit", async (tx, s, req) =>
   commitImport(tx, s, req.body),
 );
-route("get", "/catalog", async (tx) => catalog(tx));
+route("get", "/catalog", async (tx) => sellingCatalog(tx));
 route("get", "/tables", async (tx) => activeTables(tx));
 route("get", "/orders", async (tx) => {
   // legacy: removed after one release (docs/SERVICE.md); new screens use /service/orders.

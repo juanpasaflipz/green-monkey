@@ -72,6 +72,7 @@ import {
 } from "../server/media.js";
 import { uploadBody } from "./fixtures/webp.js";
 import { kioskReport } from "../server/kiosk-report.js";
+import { sellingCatalog } from "../server/menu-read.js";
 import { LINK_HEADER, STATUS_HEADER } from "../shared/public-ordering.js";
 import { KIOSK_COOKIE, type KioskCheckoutView } from "../shared/kiosk.js";
 import type { SessionAccess } from "../shared/access.js";
@@ -1873,7 +1874,15 @@ try {
       { operationId: randomUUID(), productId: ids.agua },
       uploadBody(400, 300),
     );
+    const sold = async () =>
+      (await write(manager, (tx) => sellingCatalog(tx))).find(
+        (p) => p.id === ids.agua,
+      )!;
+    // Vender's grid (GET /api/catalog) carries the photo while photos are on…
+    assert.equal((await sold()).image?.id, r2.image!.id);
     process.env.MENU_PHOTOS_ENABLED = "false";
+    // …and none once they are off: the grid shows the initials tiles.
+    assert.equal((await sold()).image, undefined);
     assert.equal(
       (await fetch(`${origin}/media/${r2.image!.id}/thumb.webp`)).status,
       404,

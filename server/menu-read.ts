@@ -24,6 +24,16 @@ export async function catalog(tx: Tx): Promise<Product[]> {
   );
 }
 
+/**
+ * GET /api/catalog (Vender): the sellable catalog; with MENU_PHOTOS_ENABLED=false its products
+ * carry no photo, so the grid shows the initials tiles (kiosk 039, §2.9).
+ */
+export async function sellingCatalog(tx: Tx): Promise<Product[]> {
+  const products = await catalog(tx);
+  if (menuPhotosEnabled()) return products;
+  return products.map(({ image: _image, ...p }) => p as Product);
+}
+
 /** QR/kiosk catalog: no open-price products and no recipes, costs or fiscal data. */
 export async function publicCatalog(tx: Tx) {
   const photos = menuPhotosEnabled();
