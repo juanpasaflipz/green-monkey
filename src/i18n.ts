@@ -13,6 +13,7 @@ import account from "./i18n/account";
 import publicOrdering from "./i18n/public-ordering";
 import payments from "./i18n/payments";
 import loyalty from "./i18n/loyalty";
+import kiosk from "./i18n/kiosk";
 
 /** Area modules, merged after the base strings. */
 export const areas = {
@@ -30,6 +31,7 @@ export const areas = {
   // Wave 4 areas register in this order: payments, loyalty, kiosk (critic R29).
   payments,
   loyalty,
+  kiosk,
 };
 const base = {
   es: {
@@ -559,6 +561,7 @@ export const strings = {
     ...publicOrdering.es,
     ...payments.es,
     ...loyalty.es,
+    ...kiosk.es,
   },
   en: {
     ...base.en,
@@ -575,6 +578,7 @@ export const strings = {
     ...publicOrdering.en,
     ...payments.en,
     ...loyalty.en,
+    ...kiosk.en,
   },
 };
 export type Key = keyof typeof strings.es;
@@ -715,6 +719,7 @@ export const errorText: Record<string, readonly [string, string]> = {
   ...publicOrdering.errors,
   ...payments.errors,
   ...loyalty.errors,
+  ...kiosk.errors,
 };
 export function translateError(code: string, locale: Locale) {
   return errorText[code]?.[locale === "es" ? 0 : 1] ?? strings[locale].error;

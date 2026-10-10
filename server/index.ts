@@ -84,6 +84,9 @@ import * as paymentsRoutes from "./routes/payments.js";
 import { providerCapabilities } from "./payments/providers.js";
 import { configureWake } from "./payments/wake.js";
 import * as loyaltyRoutes from "./routes/loyalty.js";
+import * as kioskRoutes from "./routes/kiosk.js";
+import { mediaRoute } from "./media.js";
+import { publicLimiter } from "./public-limits.js";
 import { loyaltyCapability } from "./loyalty/settings.js";
 import {
   paymentRecoveryStatus,
@@ -502,6 +505,14 @@ publicOrderingRoutes.register({ app, sql, route });
 // Wave 4 authenticated routes, in order: payments, loyalty, kiosk (critic R31).
 paymentsRoutes.register({ app, sql, route });
 loyaltyRoutes.register({ app, sql, route });
+kioskRoutes.register({ app, sql, route });
+// kiosk (039): menu photos, same origin (no CSP change), outside /api and before the static and
+// SPA fallback; no session (the menu_media_lookup policy resolves the asset).
+app.get(
+  "/media/:assetId/:variant.webp",
+  publicLimiter("media", { limit: 600 }),
+  mediaRoute(sql),
+);
 app.use("/api", (_req, res) => res.status(404).json({ error: "not_found" }));
 if (process.env.NODE_ENV === "production") {
   // Diner pages (public ordering 032) stay out of search indexes; helmet

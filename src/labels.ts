@@ -163,6 +163,17 @@ const operations: Record<string, Key> = {
   "loyalty.order.relinked": "loyaltyOpRelinked",
   "loyalty.reward.redeemed": "loyaltyOpRedeemed",
   "loyalty.import.page": "loyaltyOpImport",
+  // kiosk (039, critic R27)
+  "kiosk.settings_saved": "kioskOpSettings",
+  "kiosk.station_saved": "kioskOpStation",
+  "kiosk.pairing_created": "kioskOpPairing",
+  "kiosk.device_paired": "kioskOpPaired",
+  "kiosk.device_revoked": "kioskOpRevoked",
+  "kiosk.charge_started": "kioskOpCharge",
+  "kiosk.settle_refused": "kioskOpRefused",
+  "menu.media.attached": "kioskOpMediaAttached",
+  "menu.media.removed": "kioskOpMediaRemoved",
+  "menu.suggestions_saved": "kioskOpSuggestions",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",

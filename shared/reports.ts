@@ -322,6 +322,8 @@ export const AUDIT_GROUPS = {
   reports: ["reports."],
   // loyalty (038, R27): settings, members (ARCO included), links, rewards and the import.
   loyalty: ["loyalty."],
+  // kiosk (039, R27): settings, stations, tablets, charges; menu.media.* is in "menu".
+  kiosk: ["kiosk."],
 } as const;
 export type AuditGroup = keyof typeof AUDIT_GROUPS;
 export const AUDIT_GROUP_KEYS = Object.keys(AUDIT_GROUPS) as [

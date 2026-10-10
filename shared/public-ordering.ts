@@ -97,7 +97,10 @@ export const publicLineInput = z
     options: z.array(id).max(30).default([]),
   })
   .strict();
-export type PublicLine = z.infer<typeof publicLineInput>;
+/** A held line; a kiosk line added from a suggestion keeps origin (039, report attribution). */
+export type PublicLine = z.infer<typeof publicLineInput> & {
+  origin?: "suggestion";
+};
 /**
  * Characters a diner's name never carries: C0 controls, DEL, C1 controls and
  * the bidi overrides and isolates (U+202A-U+202E, U+2066-U+2069). A NUL would
@@ -377,6 +380,22 @@ export type InboxHold = {
     paid: number;
     waiterName: string;
   }[];
+  /**
+   * Kiosk (039): the hold's card charge at the kiosk. charging: payments may still take it (no
+   * accept or reject; "Pagando en el kiosco…"); review: approved but the order could not be
+   * created (the red card, resolved through payments' resolve dialog, critic R13).
+   */
+  kiosk?: null | {
+    paymentChoice: "card" | "counter" | null;
+    charging: boolean;
+    review: null | {
+      attemptId: string;
+      code: string;
+      amount: number;
+      terminalLabel: string;
+      provider: "mercadopago" | "clip";
+    };
+  };
 };
 export type InboxResponse = {
   available: boolean;
@@ -465,6 +484,6 @@ function sorted(value: unknown): unknown {
   return value;
 }
 /** JSON with sorted keys, for request_hash (stable across key order). */
-export function canonicalRequest(p: PublicOrderInput): string {
+export function canonicalRequest(p: PublicOrderInput | object): string {
   return JSON.stringify(sorted(p));
 }

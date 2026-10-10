@@ -1,6 +1,7 @@
 // Catalog reads used by selling, offline sync and QR/kiosk. Leaf module.
 import type { Tx } from "./db.js";
 import type { Product } from "../shared/domain.js";
+import { menuPhotosEnabled } from "./kiosk-config.js";
 
 /**
  * Sellable catalog (archived products excluded) in POS order. payments (037, LD-72): each
@@ -25,6 +26,7 @@ export async function catalog(tx: Tx): Promise<Product[]> {
 
 /** QR/kiosk catalog: no open-price products and no recipes, costs or fiscal data. */
 export async function publicCatalog(tx: Tx) {
+  const photos = menuPhotosEnabled();
   return (
     (await catalog(tx))
       .filter((p) => !p.openAmount)
@@ -36,9 +38,12 @@ export async function publicCatalog(tx: Tx) {
           cost: _cost,
           fiscal: _fiscal,
           platformPrices: _platformPrices,
+          image,
           ...p
         }) => ({
           ...p,
+          // kiosk (039): MENU_PHOTOS_ENABLED=false stops rendering photos everywhere.
+          ...(image && photos ? { image } : {}),
           groups: p.groups.map((g) => ({
             ...g,
             options: g.options.map(

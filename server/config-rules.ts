@@ -29,6 +29,7 @@ import { cfdiWebConfig, cfdiWorkerConfig } from "./cfdi/config.js";
 import { isProductionEnv } from "./production.js";
 import { fiscalWebConfig } from "./fiscal-config.js";
 import { accountWebConfig, accountWorkerConfig } from "./account-config.js";
+import { kioskWebConfig } from "./kiosk-config.js";
 import { paymentsWorkerConfig } from "./payments/config.js";
 
 export { ConfigError };
@@ -86,6 +87,9 @@ export const forbiddenCredentials: Record<ProcessKind, readonly string[]> = {
     "SUPPORT_DATABASE_URL",
     "SIGNING_KEYS",
     "JWT_SECRET",
+    // kiosk (039, critic R36): the web is the only process holding the media token.
+    "MEDIA_R2_ACCESS_KEY_ID",
+    "MEDIA_R2_SECRET_ACCESS_KEY",
   ],
 };
 
@@ -281,6 +285,7 @@ export function loadConfig(
     fiscalWebConfig(env, appEnv);
     cfdiWebConfig(env, appEnv);
     accountWebConfig(env, appEnv);
+    kioskWebConfig(env, appEnv);
     // <<< area config checks: web
     return Object.freeze({
       ...common,

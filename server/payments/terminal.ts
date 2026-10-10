@@ -613,8 +613,21 @@ export async function settleAttempt(
   manager?: ManagerRecord,
 ): Promise<SettleOutcome> {
   const [head] =
-    await tx`select settle_operation_id from payment_attempts where id=${attemptId}`;
+    await tx`select settle_operation_id,target from payment_attempts where id=${attemptId}`;
   if (!head) throw new DomainError("payments_attempt_not_found", 404);
+  // Another target's settler takes its own settle sequence (kiosk 039: the hold and its checkout
+  // before the attempt, ARCHITECTURE row 58); a domain error here rolls the caller back.
+  if (head.target !== "order") {
+    const settler = settlers.get(head.target as string);
+    if (!settler) throw new DomainError("payments_not_approved", 409);
+    return settler.settle(
+      tx,
+      s,
+      await readAttempt(tx, attemptId),
+      via,
+      manager,
+    );
+  }
   const key = head.settle_operation_id as string;
   await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + key},0))`;
   const [prior] =
@@ -660,6 +673,8 @@ export async function applyApprovedAttempt(
   attempt: Pick<AttemptRow, "id">,
   via: SettleVia,
   manager?: ManagerRecord,
+  /** A kiosk hold's settle (039): the order its accept just created for the hold. */
+  holdOrderId?: string,
 ): Promise<SettleOutcome> {
   // LO-2c: the caller already holds the row (a free re-lock); read it fresh under the lock.
   const a = await lockAttempt(tx, attempt.id);
@@ -670,9 +685,17 @@ export async function applyApprovedAttempt(
     : via === "retry"
       ? ["review", "approved"]
       : ["approved"];
-  if (!allowed.includes(a.state) || a.target !== "order" || !a.order_id)
+  // An order target names its order; a kiosk hold target gets one (holdOrderId) and 037's trigger
+  // lets order_id go null -> value only in the update that settles it.
+  const hold = a.target === "kiosk_hold";
+  if (
+    !allowed.includes(a.state) ||
+    (hold
+      ? !holdOrderId || a.order_id !== null
+      : a.target !== "order" || !a.order_id)
+  )
     throw new DomainError("payments_not_approved", 409);
-  const orderId = a.order_id;
+  const orderId = hold ? holdOrderId! : a.order_id!;
   const [row] =
     await tx`select id,state,check_state from orders where id=${orderId} for update`;
   if (!row) throw new DomainError("not_found", 404);
@@ -771,13 +794,14 @@ export async function applyApprovedAttempt(
       values(${s.tenantId},${orderId},${tenderId},${allocation.lineId},${allocation.unit},${allocation.amount})`;
   if (manager)
     await tx`update payment_attempts set state='settled',tender_id=${tenderId},settled_at=now(),
+        order_id=${orderId},
         provider_reference=coalesce(provider_reference,${reference}),resolution='recorded',
         resolution_note=${manager.note},resolved_by=${manager.employeeId},resolved_at=now(),
         version=version+1
       where id=${a.id}`;
   else
     await tx`update payment_attempts set state='settled',tender_id=${tenderId},settled_at=now(),
-        version=version+1
+        order_id=${orderId},version=version+1
       where id=${a.id}`;
   await event(tx, s, a.id, "settled", manager?.employeeId ?? null, {
     tenderId,
