@@ -268,6 +268,21 @@ async function pairKiosk(page: Page, kiosk: Page, s: Setup) {
   await setup.getByRole("button", { name: "Cerrar" }).first().click();
 }
 
+async function goToOrders(page: Page) {
+  await page.getByRole("button", { name: "Operación", exact: true }).click();
+  await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+}
+const holdCard = (page: Page, label: string) =>
+  page.locator(".hold-card").filter({ hasText: label });
+/** KIOSK-UX-20: axe at the tablet's portrait size and the step's primary buttons on screen. */
+async function portraitStep(kiosk: Page, primary: string[]) {
+  await axe(kiosk);
+  for (const name of primary)
+    await expect(
+      kiosk.getByRole("button", { name, exact: true }),
+    ).toBeInViewport({ ratio: 1 });
+}
+
 /** The demo "Taco de asada" asks for one choice (a radio) in the choice picker. */
 async function addTaco(kiosk: Page) {
   await kiosk.getByRole("button", { name: /^Taco de asada/ }).click();
@@ -325,6 +340,21 @@ test("kiosk card payment: pairing from Configuración, para aquí, the card appr
         name: /Sigue las instrucciones en la terminal/,
       }),
     ).toBeVisible();
+    // KIOSK-UX-20: while the guest pays, the inbox card says so and offers no accept or reject.
+    const chargingLabel = (
+      await kiosk.locator(".kiosk-code-small").innerText()
+    ).trim();
+    await goToOrders(page);
+    const chargingCard = holdCard(page, chargingLabel);
+    await expect(chargingCard).toContainText("Pagando en el kiosco…");
+    for (const name of [
+      "Aceptar y enviar a cocina",
+      "Cobrar y enviar a cocina",
+      "Rechazar",
+    ])
+      await expect(
+        chargingCard.getByRole("button", { name, exact: true }),
+      ).toHaveCount(0);
     await fake("approve", {
       device: CLIP_DEVICE,
       brand: "visa",
@@ -339,28 +369,61 @@ test("kiosk card payment: pairing from Configuración, para aquí, the card appr
     await expect(kiosk.locator(".kiosk-paid")).toContainText("Folio");
     await axe(kiosk);
     // KIOSK-UX-08: the code, every QR and «Nuevo pedido» fit the screen in both orientations.
-    const paidFits = async () => {
-      await expect(kiosk.locator(".kiosk-paid .kiosk-code")).toBeInViewport({
+    const paidFits = async (k: Page) => {
+      await expect(k.locator(".kiosk-paid .kiosk-code")).toBeInViewport({
         ratio: 1,
       });
-      for (const qr of await kiosk.locator(".kiosk-paid .kiosk-qr").all())
+      for (const qr of await k.locator(".kiosk-paid .kiosk-qr").all())
         await expect(qr).toBeInViewport({ ratio: 1 });
       await expect(
-        kiosk.getByRole("button", { name: "Nuevo pedido", exact: true }),
+        k.getByRole("button", { name: "Nuevo pedido", exact: true }),
       ).toBeInViewport({ ratio: 1 });
     };
-    await paidFits();
+    await paidFits(kiosk);
     // The welcome tap asked for fullscreen (§2.11); leave it to resize the window.
     await kiosk.evaluate(() =>
       document.fullscreenElement ? document.exitFullscreen() : undefined,
     );
     await kiosk.setViewportSize({ width: 800, height: 1280 });
     await axe(kiosk);
-    await paidFits();
+    await paidFits(kiosk);
     // The order reached the kitchen as "Comer aquí" (dine in, no table), paid by the card.
     const label = (
       await kiosk.locator(".kiosk-paid .kiosk-code").innerText()
     ).trim();
+    expect(label).toBe(chargingLabel);
+    const orders = await call<
+      {
+        name: string | null;
+        mode: string;
+        tableId: string | null;
+        total: number;
+        paid: number;
+        tenders: {
+          method: string;
+          attempt_id: string | null;
+          card_last4: string | null;
+        }[];
+      }[]
+    >(page, "/orders");
+    const order = orders.find(
+      (o) => o.name === label || !!o.name?.startsWith(`${label} · `),
+    );
+    expect(order, `the order of ${label}`).toBeTruthy();
+    expect(order!.mode).toBe("dine_in");
+    expect(order!.tableId).toBeNull();
+    expect(order!.paid).toBe(order!.total);
+    expect(order!.tenders).toHaveLength(1);
+    expect(order!.tenders[0].method).toBe("external");
+    expect(order!.tenders[0].attempt_id).toBeTruthy();
+    expect(order!.tenders[0].card_last4).toBe("4242");
+    await page
+      .getByRole("button", { name: "Cocina", exact: true })
+      .first()
+      .click();
+    await expect(
+      page.locator(".kitchen-ticket").filter({ hasText: label }).first(),
+    ).toContainText("Comer aquí");
     await kiosk
       .getByRole("button", { name: "Nuevo pedido", exact: true })
       .click();
@@ -368,21 +431,32 @@ test("kiosk card payment: pairing from Configuración, para aquí, the card appr
       kiosk.getByRole("button", { name: "Toca para ordenar", exact: true }),
     ).toBeVisible();
 
-    // A decline: "Pagar en caja", then the cashier accepts it from Órdenes.
+    // A decline: "Pagar en caja", then the cashier accepts it from Órdenes. In portrait, the
+    // tablet's other orientation: axe and the primary buttons on screen at each step (KIOSK-UX-20).
     await kiosk.evaluate(() =>
       document.fullscreenElement ? document.exitFullscreen() : undefined,
     );
-    await kiosk.setViewportSize({ width: 1280, height: 800 });
     await kiosk
       .getByRole("button", { name: "Toca para ordenar", exact: true })
       .click();
+    await kiosk.evaluate(() =>
+      document.fullscreenElement ? document.exitFullscreen() : undefined,
+    );
     await addTaco(kiosk);
     await kiosk
       .getByRole("button", { name: "Enviar pedido", exact: true })
       .click();
+    await expect(
+      kiosk.getByRole("heading", { name: "¿Para aquí o para llevar?" }),
+    ).toBeVisible();
+    await portraitStep(kiosk, ["Para aquí", "Para llevar"]);
     await kiosk
       .getByRole("button", { name: "Para llevar", exact: true })
       .click();
+    await expect(
+      kiosk.getByRole("heading", { name: "¿Cómo quieres pagar?" }),
+    ).toBeVisible();
+    await portraitStep(kiosk, ["Pagar aquí con tarjeta"]);
     await kiosk
       .getByRole("button", { name: "Pagar aquí con tarjeta", exact: true })
       .click();
@@ -391,12 +465,14 @@ test("kiosk card payment: pairing from Configuración, para aquí, the card appr
         name: /Sigue las instrucciones en la terminal/,
       }),
     ).toBeVisible();
+    await portraitStep(kiosk, []);
     await fake("decline", { device: CLIP_DEVICE });
     await expect(
       kiosk.getByRole("heading", {
         name: "Tu tarjeta no pasó. Puedes intentar de nuevo o pagar en caja.",
       }),
     ).toBeVisible({ timeout: 60_000 });
+    await portraitStep(kiosk, ["Intentar de nuevo", "Pagar en caja"]);
     await kiosk
       .getByRole("button", { name: "Pagar en caja", exact: true })
       .click();
@@ -407,18 +483,27 @@ test("kiosk card payment: pairing from Configuración, para aquí, the card appr
     const hold = inbox.holds.find((h: any) => h.label === counterLabel);
     expect(hold.kiosk.paymentChoice).toBe("counter");
     expect(hold.kiosk.charging).toBe(false);
-    // The cashier collects it and sends it to the kitchen (the inbox is left as it was found).
-    const accepted = await call(page, `/ordering/holds/${hold.id}/accept`, {
-      operationId: uuid(),
-      target: { kind: "new" },
-      payment: {
-        method: "cash",
-        amount: hold.currentTotal,
-        tip: 0,
-        received: hold.currentTotal,
-      },
-    });
-    expect(accepted.hold.state).toBe("accepted");
+    // The cashier collects it from its card in Órdenes and sends it to the kitchen.
+    await goToOrders(page);
+    const counterCard = holdCard(page, counterLabel);
+    await counterCard
+      .getByRole("button", { name: "Cobrar y enviar a cocina", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Confirmar cobro", exact: true })
+      .click();
+    await expect(page.locator(".receipt")).toContainText("Cobrado");
+    await expect(page.locator(".receipt")).toContainText(counterLabel);
+    await page
+      .getByRole("button", { name: /Siguiente|Listo/ })
+      .first()
+      .click();
+    await expect(counterCard).toHaveCount(0);
+    const after = await call(page, "/ordering/inbox");
+    expect(
+      after.holds.some((h: any) => h.label === counterLabel),
+      "the counter hold left the inbox",
+    ).toBe(false);
     expect(label).not.toBe(counterLabel);
   } finally {
     await tearDown(page, s).catch((e) =>
@@ -428,11 +513,11 @@ test("kiosk card payment: pairing from Configuración, para aquí, the card appr
   }
 });
 
-test("menu photos: an owner uploads a photo (its EXIF never reaches the server) and a description; the QR menu shows them; axe at 390 and 768", async ({
+test("menu photos @cross: the owner uploads through «Subir foto» (no EXIF reaches the server) and types both descriptions; the QR menu shows the photo and reads the description, the kiosk sheet shows the hero and the description; axe at 390 and 768", async ({
   page,
   context,
 }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(150_000);
   await login(page);
   const caps = await call(page, "/capabilities");
   test.skip(
@@ -441,91 +526,133 @@ test("menu photos: an owner uploads a photo (its EXIF never reaches the server) 
   );
   const menu = await call(page, "/menu");
   const product = menu.products.find((p: any) => p.name.es === "Taco de asada");
+  const before = {
+    es: product.description?.es ?? "",
+    en: product.description?.en ?? "",
+  };
+  const descEs = `Tortilla de maíz, asada y cebolla. Contiene gluten ${tag()}.`;
+  const descEn = `Corn tortilla, grilled beef and onion ${tag()}.`;
+  // KIOSK-UX-21: the upload ProductPhotoField sends (the real component: checkOriginal, the
+  // canvas re-encode, WebP or, on WebKit, JPEG), captured on its way out.
   const uploads: Buffer[] = [];
   page.on("request", (r) => {
-    if (r.url().endsWith(`/api/menu/products/${product.id}/image`))
+    if (
+      r.method() === "POST" &&
+      r.url().endsWith(`/api/menu/products/${product.id}/image`)
+    )
       uploads.push(r.postDataBuffer() ?? Buffer.alloc(0));
   });
-  // The editor's photo field (the input is visually hidden behind "Subir foto").
-  await page.evaluate(() => window.scrollTo(0, 0));
-  await page
-    .getByRole("button", { name: "Menú e inventario", exact: true })
-    .click()
-    .catch(() => {});
-  const result = await page.evaluate(
-    async ({ id, png }) => {
-      const s = await (await fetch("/api/session")).json();
-      const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
-      const bitmap = await createImageBitmap(
-        new Blob([bytes], { type: "image/png" }),
-      );
-      const parts: Blob[] = [];
-      for (const width of [160, 480, 1200]) {
-        const w = Math.min(width, bitmap.width);
-        const h = Math.round((bitmap.height * w) / bitmap.width);
-        const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
-        canvas.getContext("2d")!.drawImage(bitmap, 0, 0, w, h);
-        parts.push(
-          await new Promise<Blob>((r) =>
-            canvas.toBlob((b) => r(b!), "image/webp", 0.8),
-          ),
-        );
-      }
-      const r = await fetch(`/api/menu/products/${id}/image`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/octet-stream",
-          "x-csrf-token": s.csrf,
-          "x-gm-operation-id": crypto.randomUUID(),
-        },
-        body: new Blob(parts),
-      });
-      return { status: r.status, body: await r.json() };
-    },
-    { id: product.id, png: pngWithExif(640, 480).toString("base64") },
+  const openEditor = async () => {
+    await page
+      .getByRole("button", { name: "Menú e inventario", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Editar Taco de asada", exact: true })
+      .click();
+    const editor = page.getByRole("dialog", { name: "Editar producto" });
+    await expect(editor).toBeVisible();
+    return editor;
+  };
+  let editor = await openEditor();
+  await expect(
+    editor.getByRole("button", { name: "Subir foto", exact: true }),
+  ).toBeVisible();
+  await editor.getByLabel("Subir foto", { exact: true }).setInputFiles({
+    name: "taco-con-gps.png",
+    mimeType: "image/png",
+    buffer: pngWithExif(640, 480),
+  });
+  const preview = editor.locator("img.menu-photo-preview");
+  await expect(preview).toHaveAttribute(
+    "src",
+    /^\/media\/[0-9a-f-]{36}\/card\.(webp|jpg)$/,
+    { timeout: 60_000 },
   );
-  expect(result.status, JSON.stringify(result.body)).toBe(200);
-  const image = result.body.image;
-  expect(image.w).toBe(640);
-  const served = await page.request.get(`/media/${image.id}/card.webp`);
+  const [, assetId, ext] = /^\/media\/([0-9a-f-]{36})\/card\.(webp|jpg)$/.exec(
+    (await preview.getAttribute("src"))!,
+  )!;
+  await expect(
+    editor.getByRole("button", { name: "Cambiar foto", exact: true }),
+  ).toBeVisible();
+  expect(uploads.length).toBeGreaterThan(0);
+  for (const u of uploads) expect(u.includes(Buffer.from("GPS"))).toBe(false);
+  await editor
+    .getByLabel("Descripción (español)", { exact: true })
+    .fill(descEs);
+  await editor
+    .getByLabel("Descripción (inglés, opcional)", { exact: true })
+    .fill(descEn);
+  await editor.getByRole("button", { name: "Guardar", exact: true }).click();
+  await expect(editor).toHaveCount(0);
+  const served = await page.request.get(`/media/${assetId}/card.${ext}`);
   expect(served.status()).toBe(200);
   expect(served.headers()["cache-control"]).toBe(
     "public, max-age=31536000, immutable",
   );
   expect((await served.body()).includes(Buffer.from("GPS"))).toBe(false);
-  for (const u of uploads) expect(u.includes(Buffer.from("GPS"))).toBe(false);
-  const link = await call(page, "/ordering/links", {
+  const qrLink = await call(page, "/ordering/links", {
     kind: "counter",
     label: "Fotos " + tag(),
+  });
+  const kioskLink = await call(page, "/ordering/links", {
+    kind: "kiosk",
+    label: "Fotos kiosco " + tag(),
   });
   try {
     for (const width of [390, 768]) {
       const qr = await context.newPage();
       await qr.setViewportSize({ width, height: 900 });
-      await qr.goto(link.path);
+      await qr.goto(qrLink.path);
       const button = qr.getByRole("button", { name: /^Taco de asada/ });
       await expect(button.locator("img")).toHaveAttribute(
         "src",
-        `/media/${image.id}/thumb.webp`,
+        `/media/${assetId}/thumb.${ext}`,
       );
+      await expect(button).toContainText(descEs);
+      // KIOSK-UX-18: the description is the button's accessible description.
+      await expect(button).toHaveAccessibleDescription(descEs);
       await axe(qr);
       await qr.close();
     }
+    // The kiosk (unpaired: it still shows the menu) opens the product's sheet: the hero and the
+    // description.
+    const kiosk = await context.newPage();
+    await kiosk.setViewportSize({ width: 1280, height: 800 });
+    await kiosk.goto(kioskLink.path);
+    await kiosk.getByRole("button", { name: /^Taco de asada/ }).click();
+    const sheet = kiosk.getByRole("dialog").filter({ hasText: descEs });
+    await expect(sheet).toBeVisible();
+    await expect(sheet.locator("img.kiosk-photo")).toHaveAttribute(
+      "src",
+      `/media/${assetId}/hero.${ext}`,
+    );
+    await axe(kiosk);
+    await kiosk.close();
   } finally {
     const fresh = await call(page, "/menu");
     const p = fresh.products.find((x: any) => x.id === product.id);
-    await call(page, `/menu/products/${product.id}/image/remove`, {
-      operationId: uuid(),
-      expectedVersion: p.version,
-    });
-    await call(page, `/ordering/links/${link.id}/revoke`, {
-      operationId: uuid(),
-    });
+    if (p.image)
+      await call(page, `/menu/products/${product.id}/image/remove`, {
+        operationId: uuid(),
+        expectedVersion: p.version,
+      });
+    // The descriptions go back to what they were, through the same editor.
+    editor = await openEditor();
+    await editor
+      .getByLabel("Descripción (español)", { exact: true })
+      .fill(before.es);
+    await editor
+      .getByLabel("Descripción (inglés, opcional)", { exact: true })
+      .fill(before.en);
+    await editor.getByRole("button", { name: "Guardar", exact: true }).click();
+    await expect(editor).toHaveCount(0);
+    for (const l of [qrLink, kioskLink])
+      await call(page, `/ordering/links/${l.id}/revoke`, {
+        operationId: uuid(),
+      });
   }
   expect(
-    (await page.request.get(`/media/${image.id}/card.webp`)).status(),
+    (await page.request.get(`/media/${assetId}/card.${ext}`)).status(),
   ).toBe(404);
 });
 
