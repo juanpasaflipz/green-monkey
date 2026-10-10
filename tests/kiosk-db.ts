@@ -2501,6 +2501,178 @@ try {
     assert.equal(rows[0].detail.items[1].name, "Pozole inventado");
   });
 
+  await test("K26. money taken while the hold was valid settles with no clock limit (critic R12; KIOSK-MONEY-1, KIOSK-CONCURRENCY-1): a review from an 86 retried 6 minutes after expiry, an unknown MP charge read as paid with no amount and recorded by a manager 6 minutes after expiry, and an approval 20 minutes after a charge that started 1 minute before expiry all become the order", async () => {
+    const NOTE = "Cobro revisado en la app del proveedor";
+    const freshManager = session(A, ids.manager, "manager", ids.till, {});
+    /**
+     * The named-trigger pattern (LD-12), as in K24: the hold expired `ago` ago (created_at moves
+     * by the same span, inside public_order_holds_window) and its charge started `before` ahead of
+     * that expiry.
+     */
+    async function expiredAgo(
+      holdId: string,
+      attemptId: string,
+      ago: string,
+      before: string,
+    ) {
+      await admin.begin(async (tx) => {
+        await tx`select set_config('app.tenant_id', ${A}, true)`;
+        await tx`alter table public_order_holds disable trigger public_order_holds_transition`;
+        await tx`alter table payment_attempts disable trigger payment_attempts_transition`;
+        await tx`update public_order_holds
+          set created_at=created_at-(expires_at-(now()-${ago}::interval)),
+            expires_at=now()-${ago}::interval
+          where tenant_id=${A} and id=${holdId}`;
+        await tx`update payment_attempts a set created_at=h.expires_at-${before}::interval
+          from public_order_holds h
+          where a.tenant_id=${A} and a.id=${attemptId} and h.tenant_id=a.tenant_id and h.id=a.hold_id`;
+        await tx`alter table payment_attempts enable trigger payment_attempts_transition`;
+        await tx`alter table public_order_holds enable trigger public_order_holds_transition`;
+      });
+      // Past lockHold's PAID_ACCEPT_GRACE_SECONDS (300 s), with the charge started in time.
+      const x = await one(
+        A,
+        (tx) => tx`select h.expires_at+interval '300 seconds'<now() as past_grace,
+            a.created_at<h.expires_at as in_time
+          from payment_attempts a join public_order_holds h on h.tenant_id=a.tenant_id and h.id=a.hold_id
+          where a.id=${attemptId}`,
+      );
+      assert.deepEqual({ ...x }, { past_grace: true, in_time: true });
+    }
+    async function becameTheOrder(
+      key: string,
+      attemptId: string,
+      total: number,
+    ) {
+      const h = await holdOf(key);
+      assert.equal(h.state, "accepted");
+      assert.equal(h.decision_source, "kiosk");
+      const a = await one(
+        A,
+        (tx) =>
+          tx`select state,order_id,tender_id from payment_attempts where id=${attemptId}`,
+      );
+      assert.equal(a.state, "settled");
+      assert.equal(a.order_id, h.order_id);
+      assert.ok(a.tender_id, "the charge is the order's card tender");
+      const o = await write(cashier, (tx) => getOrder(tx, a.order_id));
+      assert.equal(o.paid, total);
+    }
+    // Every active kiosk slot is taken (PUBLIC_LIMITS.activeLinks): K24's link is done.
+    const spent = await one(
+      A,
+      (tx) =>
+        tx`select id from public_links where kind='kiosk' and label=${"Resolver " + run} and revoked_at is null`,
+    );
+    await write(manager, (tx) =>
+      revokeLink(tx, manager, spent.id, { operationId: randomUUID() }),
+    );
+    const clip = await newKiosk("R12 Clip " + run);
+    await configure(clip, terminals.clip);
+    await pair(clip);
+
+    // (a) An 86 between the start and the approval: review. Restocked, the operator's retry 6
+    // minutes after the hold expired creates the order.
+    const r = await order(clip, [line(ids.papas)], 3500);
+    assert.equal((await charge(clip, r.key)).status, 200);
+    const ra = await attemptOf(r.key);
+    await drive(ra.id, ["pending"]);
+    await setAvailable(ids.papas, false);
+    fake.approve(fake.chargeFor(ra.id)!.id, { ...TEST_CARD });
+    assert.equal(await drive(ra.id, ["review", "settled"]), "review");
+    await setAvailable(ids.papas, true);
+    await expiredAgo(
+      (await holdOf(r.key)).id,
+      ra.id,
+      "6 minutes",
+      "9 minutes",
+    );
+    const retried = await write(cashier, (tx) =>
+      resolveAttempt(tx, cashier, ra.id, {
+        operationId: randomUUID(),
+        outcome: "retry",
+      }),
+    );
+    assert.equal(retried.attempt.state, "settled");
+    await becameTheOrder(r.key, ra.id, 3500);
+
+    // (c) The reader takes the request late: the approval arrives 20 minutes after a charge that
+    // started 1 minute before the hold expired, and the settle job creates the order.
+    const l = await order(clip, [line(ids.taco)], 4500);
+    assert.equal((await charge(clip, l.key)).status, 200);
+    const la = await attemptOf(l.key);
+    await drive(la.id, ["pending"]);
+    await expiredAgo(
+      (await holdOf(l.key)).id,
+      la.id,
+      "19 minutes",
+      "1 minute",
+    );
+    fake.approve(fake.chargeFor(la.id)!.id, { ...TEST_CARD });
+    assert.equal(await drive(la.id, ["settled", "review"]), "settled");
+    await becameTheOrder(l.key, la.id, 4500);
+
+    // Its link slot for the MP kiosk (PUBLIC_LIMITS.activeLinks).
+    await write(manager, (tx) =>
+      revokeLink(tx, manager, clip.linkId, { operationId: randomUUID() }),
+    );
+
+    // (b) An MP charge unknown past its deadline, then read as processed with no usable amount
+    // (payments_provider_mismatch): a manager's record 6 minutes after the hold expired settles.
+    const mp = await newKiosk("R12 MP " + run);
+    await configure(mp, terminals.mp);
+    await pair(mp);
+    const u = await order(mp, [line(ids.taco)], 4500);
+    assert.equal((await charge(mp, u.key)).status, 200);
+    const ua = await attemptOf(u.key);
+    await drive(ua.id, ["pending"]);
+    await asOwner(
+      A,
+      (tx) =>
+        tx`update payment_attempts set sent_at=now()-interval '13 minutes' where id=${ua.id}`,
+    );
+    fake.rateLimitReads(1);
+    await round(A);
+    const timedOut = await attemptOf(u.key);
+    assert.deepEqual(
+      [timedOut.state, timedOut.error_code],
+      ["unknown", "payments_attempt_timeout"],
+    );
+    fake.approve(fake.chargeFor(ua.id)!.id, {
+      ...TEST_CARD,
+      amountless: true,
+    });
+    await write(cashier, (tx) =>
+      resolveAttempt(tx, cashier, ua.id, {
+        operationId: randomUUID(),
+        outcome: "check",
+      }),
+    );
+    await round(A);
+    const mismatch = await attemptOf(u.key);
+    assert.deepEqual(
+      [mismatch.state, mismatch.provider_status, mismatch.error_code],
+      ["unknown", "processed/accredited", "payments_provider_mismatch"],
+    );
+    await expiredAgo(
+      (await holdOf(u.key)).id,
+      ua.id,
+      "6 minutes",
+      "9 minutes",
+    );
+    const recorded = await write(freshManager, (tx) =>
+      resolveAttempt(tx, freshManager, ua.id, {
+        operationId: randomUUID(),
+        outcome: "record",
+        note: NOTE,
+        confirmed: true,
+        charged: mismatch.amount + mismatch.tip,
+      }),
+    );
+    assert.equal(recorded.attempt.state, "settled");
+    await becameTheOrder(u.key, ua.id, 4500);
+  });
+
   assert.deepEqual(dead, [], "no job went dead");
   assert.deepEqual(fake.violations, [], "the fake saw no contract breach");
 } catch (e) {
