@@ -524,6 +524,20 @@ export function idleDeadline(
     : { warnAt: KIOSK_IDLE.warnAfterMs, resetAt: KIOSK_IDLE.resetAfterMs };
 }
 
+/**
+ * The «Soy del club» keypad's display (KIOSK-UX-16): one dot per digit typed, the last four shown
+ * from the fourth digit on (never the number in full), and a count of 10: "••• · 3/10",
+ * "•••••• 45 21 · 10/10". Every tap changes it.
+ */
+export function typedPhoneDisplay(digits: string): string {
+  const d = digits.replace(/\D/g, "").slice(0, 10);
+  const shown =
+    d.length < 4
+      ? "•".repeat(d.length)
+      : `${"•".repeat(d.length - 4)} ${d.slice(-4, -2)} ${d.slice(-2)}`.trim();
+  return `${shown} · ${d.length}/10`;
+}
+
 /** "•• •• •• 45 21": the last four digits of the typed phone, never echoed in full. */
 export function maskTypedPhone(digits: string): string {
   const d = digits.replace(/\D/g, "");

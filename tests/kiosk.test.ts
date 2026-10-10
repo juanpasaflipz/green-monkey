@@ -15,6 +15,7 @@ import {
   kioskSettleCode,
   maskTypedPhone,
   payButtons,
+  typedPhoneDisplay,
   pickSuggestions,
   stationCardOff,
   suggestionsInput,
@@ -1243,5 +1244,25 @@ describe("the kiosk speaks every checkout step and every cart addition (KIOSK-UX
     expect(second.trim()).toBe(first);
     expect(addedAnnouncement("Taco de asada", "es", second)).toBe(first);
     expect(addedAnnouncement("Churros", "en", "")).toBe("Added: Churros");
+  });
+});
+
+describe("«Soy del club»: every keypad tap shows on screen (KIOSK-UX-16)", () => {
+  it("one dot per digit and a count of 10; the last four from the fourth digit; never the number in full", () => {
+    const shown = ["5", "55", "555", "5555", "55555"].map(typedPhoneDisplay);
+    expect(shown).toEqual([
+      "• · 1/10",
+      "•• · 2/10",
+      "••• · 3/10",
+      "55 55 · 4/10",
+      "• 55 55 · 5/10",
+    ]);
+    expect(new Set(shown).size).toBe(shown.length);
+    expect(typedPhoneDisplay("5555550123")).toBe("•••••• 01 23 · 10/10");
+    expect(typedPhoneDisplay("5555550123")).not.toContain("555555");
+  });
+  it("the backspace key's name is «Borrar» / «Delete» (the keypad is a portaled dialog: the browser suite reads it)", () => {
+    expect(strings.es.kioskKeyDelete).toBe("Borrar");
+    expect(strings.en.kioskKeyDelete).toBe("Delete");
   });
 });

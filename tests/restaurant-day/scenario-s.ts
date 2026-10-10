@@ -193,7 +193,8 @@ export const CLUB_S = {
     firstName: "Rodrigo",
     /** 555-0100 to 555-0199 are the numbers reserved for fiction. */
     phone: "5555550147",
-    masked: "•• •• •• 01 47",
+    /** The keypad's display after ten digits (KIOSK-UX-16: one dot per digit, the last four). */
+    masked: "•••••• 01 47 · 10/10",
   },
 };
 

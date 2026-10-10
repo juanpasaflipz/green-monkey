@@ -237,7 +237,7 @@ export const EXPECTED_S = {
   },
   club: {
     before: "0 de 6 sellos",
-    masked: "•• •• •• 01 47",
+    masked: "•••••• 01 47 · 10/10",
     stampsAfter: 1,
   },
 };

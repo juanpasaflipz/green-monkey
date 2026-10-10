@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import type { Locale } from "../../../../shared/domain";
 import type { KioskMemberResult } from "../../../../shared/kiosk";
-import { maskTypedPhone } from "../../../../shared/kiosk";
+import { typedPhoneDisplay } from "../../../../shared/kiosk";
 import { strings } from "../../../i18n";
 import { Button, Modal } from "../../../components/ui";
 import { fill } from "../../menu/format";
@@ -192,7 +192,7 @@ export function KioskMember({
   return (
     <Modal title={t.kioskMember} close={onClose} closeLabel={t.kioskSetupClose}>
       <p aria-live="polite" className="kiosk-phone">
-        {digits ? maskTypedPhone(digits) : t.kioskMemberPhone}
+        {digits ? typedPhoneDisplay(digits) : t.kioskMemberPhone}
       </p>
       <div
         className="kiosk-keypad"
@@ -213,8 +213,9 @@ export function KioskMember({
           className="kiosk-key"
           onClick={() => setDigits((x) => x.slice(0, -1))}
           disabled={busy}
+          aria-label={t.kioskKeyDelete}
         >
-          ⌫
+          <span aria-hidden="true">⌫</span>
         </Button>
       </div>
       <Button
