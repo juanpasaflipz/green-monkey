@@ -71,7 +71,8 @@ policy override) stay. The server enforces it: a plain accept answers `public_pa
 (`inboxActions` in shared/public-ordering.ts; kiosk DB K29). The inbox's `kiosk` block is null for a
 pre-039 kiosk link's hold (no checkout), a counter hold as before. While a charge is live the inbox
 card reads "Pagando en el kiosco…" with no accept or reject (`kiosk_charge_in_progress`, critic R12;
-the diner's cancel is refused too); a manager may "Cancelar cobro en curso". A charge approved without an order is a red card first in the inbox:
+the diner's cancel is refused too); a manager may tap "Cancelar cobro" on that card. A charge
+approved without an order is a red card first in the inbox:
 "Resolver cobro del kiosco" opens payments' resolve dialog (critic R13):
 
 - **Reintentar** (any operator, no PIN): once the order fits again (the product is back, the price
@@ -92,7 +93,9 @@ A drawer with a live or review kiosk charge cannot close (payments' `payments_at
 
 ## 3. Settings (Configuración → Pedidos en línea → Kiosco de autoservicio)
 
-Owners and managers; saves ask for a recent PIN (unpairing does not).
+Owners and managers; saves ask for a recent PIN (unpairing does not). The settings save with
+«Guardar configuración», the cart list with «Guardar sugerencias», each station with «Guardar
+estación»; a save keeps the other parts' unsaved edits (KIOSK-UX-12).
 
 | Setting | Values | Default |
 |---|---|---|
@@ -100,7 +103,7 @@ Owners and managers; saves ask for a recent PIN (unpairing does not).
 | Preguntar para aquí o para llevar | on/off (off: every kiosk order is takeaway) | on |
 | Sugerencias | on/off | on |
 | Club en el kiosco | on/off (only when the club is on) | off |
-| Per station | Terminal (integrated readers only), Caja que recibe los cobros, Vincular tableta, Desvincular, last heartbeat and build | — |
+| Per station | Terminal (integrated readers only), Caja que recibe los cobros («Guardar estación»), Vincular tableta (with a paired tablet: «Reemplazar tableta», asks first), Desvincular (asks first), last heartbeat and build | — |
 | Sugerencias del carrito | up to 6 products | none ("Lo más pedido a esta hora" then) |
 
 Each station row says why the kiosk takes no card (KIOSK-UX-10, critic R14), with
@@ -118,7 +121,10 @@ producto" (up to 4).
 
 1. Uninstall the pos-lite kiosk APK. Update Chrome. Screen lock with a PIN; turn on app pinning with
    "Solicitar PIN para quitar la fijación"; battery protection on the charger.
-2. In Green Monkey: add the kiosk link (Códigos), set its terminal and till, **Vincular tableta**.
+2. In Green Monkey: add the kiosk link (Códigos); on its station set the terminal and the till and
+   tap **Guardar estación**; set «Cobro en el kiosco» to **Tarjeta en el kiosco o en caja** and tap
+   **Guardar configuración** (recent PIN; the default «Solo en caja» offers only «Pagar en caja»);
+   then **Vincular tableta**.
 3. On the tablet: open the kiosk link, long-press the restaurant name for 3 seconds →
    "Configurar este kiosco" → type the code → "Kiosco vinculado: Entrada".
 4. Tap "Toca para ordenar" once (fullscreen), then pin Chrome from Recientes. After a power cut,
@@ -270,7 +276,8 @@ and why.
 | `PUBLIC_ORDERING_ENABLED` (031) | on | The kiosk closes; charge settlement continues (payments' jobs). |
 
 Invalid values refuse to start (`kiosk_flag_invalid`, `media_flag_invalid`, `media_store_invalid`).
-`MEDIA_R2_*` are forbidden on the worker (critic R36). `.railway/railway.ts` declares the kiosk's
+`MEDIA_R2_ACCESS_KEY_ID` and `MEDIA_R2_SECRET_ACCESS_KEY` are forbidden on the worker
+(`forbiddenCredentials.worker` in server/config-rules.ts, critic R36). `.railway/railway.ts` declares the kiosk's
 variables on web only (KIOSK-OPS-1). The two switches are `preserve()` on staging and `"false"` in
 production until the field checks and the R44a device rehearsal pass; switching production on is
 one reviewed change there plus a deploy (RUNBOOK "Kiosk self-checkout and menu photos").
@@ -291,7 +298,8 @@ removal.
 ## 10. Reports
 
 Finanzas › Kiosco: kiosk orders, paid at the kiosk vs at the counter, charges approved without an
-order (open, resolved, refunded), and suggestion lines accepted with their amount.
+order («Cobros por resolver», «Cobros resueltos», and of those «Reembolsados en el proveedor» with
+the «Importe reembolsado»), and suggestion lines accepted with their amount.
 
 - «Pedidos del kiosco»: kiosk orders with a total above zero, by the order's business date, as
   Por canal counts them.

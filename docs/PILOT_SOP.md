@@ -719,7 +719,10 @@ kiosco de POS Lite (paso 1).
   de POS Lite, actualiza Chrome, pon bloqueo de pantalla con PIN y activa «Fijar aplicaciones» con
   «Solicitar PIN para quitar la fijación». En Green Monkey: Configuración › Pedidos en línea ›
   Agregar kiosco; en «Kiosco de autoservicio» elige la **Terminal** y la **Caja que recibe los
-  cobros**, y toca **Vincular tableta**: sale un código de 8 dígitos que vence en 10 minutos. En
+  cobros** y toca **Guardar estación**. Arriba, en «Cobro en el kiosco», elige **Tarjeta en el
+  kiosco o en caja** y toca **Guardar configuración** (pide tu PIN): viene en «Solo en caja» y así
+  el kiosco solo ofrece «Pagar en caja». Luego toca **Vincular tableta**: sale un código de 8
+  dígitos que vence en 10 minutos. En
   la tableta abre el enlace del kiosco, deja presionado 3 segundos el nombre del restaurante,
   escribe el código y toca **Vincular**. Toca «Toca para ordenar» una vez (pantalla completa) y
   fija Chrome desde Recientes.
@@ -732,7 +735,7 @@ kiosco de POS Lite (paso 1).
   «Comer aquí» o «Para llevar». El cobro queda en la caja que recibe los cobros, en su terminal.
 - **«Pagar en caja».** El cliente trae su código (K-14): cóbralo y acéptalo en Órdenes como hoy.
 - **«Pagando en el kiosco…».** Ese pedido no se puede aceptar ni rechazar mientras el cliente paga.
-  Si se quedó atorado, un gerente toca **Cancelar cobro en curso**.
+  Si se quedó atorado, un gerente toca **Cancelar cobro** en esa tarjeta.
 - **Tarjeta roja «pagó … y no se pudo enviar a cocina».** El cliente pagó pero un producto se
   acabó o cambió de precio. Toca **Resolver cobro del kiosco**:
   - si el producto ya está y el precio es el cobrado, cualquiera toca **Reintentar** y se crea el
@@ -745,7 +748,9 @@ kiosco de POS Lite (paso 1).
     Mercado Pago, escribe la nota con el folio del reembolso y confirma; el pedido queda rechazado.
 
   La caja no cierra mientras haya una tarjeta roja.
-- **Cerrar el día.** El corte muestra «Del kiosco: n · $» bajo cada terminal: todos los cobros
+- **Cerrar el día.** Al cerrar la caja que recibe los cobros, escribe también el «Total del lote»
+  de la terminal del kiosco (el cierre de lote en su app), como el de cualquier otra terminal que
+  cobró en esa caja. El corte muestra «Del kiosco: n · $» bajo cada terminal: todos los cobros
   que no son efectivo de pedidos del kiosco en esa caja, también una tarjeta cobrada en el
   mostrador por un pedido del kiosco. En Finanzas › Kiosco, «Pagados en el kiosco» cuenta los
   pedidos que se cobraron con la tarjeta en el kiosco. «Pagados en caja» cuenta los que se
