@@ -61,6 +61,7 @@ export default defineArea({
     kioskNewOrder: "Nuevo pedido",
     kioskPriceChanged:
       "Cambiaron los precios o la disponibilidad. Revisa tu pedido.",
+    kioskOrderExpired: "Tu pedido venció. Vuelve a enviarlo.",
     kioskStillThere: "¿Sigues ahí?",
     kioskStillThereBody: "El pedido se borrará en {seconds} s.",
     kioskImHere: "Sigo aquí",
@@ -234,6 +235,7 @@ export default defineArea({
     kioskNewOrder: "New order",
     kioskPriceChanged:
       "Prices or availability changed. Please check your order.",
+    kioskOrderExpired: "Your order expired. Please send it again.",
     kioskStillThere: "Are you still there?",
     kioskStillThereBody: "This order will be cleared in {seconds} s.",
     kioskImHere: "I'm still here",

@@ -514,7 +514,9 @@ export async function kioskSubmit(
 
 /**
  * POST /api/public/kiosk/counter: "Pagar en caja". The hold becomes a normal inbox card under the
- * counter policy. Refused while a card attempt may still be taken (kiosk_charge_pending).
+ * counter policy. Refused while a card attempt may still be taken (kiosk_charge_pending), and
+ * once the hold expired (KV-FIXES-7): the inbox drops it and staff cannot accept it, so the guest
+ * sends the order again instead of queueing with a code nobody can find.
  */
 export async function kioskCounter(
   tx: Tx,
@@ -525,6 +527,7 @@ export async function kioskCounter(
   if (h.state !== "pending") return checkoutView(tx, h, c);
   const live = await liveAttemptForHold(tx, h.id);
   if (live) throw new DomainError("kiosk_charge_pending", 409);
+  if (h.expired) throw new DomainError("public_order_expired", 409);
   if (c.payment_choice !== "counter") {
     await tx`update kiosk_checkouts set payment_choice='counter',updated_at=now() where hold_id=${h.id}`;
     c.payment_choice = "counter";

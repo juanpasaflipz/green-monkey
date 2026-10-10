@@ -1147,6 +1147,10 @@ try {
     // A replay of the same operation id answers the same attempt; a new one while live is refused.
     const replay = await charge(main, o.key, op);
     assert.equal(replay.status, 200);
+    // KV-FIXES-2: the kiosk replays a start whose answer it lost and follows what this says.
+    assert.equal(replay.body.payment.state, "pending");
+    assert.equal(replay.body.payment.amount, 12500);
+    assert.equal(replay.body.payment.attempts, 1);
     assert.equal((await holdOf(o.key)).attempt_count, 1);
     assert.equal(
       (await charge(main, o.key)).body.error,
@@ -3401,6 +3405,17 @@ try {
     await age(h7.id, "1 second");
     await rejects(claim(h7.id), "public_order_expired");
     assert.equal((await holdOf(o7.key)).payment_choice, null);
+    // KV-FIXES-7: «Pagar en caja» on an expired hold is refused (the inbox no longer shows it):
+    // the kiosk sends the guest back to the cart instead of to the counter with a lost code.
+    const late7 = await call("POST", "/kiosk/counter", {
+      link: k.link,
+      tablet: k.tablet,
+      body: { statusKey: o7.key },
+    });
+    assert.equal(late7.status, 409, JSON.stringify(late7.body));
+    assert.equal(late7.body.error, "public_order_expired");
+    assert.equal((await holdOf(o7.key)).payment_choice, null);
+    assert.equal(await inboxCard(h7.id), undefined);
     await write(manager, (tx) =>
       revokeLink(tx, manager, k.linkId, { operationId: randomUUID() }),
     );

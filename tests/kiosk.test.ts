@@ -47,9 +47,12 @@ import {
   orderColumns,
 } from "../src/features/reports/csv";
 import {
+  CHARGE_REPLAYS,
   afterCancel,
   cancelsOnReset,
+  chargeFailure,
   checkoutIdle,
+  exitRefusal,
   memberLookupOpen,
   stepAnnouncement,
   stepFor,
@@ -342,6 +345,60 @@ describe("the checkout's next step while charging", () => {
     );
     expect(stepFor(view({ state: "pending" }), "charging")).toBe(null);
     expect(stepFor(view({ state: "approved" }), "charging")).toBe(null);
+    // KV-FIXES-2: a start that never became an attempt goes back to the pay screen.
+    expect(stepFor(view({ state: "none" }), "charging")).toBe("pay");
+    expect(stepFor(view({ state: "none" }), "still")).toBe("pay");
+  });
+
+  it("KV-FIXES-2: a lost answer to «Pagar con tarjeta» replays the same operation, then follows the charge; only the server's refusal is «terminal no disponible»", () => {
+    for (const code of [
+      "network_unavailable",
+      "request_timeout",
+      "server_unavailable",
+    ]) {
+      for (let replays = 0; replays < CHARGE_REPLAYS; replays += 1)
+        expect(chargeFailure(code, true, replays), code).toBe("replay");
+      expect(chargeFailure(code, true, CHARGE_REPLAYS), code).toBe("follow");
+    }
+    expect(CHARGE_REPLAYS).toBeGreaterThan(0);
+    expect(chargeFailure("kiosk_charge_pending", false, 0)).toBe("follow");
+    expect(chargeFailure("public_price_changed", false, 0)).toBe("refused");
+    expect(chargeFailure("unavailable", false, 0)).toBe("refused");
+    expect(chargeFailure("public_order_expired", false, 0)).toBe("expired");
+    for (const code of [
+      "kiosk_card_unavailable",
+      "kiosk_terminal_busy",
+      "kiosk_charge_attempts",
+      "kiosk_till_closed",
+    ])
+      expect(chargeFailure(code, false, 0), code).toBe("unavailable");
+  });
+
+  it("KV-FIXES-2, KV-FIXES-1, KV-FIXES-7: «Pagar en caja» and «Cancelar pedido» follow a live charge, never reset over it", () => {
+    for (const action of ["counter", "cancel"] as const) {
+      expect(exitRefusal(action, "kiosk_charge_pending", false)).toBe("follow");
+      expect(exitRefusal(action, "kiosk_charge_in_progress", false)).toBe(
+        "follow",
+      );
+      expect(exitRefusal(action, "kiosk_hold_at_counter", false)).toBe(
+        "counter",
+      );
+      // A lost answer: the guest stays and may try again.
+      expect(exitRefusal(action, "network_unavailable", true)).toBe("stay");
+      expect(exitRefusal(action, "kiosk_charge_in_progress", true)).toBe(
+        "stay",
+      );
+    }
+    expect(exitRefusal("counter", "public_order_expired", false)).toBe(
+      "expired",
+    );
+    expect(exitRefusal("cancel", "public_order_expired", false)).toBe("reset");
+    expect(exitRefusal("cancel", "public_order_not_pending", false)).toBe(
+      "reset",
+    );
+    expect(exitRefusal("counter", "kiosk_device_required", false)).toBe(
+      "stay",
+    );
   });
 
   it("the terminal screens' exits follow payments' cancel rules (KIOSK-UX-03)", () => {
@@ -1288,7 +1345,11 @@ describe("the terminal screens' own clock is the 5-minute cap the idle rules pro
   it("charging asks to cancel at 3 min; «sigue procesando» sends the guest to the counter 2 min later: off the terminal screens within chargeSuspendMaxMs", () => {
     expect(terminalWaitAction("charging", KIOSK_IDLE.chargeTimeoutMs - 1, false)).toBeNull();
     expect(terminalWaitAction("charging", KIOSK_IDLE.chargeTimeoutMs, false)).toBe("cancel");
-    expect(terminalWaitAction("charging", KIOSK_IDLE.chargeTimeoutMs * 2, true)).toBeNull();
+    expect(terminalWaitAction("charging", KIOSK_IDLE.chargeSuspendMaxMs - 1, true)).toBeNull();
+    // KV-FIXES-4: a cancel answered "already final" keeps the charging screen for the next sync;
+    // with the syncs failing, the cap still sends the guest to the counter.
+    expect(terminalWaitAction("charging", KIOSK_IDLE.chargeSuspendMaxMs, true)).toBe("askCounter");
+    expect(terminalWaitAction("charging", KIOSK_IDLE.chargeTimeoutMs * 2, true)).toBe("askCounter");
     expect(terminalWaitAction("still", KIOSK_IDLE.inProgressExtraMs - 1, true)).toBeNull();
     expect(terminalWaitAction("still", KIOSK_IDLE.inProgressExtraMs, true)).toBe("askCounter");
     for (const step of ["pay", "declined", "paid", "askCounter"] as KioskStep[])
@@ -1313,6 +1374,22 @@ describe("the terminal screens' own clock is the 5-minute cap the idle rules pro
       idleDeadline("charging", { cartEmpty: false }).resetAt!,
     );
     expect(t).toBe(KIOSK_IDLE.chargeTimeoutMs + KIOSK_IDLE.inProgressExtraMs);
+    // KV-FIXES-4: the cancel answered "already final" (the charging screen stays for the next
+    // sync) and every sync fails: the guest still reaches the counter screen within the cap.
+    step = "charging";
+    cancelled = false;
+    t = 0;
+    while (step !== "askCounter" && t <= 10 * 60_000) {
+      t += KIOSK_IDLE.pollMs;
+      const action = terminalWaitAction(step, t, cancelled);
+      if (action === "cancel") cancelled = true;
+      else if (action === "askCounter") step = "askCounter";
+    }
+    expect(step).toBe("askCounter");
+    expect(t).toBe(KIOSK_IDLE.chargeSuspendMaxMs);
+    expect(t).toBeLessThanOrEqual(
+      idleDeadline("charging", { cartEmpty: false }).resetAt!,
+    );
   });
 });
 
