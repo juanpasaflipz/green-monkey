@@ -615,7 +615,11 @@ outside the repository. **Yours:** take the offline copy of `CREDENTIAL_ENCRYPTI
   `railway.ts` says.
 - **Counsel.** The kiosk's club lookup shows counts and a masked phone only (no name, no
   enrolment, critic R21); the tablet stores one binding cookie and no IP. Counsel confirms the
-  restaurant's privacy notice covers the club lookup at a public screen (LD-3 list).
+  restaurant's privacy notice covers the club lookup at a public screen (LD-3 list), and reviews
+  the kiosk lines of the platform documents' version `2026-10-11` (KIOSK-OPS-2): the `gm_kiosk`
+  cookie in privacy §9 and the self-service tablets category in DPA §2, and Cloudflare's scope
+  widened to backups and menu photos in privacy §5 and DPA §6
+  ([ACCOUNT_AND_LEGAL.md](ACCOUNT_AND_LEGAL.md)).
 - **Field checks (gate before the pilot uses the kiosk; kiosk spec §8.4), recorded here:**
   - On the Tab S10 FE: app pinning with PIN and the exit attempts (back, home and recents gestures,
     notification shade); fullscreen re-entry after the system bars return; the wake lock over

@@ -29,6 +29,7 @@ import {
   type LegalDocumentKey,
   type LegalDocumentMeta,
 } from "../shared/legal";
+import { KIOSK_COOKIE, KIOSK_COOKIE_MAX_AGE_SECONDS } from "../shared/kiosk";
 import { LEGAL_CI_ENV } from "./fixtures/legal-ci";
 
 const production = { NODE_ENV: "production" } as const;
@@ -748,6 +749,8 @@ describe("legal documents", () => {
           "1c37179a8ff9afd8f94966ecfdab0ec4b155075f169175f77bdef79911a960be",
         "2026-10-10":
           "3bd07765ed2c90e3852d6e9e92ab1f7d83dab005089f243e8fc006b9d18fe056",
+        "2026-10-11":
+          "a3e2d7b02ec5c5e73a9813179268760731dca59f5ee2cc6bea4c45d833c43364",
       },
       terms: {
         "2026-10-06":
@@ -762,6 +765,8 @@ describe("legal documents", () => {
           "06879bab89b58dbe2111c757ca0e22d29044ba2e8b5bd079205acb0962ecb999",
         "2026-10-10":
           "661b53ef49689fbdb606180b0ca401ecacf5aefead19a690af8462db60bde99e",
+        "2026-10-11":
+          "75954771549e4868e3613b39fe21040ec8581dee92fdd8a9cae2d491a780526e",
       },
       billing_consent: {
         "2026-10-06":
@@ -770,6 +775,8 @@ describe("legal documents", () => {
           "d13021aecb6b7a425b0fa80bd161b74707c090979fbe239c9c4cc456e2a3e68e",
         "2026-10-10":
           "e14afa1e67538213a45810489a62553a14e0f30fb9f1f962c66ec5122027e364",
+        "2026-10-11":
+          "4a45d035598bab58f36b1c864cebd39a3d4141830a97e735efc67c55d0698c40",
       },
     };
     for (const doc of Object.keys(PUBLISHED) as Array<keyof typeof PUBLISHED>) {
@@ -789,11 +796,63 @@ describe("legal documents", () => {
     expect(PUBLISHED.dpa["2026-10-09"]).toBe(
       "06879bab89b58dbe2111c757ca0e22d29044ba2e8b5bd079205acb0962ecb999",
     );
+    // PR #13 shipped 2026-10-10 to production (LD-95): its lines above are exactly the release's,
+    // and the kiosk text (KIOSK-OPS-2) is 2026-10-11, a later version of the privacy notice and the
+    // DPA that keeps the club's and the payments' paragraphs; the terms stay at 2026-10-10.
+    expect(PUBLISHED.privacy["2026-10-10"]).toBe(
+      "3bd07765ed2c90e3852d6e9e92ab1f7d83dab005089f243e8fc006b9d18fe056",
+    );
+    expect(PUBLISHED.dpa["2026-10-10"]).toBe(
+      "661b53ef49689fbdb606180b0ca401ecacf5aefead19a690af8462db60bde99e",
+    );
+    expect(PUBLISHED.terms["2026-10-10"]).toBe(
+      "7ff6ac52f5582ea2e83f48b43e5f9dc33ad7caeb30eab7351802065110fc669a",
+    );
+    expect(PUBLISHED.billing_consent["2026-10-10"]).toBe(
+      "e14afa1e67538213a45810489a62553a14e0f30fb9f1f962c66ec5122027e364",
+    );
     for (const doc of ["privacy", "dpa"] as const) {
       expect(LEGAL_DOCUMENTS[doc].version).not.toBe(CLUB_LEGAL_VERSION);
-      expect(LEGAL_DOCUMENTS[doc].previousVersion).toBe(CLUB_LEGAL_VERSION);
+      expect(LEGAL_DOCUMENTS[doc].version).not.toBe("2026-10-10");
+      expect(LEGAL_DOCUMENTS[doc].previousVersion).toBe("2026-10-10");
+      expect(materialChange(LEGAL_DOCUMENTS[doc]), doc).toBe(false);
     }
+    expect(LEGAL_DOCUMENTS.terms.version).toBe("2026-10-10");
     expect(LEGAL_DOCUMENTS.terms.previousVersion).toBe("2026-10-06");
+  });
+
+  it("the privacy notice and the DPA cover the kiosk: the gm_kiosk cookie, the tablet's data, Cloudflare's menu photos (critic R40, KIOSK-OPS-2)", () => {
+    const text = (doc: LegalDocumentKey, id: string, locale: "es" | "en") =>
+      LEGAL_CONTENT[doc][locale].sections
+        .find((x) => x.id === id)!
+        .paragraphs.join(" ");
+    for (const [locale, photos, days] of [
+      ["es", "fotos del menú", "400 días"],
+      ["en", "menu photo", "400 days"],
+    ] as const) {
+      // The cookie list presents itself as complete: every cookie the server sets is in it.
+      for (const cookie of [
+        "gm_session",
+        "gm_device",
+        "gm_account",
+        "gm_owner_browser",
+        "gm_google_flow",
+        KIOSK_COOKIE,
+      ])
+        expect(text("privacy", "cookies", locale), locale).toContain(cookie);
+      expect(text("privacy", "cookies", locale)).toContain(days);
+      expect(text("dpa", "objeto", locale)).toContain(KIOSK_COOKIE);
+      expect(text("dpa", "objeto", locale)).toContain(days);
+      for (const [doc, id] of [
+        ["privacy", "encargados-transferencias"],
+        ["dpa", "subencargados"],
+      ] as const)
+        expect(text(doc, id, locale), `${doc} ${locale}`).toMatch(
+          new RegExp(`Cloudflare \\([^)]*${photos}[^)]*\\)`),
+        );
+    }
+    // 400 days is the cookie's real lifetime.
+    expect(KIOSK_COOKIE_MAX_AGE_SECONDS).toBe(400 * 86_400);
   });
 
   it("legalContentHash is stable and changes with content", () => {

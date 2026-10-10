@@ -82,7 +82,7 @@ export const privacyContent: LegalDocumentContent = {
         id: "encargados-transferencias",
         title: "5. Encargados y transferencias",
         paragraphs: [
-          "Para prestar el servicio usamos proveedores que tratan datos por nuestra cuenta como personas encargadas, sin que ello sea una transferencia: Google (inicio de sesión), Stripe (pagos de la suscripción), Neon (base de datos), Railway (hospedaje), Cloudflare (almacenamiento cifrado de los respaldos), GitHub (ejecución automatizada de los respaldos) y, solo cuando un restaurante activa la facturación electrónica, Facturapi (timbrado de CFDI a través de un proveedor autorizado de certificación y envío del CFDI por correo). Algunos pueden ubicarse fuera de México.",
+          "Para prestar el servicio usamos proveedores que tratan datos por nuestra cuenta como personas encargadas, sin que ello sea una transferencia: Google (inicio de sesión), Stripe (pagos de la suscripción), Neon (base de datos), Railway (hospedaje), Cloudflare (almacenamiento cifrado de los respaldos y almacenamiento de las fotos del menú), GitHub (ejecución automatizada de los respaldos) y, solo cuando un restaurante activa la facturación electrónica, Facturapi (timbrado de CFDI a través de un proveedor autorizado de certificación y envío del CFDI por correo). Algunos pueden ubicarse fuera de México.",
           "Solo transferimos datos en los supuestos del artículo 36, como una orden de autoridad competente o un requerimiento legal; esas transferencias no requieren tu consentimiento (artículos 35 y 36).",
           "Los datos de los socios del club de lealtad de un restaurante se guardan con los mismos proveedores de base de datos, hospedaje y respaldos (Neon, Railway, Cloudflare y GitHub); el club no agrega proveedores ni transferencias.",
         ],
@@ -117,7 +117,7 @@ export const privacyContent: LegalDocumentContent = {
         id: "cookies",
         title: "9. Cookies y almacenamiento local",
         paragraphs: [
-          "Usamos solo cookies técnicas necesarias para el funcionamiento y la seguridad: gm_session, gm_device, gm_account, gm_owner_browser y gm_google_flow. El punto de venta guarda en el navegador (localStorage e IndexedDB) las ventas sin conexión y tus preferencias.",
+          "Usamos solo cookies técnicas necesarias para el funcionamiento y la seguridad: gm_session, gm_device, gm_account, gm_owner_browser y gm_google_flow y, en las tabletas de autoservicio (kiosco) que un restaurante empareja, gm_kiosk, que vincula la tableta con el restaurante hasta por 400 días o hasta que el restaurante la desempareja. El punto de venta guarda en el navegador (localStorage e IndexedDB) las ventas sin conexión y tus preferencias.",
           "No usamos herramientas de analítica ni publicidad de terceros.",
         ],
       },
@@ -202,7 +202,7 @@ export const privacyContent: LegalDocumentContent = {
         id: "encargados-transferencias",
         title: "5. Processors and transfers",
         paragraphs: [
-          "To provide the service we use providers that process data on our behalf as processors, which is not a transfer: Google (sign-in), Stripe (subscription payments), Neon (database), Railway (hosting), Cloudflare (encrypted backup storage), GitHub (automated backup runs) and, only when a restaurant enables electronic invoicing, Facturapi (CFDI stamping through an authorized certification provider and CFDI delivery by email). Some may be located outside Mexico.",
+          "To provide the service we use providers that process data on our behalf as processors, which is not a transfer: Google (sign-in), Stripe (subscription payments), Neon (database), Railway (hosting), Cloudflare (encrypted backup storage and menu photo storage), GitHub (automated backup runs) and, only when a restaurant enables electronic invoicing, Facturapi (CFDI stamping through an authorized certification provider and CFDI delivery by email). Some may be located outside Mexico.",
           "We transfer data only in the cases of article 36, such as an order from a competent authority or a legal requirement; those transfers do not require your consent (articles 35 and 36).",
           "A restaurant's loyalty club members' data is kept with the same database, hosting and backup providers (Neon, Railway, Cloudflare and GitHub); the club adds no providers and no transfers.",
         ],
@@ -237,7 +237,7 @@ export const privacyContent: LegalDocumentContent = {
         id: "cookies",
         title: "9. Cookies and local storage",
         paragraphs: [
-          "We use only technical cookies needed for operation and security: gm_session, gm_device, gm_account, gm_owner_browser and gm_google_flow. The point of sale stores offline sales and your preferences in the browser (localStorage and IndexedDB).",
+          "We use only technical cookies needed for operation and security: gm_session, gm_device, gm_account, gm_owner_browser and gm_google_flow and, on the self-service tablets (kiosks) a restaurant pairs, gm_kiosk, which binds the tablet to the restaurant for up to 400 days or until the restaurant unpairs it. The point of sale stores offline sales and your preferences in the browser (localStorage and IndexedDB).",
           "We use no third-party analytics or advertising tools.",
         ],
       },
