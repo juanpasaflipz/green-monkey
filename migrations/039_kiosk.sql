@@ -157,6 +157,14 @@ CREATE INDEX kiosk_checkouts_station_recent ON kiosk_checkouts (tenant_id, stati
 -- The retention pass blanks member references older than 30 days (server/ops/retention.ts).
 CREATE INDEX kiosk_checkouts_member_retention ON kiosk_checkouts (created_at)
   WHERE loyalty_member_id IS NOT NULL;
+-- KIOSK-CONCURRENCY-4: payment_attempts (037, frozen) has no index on operation_id, and hold_id is
+-- indexed only while an attempt is live. The kiosk's charge start finds a replay by operation_id
+-- (under the public-op lock, on every «Pagar aquí con tarjeta») and Finanzas › Kiosco joins
+-- attempts to holds: both read these instead of the tenant's five years of attempts.
+CREATE INDEX payment_attempts_kiosk_operation ON payment_attempts (tenant_id, operation_id)
+  WHERE origin = 'kiosk';
+CREATE INDEX payment_attempts_hold ON payment_attempts (tenant_id, hold_id)
+  WHERE hold_id IS NOT NULL;
 
 -- 6. Menu media: image assets (bytes in the object store, never in the database) ----------------
 -- variants = {thumb|card|hero: {w, h, bytes, sha256, type}}. Object keys

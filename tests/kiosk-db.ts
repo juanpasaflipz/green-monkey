@@ -772,6 +772,26 @@ try {
     );
   });
 
+  await test("K-index. the kiosk charge's replay lookup and Finanzas › Kiosco's attempts-by-hold read indexes, not the tenant's attempt history (KIOSK-CONCURRENCY-4)", async () => {
+    const plan = async (q: (tx: Tx) => Promise<any[]>) => {
+      const rows = await write(manager, async (tx) => {
+        await tx`set local enable_seqscan = off`;
+        return q(tx);
+      });
+      return JSON.stringify(rows[0]["QUERY PLAN"]);
+    };
+    const replay = await plan(
+      (tx) =>
+        tx`explain (format json) select hold_id from payment_attempts where operation_id=${randomUUID()} and origin='kiosk'`,
+    );
+    assert.match(replay, /"Index Name":"payment_attempts_kiosk_operation"/);
+    const byHold = await plan(
+      (tx) =>
+        tx`explain (format json) select a.state from payment_attempts a where a.hold_id=${randomUUID()}`,
+    );
+    assert.match(byHold, /"Index Name":"payment_attempts_hold"/);
+  });
+
   await test("K2. holds: a kiosk hold may be dine-in without a table; a counter QR hold may not; decision_source 'kiosk' only on an accepted kiosk hold", async () => {
     const counter = await write(manager, (tx) =>
       createLink(tx, manager, { kind: "counter", label: "Mostrador " + run }),
