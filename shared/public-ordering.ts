@@ -433,6 +433,8 @@ export type InboxHold = {
     /** The latest attempt (payments' charge), when one was started. */
     attemptId: string | null;
     charging: boolean;
+    /** The charge's outcome is unknown (payments' 'unknown'): resolved, not cancelled. */
+    unknown: boolean;
     review: null | {
       attemptId: string;
       code: string;
@@ -524,6 +526,22 @@ export function kioskInboxState(k: InboxHold["kiosk"]): KioskInboxState | null {
   if (k.charging) return "charging";
   if (k.paymentChoice === "counter") return "counter";
   return k.paymentChoice === "card" ? "card_unpaid" : "at_kiosk";
+}
+
+/**
+ * A manager's exits on a kiosk card the guest is paying («Pagando en el kiosco…»; pure,
+ * tests/kiosk.test.ts): «Cancelar cobro en curso» while payments may still withdraw the charge,
+ * and «Resolver cobro del kiosco» (record it or «No se cobró», payments' dialog) once its outcome
+ * is unknown (KIOSK-MONEY-4). Other roles get neither (kiosk §2.2; KIOSK-SECURITY-2).
+ */
+export function kioskChargingExits(
+  k: InboxHold["kiosk"],
+  role: string,
+): { cancel: boolean; resolve: boolean } {
+  const manager = role === "owner" || role === "manager";
+  if (!k?.charging || !k.attemptId || !manager)
+    return { cancel: false, resolve: false };
+  return { cancel: !k.unknown, resolve: k.unknown };
 }
 
 /**

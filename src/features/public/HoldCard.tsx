@@ -3,6 +3,7 @@ import type { Locale, Session } from "../../../shared/domain";
 import { ALLERGY_PATTERN } from "../../../shared/service";
 import {
   inboxActions,
+  kioskChargingExits,
   kioskInboxState,
   type InboxHold,
 } from "../../../shared/public-ordering";
@@ -488,15 +489,34 @@ function KioskHoldBlock({
         )}
       </div>
     );
+  const exits = kioskChargingExits(k, session.role);
   return (
     <div className="hold-kiosk" role="status">
       <p>{t.kioskCharging}</p>
-      {manager && k.attemptId && (
+      {exits.cancel && (
         <Button disabled={!online || busy} onClick={() => void cancel()}>
           {t.kioskCancelCharge}
         </Button>
       )}
+      {exits.resolve && (
+        <Button disabled={!online || busy} onClick={() => void open()}>
+          {t.kioskResolve}
+        </Button>
+      )}
       {error && <p className="error">{error}</p>}
+      {attempt && (
+        <ResolveDialog
+          attempt={attempt}
+          locale={locale}
+          money={money}
+          manager={manager}
+          onClose={() => setAttempt(null)}
+          onResolved={() => {
+            setAttempt(null);
+            onChanged();
+          }}
+        />
+      )}
     </div>
   );
 }

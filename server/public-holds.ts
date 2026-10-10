@@ -145,9 +145,11 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
     left join dining_tables t on t.tenant_id=h.tenant_id and t.id=h.table_id
     left join kiosk_checkouts k on k.tenant_id=h.tenant_id and k.hold_id=h.id
     left join payment_attempts a on a.tenant_id=k.tenant_id and a.id=k.attempt_id
-    where h.state='pending' and h.created_at>now()-interval '2 hours'
-      and (h.expires_at>now()
-        -- kiosk (039): money taken at the kiosk keeps its card in the inbox past expiry
+    where h.state='pending'
+      and ((h.created_at>now()-interval '2 hours' and h.expires_at>now())
+        -- kiosk (039): money taken at the kiosk keeps its card in the inbox past expiry, and
+        -- past the 2-hour window while the attempt is live or in review (KIOSK-MONEY-4, R13:
+        -- the red card stays while it blocks the receiving till's corte)
         or a.state in ('created','sending','pending','unknown','approved','review'))
     order by (a.state='review') desc nulls last,h.created_at,h.id limit 100`;
   // The recently expired count and the churning codes (ABUSE-2): diner
@@ -224,6 +226,7 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
                 "unknown",
                 "approved",
               ].includes(r.attempt_state),
+              unknown: r.attempt_state === "unknown",
               review:
                 r.attempt_state === "review"
                   ? {

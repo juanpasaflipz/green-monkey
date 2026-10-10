@@ -45,6 +45,7 @@ import {
   acceptInput,
   holdActions,
   inboxActions,
+  kioskChargingExits,
   kioskInboxState,
   rejectInput,
   type InboxHold,
@@ -530,6 +531,7 @@ describe("a kiosk hold in the staff inbox (KIOSK-UX-04, KIOSK-MONEY-3)", () => {
     paymentChoice: null,
     attemptId: null,
     charging: false,
+    unknown: false,
     review: null,
     ...o,
   });
@@ -540,6 +542,29 @@ describe("a kiosk hold in the staff inbox (KIOSK-UX-04, KIOSK-MONEY-3)", () => {
     terminalLabel: "Clip",
     provider: "clip" as const,
   };
+  it("KIOSK-MONEY-4: a manager cancels a charge payments may still withdraw and resolves an unknown one; other roles get neither", () => {
+    const live = kiosk({ paymentChoice: "card", attemptId: "a", charging: true });
+    const unknown = { ...live, unknown: true };
+    for (const role of ["owner", "manager"]) {
+      expect(kioskChargingExits(live, role), role).toEqual({
+        cancel: true,
+        resolve: false,
+      });
+      expect(kioskChargingExits(unknown, role), role).toEqual({
+        cancel: false,
+        resolve: true,
+      });
+      expect(kioskChargingExits(kiosk({ paymentChoice: "card" }), role)).toEqual(
+        { cancel: false, resolve: false },
+      );
+    }
+    for (const role of ["cashier", "server"])
+      for (const k of [live, unknown])
+        expect(kioskChargingExits(k, role), role).toEqual({
+          cancel: false,
+          resolve: false,
+        });
+  });
   it("only «Pagar en caja» keeps Accept; a guest still at the kiosk or an abandoned card checkout is pay-first", () => {
     expect(kioskInboxState(null)).toBe(null);
     expect(kioskInboxState(kiosk({ paymentChoice: "counter" }))).toBe(

@@ -1366,6 +1366,24 @@ try {
       ),
       "payments_attempt_unresolved",
     );
+    // KIOSK-MONEY-4: a review still open hours later (the hold placed at 12:10, the corte at
+    // 15:00) keeps its red card, past the inbox's 2-hour window. Hold and charge move back
+    // together, so the charge still started while the hold was valid.
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id', ${A}, true)`;
+      await tx`alter table public_order_holds disable trigger public_order_holds_transition`;
+      await tx`alter table payment_attempts disable trigger payment_attempts_transition`;
+      await tx`update payment_attempts set created_at=created_at-interval '3 hours'
+        where tenant_id=${A} and id=${a.id}`;
+      await tx`update public_order_holds
+        set created_at=created_at-interval '3 hours',expires_at=expires_at-interval '3 hours'
+        where tenant_id=${A} and id=${h.id}`;
+      await tx`alter table payment_attempts enable trigger payment_attempts_transition`;
+      await tx`alter table public_order_holds enable trigger public_order_holds_transition`;
+    });
+    const later = await write(cashier, (tx) => inbox(tx, cashier));
+    assert.equal(later.holds[0]?.id, h.id, "the red card stays after 2 hours");
+    assert.equal(later.holds[0].kiosk!.review!.code, "kiosk_settle_unavailable");
     // Retry while still 86'd: refused, still review.
     await rejects(
       write(cashier, (tx) =>
