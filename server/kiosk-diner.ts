@@ -457,10 +457,12 @@ export async function kioskSubmit(
       afterInsert: async (hold) => {
         // A pre-039 kiosk link has no station: its holds stay counter holds, as before 039.
         if (!st.station) return;
+        // A kiosk that cannot take the card sends the guest to the counter at once: the hold is
+        // a «Pagar en caja» hold from the start, a normal inbox card (KIOSK-UX-04).
         await tx`insert into kiosk_checkouts(tenant_id,hold_id,station_id,device_id,fire_operation_id,
-            loyalty_member_id)
+            loyalty_member_id,payment_choice)
           values(current_setting('app.tenant_id')::uuid,${hold.id},${st.station.id},${st.device?.id ?? null},
-            ${randomUUID()},${memberId})`;
+            ${randomUUID()},${memberId},${st.card ? null : "counter"})`;
       },
     },
   );

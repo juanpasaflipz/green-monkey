@@ -19,7 +19,10 @@ import {
   suggestionsInput,
   type KioskCheckoutView,
 } from "../shared/kiosk";
-import { stepFor } from "../src/features/public/kiosk/KioskCheckout";
+import {
+  cancelsOnReset,
+  stepFor,
+} from "../src/features/public/kiosk/KioskCheckout";
 import { cartInputs } from "../src/features/public/DinerApp";
 import { priceCart } from "../shared/service";
 import {
@@ -30,7 +33,14 @@ import {
 import kiosk from "../src/i18n/kiosk";
 import { resolveChoices } from "../src/features/payments/attempt-text";
 import type { AttemptView } from "../shared/payments";
-import { acceptInput, rejectInput } from "../shared/public-ordering";
+import {
+  acceptInput,
+  holdActions,
+  inboxActions,
+  kioskInboxState,
+  rejectInput,
+  type InboxHold,
+} from "../shared/public-ordering";
 
 const id = () => crypto.randomUUID();
 
@@ -223,6 +233,121 @@ describe("the checkout's next step while charging", () => {
     expect(stepFor(view({ state: "expired" }), "still")).toBe("askCounter");
     expect(stepFor(view({ state: "pending" }), "charging")).toBe(null);
     expect(stepFor(view({ state: "approved" }), "charging")).toBe(null);
+  });
+
+  it("a reset from the pay, declined or unavailable screens cancels only an unpaid card checkout with no attempt live or approved (KIOSK-MONEY-3)", () => {
+    for (const step of ["pay", "declined", "unavailable"] as const) {
+      for (const state of ["none", "declined", "cancelled", "expired"] as const)
+        expect(cancelsOnReset(step, view({ state })), `${step} ${state}`).toBe(
+          true,
+        );
+      // A choice not made yet is the same walk-away.
+      expect(
+        cancelsOnReset(step, view({ state: "none", paymentChoice: null })),
+      ).toBe(true);
+      // Payments may still take it, or took it: never cancelled from the kiosk.
+      for (const state of ["pending", "approved", "review", "settled"] as const)
+        expect(cancelsOnReset(step, view({ state })), `${step} ${state}`).toBe(
+          false,
+        );
+      expect(
+        cancelsOnReset(step, view({ state: "declined", paid: true })),
+      ).toBe(false);
+      // «Pagar en caja»: the counter's hold now.
+      expect(
+        cancelsOnReset(
+          step,
+          view({ state: "declined", paymentChoice: "counter" }),
+        ),
+      ).toBe(false);
+      // Already decided, or never created.
+      for (const holdState of ["accepted", "cancelled", "expired"] as const)
+        expect(cancelsOnReset(step, view({ state: "none", holdState }))).toBe(
+          false,
+        );
+      expect(cancelsOnReset(step, null)).toBe(false);
+    }
+    // The other screens never cancel on reset (charging, the counter code, paid, ask at counter).
+    for (const step of [
+      "fulfillment",
+      "submitting",
+      "charging",
+      "still",
+      "askCounter",
+      "paid",
+      "paidNoOrder",
+      "counter",
+    ] as const)
+      expect(cancelsOnReset(step, view({ state: "declined" })), step).toBe(
+        false,
+      );
+  });
+});
+
+describe("a kiosk hold in the staff inbox (KIOSK-UX-04, KIOSK-MONEY-3)", () => {
+  const kiosk = (
+    o: Partial<NonNullable<InboxHold["kiosk"]>>,
+  ): NonNullable<InboxHold["kiosk"]> => ({
+    paymentChoice: null,
+    attemptId: null,
+    charging: false,
+    review: null,
+    ...o,
+  });
+  const review = {
+    attemptId: "a",
+    code: "kiosk_settle_unavailable",
+    amount: 4500,
+    terminalLabel: "Clip",
+    provider: "clip" as const,
+  };
+  it("only «Pagar en caja» keeps Accept; a guest still at the kiosk or an abandoned card checkout is pay-first", () => {
+    expect(kioskInboxState(null)).toBe(null);
+    expect(kioskInboxState(kiosk({ paymentChoice: "counter" }))).toBe(
+      "counter",
+    );
+    expect(kioskInboxState(kiosk({}))).toBe("at_kiosk");
+    expect(kioskInboxState(kiosk({ paymentChoice: "card" }))).toBe(
+      "card_unpaid",
+    );
+    expect(
+      kioskInboxState(kiosk({ paymentChoice: "card", charging: true })),
+    ).toBe("charging");
+    expect(kioskInboxState(kiosk({ paymentChoice: "card", review }))).toBe(
+      "review",
+    );
+    for (const policy of ["accept", "pay_first"] as const) {
+      // A QR hold and a pre-039 kiosk hold: the policy's own actions.
+      expect(inboxActions({ policy, kiosk: null }, "cashier", 4500)).toEqual(
+        holdActions(policy, "cashier", 4500),
+      );
+      expect(
+        inboxActions(
+          { policy, kiosk: kiosk({ paymentChoice: "counter" }) },
+          "cashier",
+          4500,
+        ),
+      ).toEqual(holdActions(policy, "cashier", 4500));
+      for (const k of [kiosk({}), kiosk({ paymentChoice: "card" })]) {
+        expect(inboxActions({ policy, kiosk: k }, "cashier", 4500)).toEqual({
+          accept: false,
+          payAndSend: true,
+          override: false,
+        });
+        // The manager's exception stays.
+        expect(inboxActions({ policy, kiosk: k }, "manager", 4500)).toEqual({
+          accept: false,
+          payAndSend: true,
+          override: true,
+        });
+        // Nothing to collect on a free order.
+        expect(inboxActions({ policy, kiosk: k }, "cashier", 0).accept).toBe(
+          true,
+        );
+      }
+    }
+    // Under the default policy a plain «Aceptar» would have fired the unpaid order.
+    expect(holdActions("accept", "cashier", 4500).accept).toBe(true);
   });
 });
 

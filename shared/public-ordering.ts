@@ -508,6 +508,42 @@ export function holdActions(
   };
 }
 
+/**
+ * A kiosk hold in the staff inbox (039; KIOSK-UX-04, KIOSK-MONEY-3; kiosk spec §2.5). null: not a
+ * kiosk checkout (a QR hold, or a pre-039 kiosk link's counter hold). "charging" and "review" have
+ * their own block. "counter": the guest chose «Pagar en caja» (or the kiosk could not take cards),
+ * a normal card. "at_kiosk": the guest has not chosen yet. "card_unpaid": the guest chose card and
+ * it never paid (a decline, a walk-away, a review refunded at the provider): an abandoned card
+ * checkout.
+ */
+export type KioskInboxState =
+  "charging" | "review" | "counter" | "at_kiosk" | "card_unpaid";
+export function kioskInboxState(k: InboxHold["kiosk"]): KioskInboxState | null {
+  if (!k) return null;
+  if (k.review) return "review";
+  if (k.charging) return "charging";
+  if (k.paymentChoice === "counter") return "counter";
+  return k.paymentChoice === "card" ? "card_unpaid" : "at_kiosk";
+}
+
+/**
+ * The inbox actions of a hold: holdActions, except that a kiosk hold the guest has not sent to the
+ * counter is pay-first whatever the counter policy (no «Aceptar y enviar a cocina»; «Cobrar y
+ * enviar a cocina», «Rechazar» and a manager's exception stay). The server enforces the same rule.
+ */
+export function inboxActions(
+  hold: Pick<InboxHold, "policy" | "kiosk">,
+  role: string,
+  currentTotal: number | null,
+): ReturnType<typeof holdActions> {
+  const k = kioskInboxState(hold.kiosk);
+  return holdActions(
+    k === "at_kiosk" || k === "card_unpaid" ? "pay_first" : hold.policy,
+    role,
+    currentTotal,
+  );
+}
+
 /** The diner never learns that staff flagged the order as abuse. */
 export const dinerRejectReason = (
   r: RejectReason | null,

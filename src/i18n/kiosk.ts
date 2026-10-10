@@ -114,6 +114,10 @@ export default defineArea({
     kioskSelfCheckoutOff:
       "El cobro en el kiosco está apagado en este servidor (KIOSK_SELF_CHECKOUT_ENABLED).",
     kioskCharging: "Pagando en el kiosco…",
+    kioskAtKiosk:
+      "En el kiosco · aún no paga. Si pasa a caja, cóbrale antes de enviar a cocina.",
+    kioskCardUnpaid:
+      "Cobro con tarjeta abandonado: eligió pagar en el kiosco y no pagó. Si pasa a caja, cóbrale antes de enviar a cocina.",
     kioskSettleErrorCard:
       "{label} pagó {amount} con tarjeta ({terminal}) y no se pudo enviar a cocina: {reason}.",
     kioskResolve: "Resolver cobro del kiosco",
@@ -257,6 +261,10 @@ export default defineArea({
     kioskSelfCheckoutOff:
       "Payment at the kiosk is turned off on this server (KIOSK_SELF_CHECKOUT_ENABLED).",
     kioskCharging: "Paying at the kiosk…",
+    kioskAtKiosk:
+      "At the kiosk · not paid yet. If they come to the counter, charge before sending to the kitchen.",
+    kioskCardUnpaid:
+      "Abandoned card payment: they chose to pay at the kiosk and didn't. If they come to the counter, charge before sending to the kitchen.",
     kioskSettleErrorCard:
       "{label} paid {amount} by card ({terminal}) but could not be sent to the kitchen: {reason}.",
     kioskResolve: "Resolve kiosk payment",

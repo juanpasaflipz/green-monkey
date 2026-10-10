@@ -138,7 +138,7 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
     await tx`select h.id,h.number,h.channel,h.table_id,h.policy,h.name,h.note,
       h.lines,h.priced,h.quoted_total,h.created_at,h.expires_at,
       l.kind,l.label as link_label,l.revoke_reason as link_revoked,t.name as table_name,
-      k.payment_choice,a.id as attempt_id,a.state as attempt_state,a.error_code as attempt_code,
+      k.hold_id as checkout_hold,k.payment_choice,a.id as attempt_id,a.state as attempt_state,a.error_code as attempt_code,
       a.amount as attempt_amount,a.terminal_label as attempt_terminal,a.provider as attempt_provider
     from public_order_holds h
     join public_links l on l.tenant_id=h.tenant_id and l.id=h.link_id
@@ -211,8 +211,9 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
       expiresAt: (r.expires_at as Date).toISOString(),
       quotedTotal: r.quoted_total,
       ...requote(r.lines as PublicLine[], r.priced as PricedHoldLine[], menu),
+      // A pre-039 kiosk link's hold has no checkout: a counter hold, as before 039.
       kiosk:
-        r.channel === "kiosk"
+        r.channel === "kiosk" && r.checkout_hold
           ? {
               paymentChoice: r.payment_choice ?? null,
               attemptId: r.attempt_id ?? null,
@@ -402,7 +403,9 @@ export async function acceptHold(
       }
       const h = await lockHold(tx, holdId, { withPayment: !!pay });
       await assertNoKioskCharge(tx, h);
-      const r = await createHoldOrder(tx, s, h, p, !!pay);
+      const r = await createHoldOrder(tx, s, h, p, !!pay, {
+        payFirst: await kioskNotAtCounter(tx, h),
+      });
       if (pay) {
         if (pay.amount !== r.order.total - r.order.paid)
           throw new DomainError("public_payment_must_cover_total", 409);
@@ -454,6 +457,21 @@ async function lockReviewAttempt(
 }
 
 /**
+ * A kiosk hold the guest has not sent to the counter (KIOSK-UX-04, KIOSK-MONEY-3; kiosk spec
+ * §2.5): still at the kiosk with no choice yet, or a card checkout that never paid (a decline, a
+ * walk-away, a review refunded at the provider). Staff take it pay-first whatever the counter
+ * policy: «Cobrar y enviar a cocina», or a manager's exception, never a plain accept that fires
+ * an unpaid order. Only «Pagar en caja» (or a kiosk that could not take cards) makes it a normal
+ * card. A plain read after LO-2b (lockHold locked the checkout).
+ */
+async function kioskNotAtCounter(tx: Tx, h: HoldDecisionRow) {
+  if (h.channel !== "kiosk") return false;
+  const [c] =
+    await tx`select payment_choice from kiosk_checkouts where hold_id=${h.id}`;
+  return !!c && c.payment_choice !== "counter";
+}
+
+/**
  * Staff decisions on a kiosk hold refuse while payments may still take or has taken its card
  * charge (critic R12: a plain read after LO-2b and the checkout). An approved but unapplied
  * charge (review) is resolved from its red card, never by a plain accept or reject.
@@ -495,6 +513,8 @@ export async function createHoldOrder(
   h: HoldDecisionRow,
   p: AcceptBody,
   paid: boolean,
+  /** Take the hold pay-first whatever its policy (a kiosk hold not sent to the counter). */
+  o: { payFirst?: boolean } = {},
 ): Promise<HoldOrder> {
   // Both targets: addRound alone would only check requireSelling.
   await requirePro(tx);
@@ -529,7 +549,8 @@ export async function createHoldOrder(
     throw new DomainError("public_hold_price_changed", 409);
   // Nothing to collect on a free order.
   if (paid && current === 0) throw new DomainError("invalid_input");
-  const override = h.policy === "pay_first" && !paid && current > 0;
+  const override =
+    (h.policy === "pay_first" || !!o.payFirst) && !paid && current > 0;
   if (override) {
     if (!managers.includes(s.role))
       throw new DomainError("public_payment_required", 409);

@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import type { Locale, Session } from "../../../shared/domain";
 import { ALLERGY_PATTERN } from "../../../shared/service";
-import { holdActions, type InboxHold } from "../../../shared/public-ordering";
+import {
+  inboxActions,
+  kioskInboxState,
+  type InboxHold,
+} from "../../../shared/public-ordering";
 import { strings, type Key } from "../../i18n";
 import { Badge, Button } from "../../components/ui";
 import { moneyFormatter } from "../Receipt";
@@ -118,7 +122,9 @@ export function HoldCard({
   // new price (a poll, an exclusion) needs a new one.
   useEffect(() => setAck(false), [current]);
   const abuse = hold.linkRevoked === "abuse";
-  const actions = holdActions(hold.policy, session.role, current);
+  // A kiosk hold the guest has not sent to the counter is pay-first (KIOSK-UX-04, KIOSK-MONEY-3).
+  const kioskState = kioskInboxState(hold.kiosk);
+  const actions = inboxActions(hold, session.role, current);
   // Paying always opens a new check: the target only matters for accepting.
   const choosesTarget =
     hold.kind === "table" && (actions.accept || actions.override);
@@ -293,7 +299,12 @@ export function HoldCard({
           {error}
         </p>
       )}
-      {hold.kiosk && (hold.kiosk.charging || hold.kiosk.review) ? (
+      {(kioskState === "at_kiosk" || kioskState === "card_unpaid") && (
+        <p className="hold-kiosk" role="status">
+          {t(kioskState === "at_kiosk" ? "kioskAtKiosk" : "kioskCardUnpaid")}
+        </p>
+      )}
+      {kioskState === "charging" || kioskState === "review" ? (
         <KioskHoldBlock
           hold={hold}
           session={session}

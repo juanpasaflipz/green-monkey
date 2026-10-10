@@ -2873,6 +2873,98 @@ try {
     }
   });
 
+  await test("K29. abandoned card checkouts (KIOSK-UX-04, KIOSK-MONEY-3): a kiosk hold the guest has not sent to the counter is pay-first under the 'accept' policy (inbox paymentChoice null or 'card'; a plain accept is refused, «Cobrar y enviar» and a manager's recorded exception work); the kiosk's reset cancels a declined one; a counter-only kiosk's hold is «Pagar en caja» from the start and keeps the plain accept", async () => {
+    const plain = (s: Session, holdId: string) =>
+      write(s, (tx) =>
+        acceptHold(tx, s, holdId, {
+          operationId: randomUUID(),
+          target: { kind: "new" },
+        }),
+      );
+    const inboxCard = async (holdId: string) =>
+      (await write(cashier, (tx) => inbox(tx, cashier))).holds.find(
+        (x) => x.id === holdId,
+      );
+    // A kiosk of its own (the first kiosk's holds reached the link's limit): an earlier test's
+    // kiosk with nothing pending makes room under the active-link cap.
+    const spent = await one(
+      A,
+      (tx) => tx`select l.id from public_links l where l.tenant_id=${A} and l.kind='kiosk'
+        and l.revoked_at is null and l.id<>${main.linkId} and not exists (select 1 from public_order_holds h
+          where h.link_id=l.id and h.state='pending')
+        order by l.created_at limit 1`,
+    );
+    await write(manager, (tx) =>
+      revokeLink(tx, manager, spent.id, { operationId: randomUUID() }),
+    );
+    const k = await newKiosk("Abandono " + run);
+    await configure(k, terminals.clip);
+    await pair(k);
+    // Still at the kiosk: no choice yet.
+    const o = await order(k, [line(ids.taco)], 4500);
+    assert.equal(o.counterOnly, null);
+    assert.equal(o.checkout.paymentChoice, null);
+    const h = await holdOf(o.key);
+    assert.equal(h.policy, "accept");
+    let card = (await inboxCard(h.id))!;
+    assert.equal(card.kiosk!.paymentChoice, null);
+    assert.equal(card.kiosk!.charging, false);
+    await rejects(plain(cashier, h.id), "public_payment_required");
+    // The card declined: an abandoned card checkout, still pay-first.
+    await charge(k, o.key);
+    const a = await attemptOf(o.key);
+    await drive(a.id, ["pending"]);
+    fake.decline(fake.chargeFor(a.id)!.id);
+    await drive(a.id, ["declined"]);
+    card = (await inboxCard(h.id))!;
+    assert.equal(card.kiosk!.paymentChoice, "card");
+    assert.equal(card.kiosk!.charging, false);
+    assert.equal(card.kiosk!.review, null);
+    await rejects(plain(cashier, h.id), "public_payment_required");
+    // The kiosk resets from the declined screen: no attempt is live, so the hold is cancelled
+    // and leaves the inbox.
+    const cancelled = await call("POST", "/kiosk/cancel", {
+      link: k.link,
+      tablet: k.tablet,
+      body: { statusKey: o.key },
+    });
+    assert.equal(cancelled.status, 200, JSON.stringify(cancelled.body));
+    assert.equal((await holdOf(o.key)).state, "cancelled");
+    assert.equal(await inboxCard(h.id), undefined);
+    // «Cobrar y enviar a cocina» on a hold still at the kiosk: the pay-first path.
+    const o2 = await order(k, [line(ids.taco)], 4500);
+    const h2 = await holdOf(o2.key);
+    const paid = await write(cashier, (tx) =>
+      acceptHold(tx, cashier, h2.id, {
+        operationId: randomUUID(),
+        target: { kind: "new" },
+        payment: { method: "cash", amount: 4500, tip: 0, received: 5000 },
+      }),
+    );
+    assert.equal(paid.order.paid, 4500);
+    // A manager's exception (fresh PIN): accepted without charging, recorded as an override.
+    const o3 = await order(k, [line(ids.taco)], 4500);
+    const h3 = await holdOf(o3.key);
+    const freshManager = session(A, ids.manager, "manager", ids.till, {});
+    const exception = await plain(freshManager, h3.id);
+    assert.equal(exception.hold.state, "accepted");
+    assert.equal(exception.order.paid, 0);
+    assert.equal((await holdOf(o3.key)).policy_override, true);
+    // A counter-only kiosk (an unbound tablet): «Pagar en caja» from the start, the plain accept.
+    const o4 = await order({ ...k, tablet: newTablet() }, [line(ids.taco)], 4500);
+    assert.equal(o4.counterOnly, "unbound");
+    assert.equal(o4.checkout.paymentChoice, "counter");
+    const h4 = await holdOf(o4.key);
+    assert.equal(h4.payment_choice, "counter");
+    assert.equal((await inboxCard(h4.id))!.kiosk!.paymentChoice, "counter");
+    const normal = await plain(cashier, h4.id);
+    assert.equal(normal.hold.state, "accepted");
+    assert.equal((await holdOf(o4.key)).policy_override, false);
+    await write(manager, (tx) =>
+      revokeLink(tx, manager, k.linkId, { operationId: randomUUID() }),
+    );
+  });
+
   assert.deepEqual(dead, [], "no job went dead");
   assert.deepEqual(fake.violations, [], "the fake saw no contract breach");
 } catch (e) {

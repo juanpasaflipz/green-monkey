@@ -44,14 +44,24 @@ menú with photos → product sheet (photo, description, "Combínalo con…", "A
 - **Pagar en caja**: the K-code screen, as before 039; the hold is an ordinary inbox card.
 
 "Tarjeta en el kiosco (caja solo si falla)" shows "Pagar en caja" only after a card failure. An
-unbound kiosk works exactly as before 039 plus the para aquí question: counter only.
+unbound kiosk works exactly as before 039 plus the para aquí question: counter only. A kiosk that
+cannot take the card (unbound, till closed, card off, no terminal, counter mode) records the hold as
+«Pagar en caja» when it creates it (`payment_choice='counter'`), so it is an ordinary inbox card.
 
 **Zero total.** With self-checkout available the kiosk accepts it itself (no charge), once
 (`kioskAccept`, the checkout's `fire_operation_id`).
 
-**Staff.** While a charge is live the inbox card reads "Pagando en el kiosco…" with no accept or
-reject (`kiosk_charge_in_progress`, critic R12; the diner's cancel is refused too); a manager may
-"Cancelar cobro en curso". A charge approved without an order is a red card first in the inbox:
+**Staff.** Only a hold the guest sent to the counter («Pagar en caja», or a kiosk that could not
+take the card) keeps the counter policy's Aceptar/Rechazar (KIOSK-UX-04, KIOSK-MONEY-3). A kiosk
+hold whose guest is still at the kiosk (no choice yet: «En el kiosco · aún no paga») or chose card
+and never paid (a decline, a walk-away, a review refunded at the provider: «Cobro con tarjeta
+abandonado») is pay-first whatever the policy: no «Aceptar y enviar a cocina»; «Cobrar y enviar a
+cocina», «Rechazar» and a manager's «Aceptar sin cobrar (excepción)» (recent PIN, recorded as a
+policy override) stay. The server enforces it: a plain accept answers `public_payment_required`
+(`inboxActions` in shared/public-ordering.ts; kiosk DB K29). The inbox's `kiosk` block is null for a
+pre-039 kiosk link's hold (no checkout), a counter hold as before. While a charge is live the inbox
+card reads "Pagando en el kiosco…" with no accept or reject (`kiosk_charge_in_progress`, critic R12;
+the diner's cancel is refused too); a manager may "Cancelar cobro en curso". A charge approved without an order is a red card first in the inbox:
 "Resolver cobro del kiosco" opens payments' resolve dialog (critic R13):
 
 - **Reintentar** (any operator, no PIN): once the order fits again (the product is back, the price
@@ -104,7 +114,10 @@ welcome screen with an empty cart. The service worker never answers `/kiosk` (cr
 
 "¿Sigues ahí?" at 70 s with a cart, reset at 95 s (25 s to answer, WCAG 2.2.1); the pay screen
 resets after 120 s; a charge suspends the reset (3 + 2 minutes at most); the done screen resets after
-30 s (paid) or 20 s (counter). The reset clears the cart, the member, the language and the
+30 s (paid) or 20 s (counter). A reset from the pay, declined or unavailable screens cancels the hold
+when it is unpaid with no attempt live or approved and the guest did not choose «Pagar en caja»
+(`cancelsOnReset`; KIOSK-MONEY-3), so the inbox never keeps a walk-away's order for 30 minutes; the
+server refuses the cancel if a charge is live anyway. «Cancelar pedido» cancels it as before. The reset clears the cart, the member, the language and the
 accessibility modes. Texto grande (125 %) and Modo alcance (content in the lower two thirds); 48 px
 targets at least (64 px kiosk buttons); a persistent live region announces the order, the charge,
 approval and decline.

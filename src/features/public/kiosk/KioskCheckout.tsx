@@ -47,6 +47,27 @@ export function stepFor(
   return null;
 }
 
+/**
+ * Whether the kiosk cancels the hold when it resets from this screen (KIOSK-MONEY-3, KIOSK-UX-04;
+ * pure, tests/kiosk.test.ts): from the pay, declined or unavailable screens, a hold that is still
+ * pending and unpaid with no attempt live or approved (the guest walked away from the card
+ * checkout). Never once the guest chose «Pagar en caja» (the counter's hold now), and never
+ * while payments may still take or has taken the card (the server refuses those too).
+ */
+export function cancelsOnReset(
+  step: KioskStep,
+  view: KioskCheckoutView | null,
+): boolean {
+  if (step !== "pay" && step !== "declined" && step !== "unavailable")
+    return false;
+  if (!view || view.holdState !== "pending") return false;
+  if (view.paid || view.paidNoOrder || view.paymentChoice === "counter")
+    return false;
+  return ["none", "declined", "cancelled", "expired"].includes(
+    view.payment.state,
+  );
+}
+
 type Props = {
   token: string;
   locale: Locale;
@@ -85,6 +106,11 @@ export function KioskCheckout(p: Props) {
   );
   const say = (text: string) => p.announce(text);
   const label = view?.label ?? hold?.label ?? "";
+  // The latest checkout read, for the idle reset (its effect runs per screen, not per poll).
+  const latest = useRef(view);
+  useEffect(() => {
+    latest.current = view;
+  }, [view]);
 
   async function submit(f: "here" | "to_go") {
     fulfillment.current = f;
@@ -105,6 +131,12 @@ export function KioskCheckout(p: Props) {
         say(fill(t.kioskPaid, { label: r.checkout.label }));
       } else if (r.counterOnly || !p.kiosk.card) {
         setCounterOnly(true);
+        // The server marks a counter-only hold «Pagar en caja» itself; a kiosk whose state said
+        // no card while the server could take one says so, so the inbox shows a normal card.
+        if (!r.counterOnly && r.checkout.paymentChoice !== "counter")
+          void kioskApi
+            .counter(p.token, keys.current.statusKey)
+            .catch(() => {});
         toCounterScreen(r.hold);
       } else setStep("pay");
     } catch (e) {
@@ -261,7 +293,14 @@ export function KioskCheckout(p: Props) {
             ? KIOSK_IDLE.payResetMs
             : null;
     if (ms === null) return;
-    const c = createIdleController({ resetAfterMs: ms, onReset: p.onDone });
+    // The guest walked away from the card checkout: the hold is cancelled, so staff never see an
+    // unpaid order to send to the kitchen (KIOSK-MONEY-3). Best effort: one that stays expires.
+    const onReset = () => {
+      if (cancelsOnReset(step, latest.current))
+        void kioskApi.cancel(p.token, keys.current.statusKey).catch(() => {});
+      p.onDone();
+    };
+    const c = createIdleController({ resetAfterMs: ms, onReset });
     const activity = () => c.activity();
     window.addEventListener("pointerdown", activity);
     return () => {
