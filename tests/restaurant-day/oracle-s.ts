@@ -208,6 +208,8 @@ export function oracleS() {
           mxn(0),
           mxn(cashSales),
         ],
+        // Cobros por método lists every tender method; Restaurant S sells on no platform.
+        ["Plataforma", "0", mxn(0), mxn(0), mxn(0), mxn(0)],
         [
           "Terminal bancaria externa",
           String(card.length),

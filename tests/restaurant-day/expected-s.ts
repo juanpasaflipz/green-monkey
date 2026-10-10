@@ -206,6 +206,7 @@ export const EXPECTED_S = {
     ],
     byMethod: [
       ["Efectivo", "1", "$15.00", "$0.00", "$0.00", "$15.00"],
+      ["Plataforma", "0", "$0.00", "$0.00", "$0.00", "$0.00"],
       [
         "Terminal bancaria externa",
         "4",
