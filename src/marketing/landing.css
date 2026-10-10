@@ -187,7 +187,6 @@
   border-radius: 12px;
   box-shadow: 0 24px 60px -28px #27463250;
   overflow: hidden;
-  transform: rotate(-1deg);
 }
 .gm-preview-top {
   padding: 17px 22px;
@@ -705,9 +704,6 @@
   }
   .gm-site h1 {
     font-size: 48px;
-  }
-  .gm-preview {
-    transform: none;
   }
   .gm-preview-body {
     padding: 18px;
