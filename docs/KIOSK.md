@@ -287,8 +287,20 @@ removal.
 ## 10. Reports
 
 Finanzas › Kiosco: kiosk orders, paid at the kiosk vs at the counter, charges approved without an
-order (open, resolved, refunded), and suggestion lines accepted with their amount. The corte's
-"Del kiosco" sub-line is payments' per-terminal split.
+order (open, resolved, refunded), and suggestion lines accepted with their amount.
+
+- «Pedidos del kiosco»: kiosk orders with a total above zero, by the order's business date, as
+  Por canal counts them.
+- «Pagados en el kiosco» and «Pagados en caja» count by payment, never by who accepted the hold
+  (KIOSK-OPS-3). An order with a tender from a kiosk card charge (attempt target `kiosk_hold`)
+  was paid at the kiosk. An order with any other tender (cash, a manual or POS terminal) was
+  paid at the counter. An order paid partly each way («Aceptar con el pago del kiosco» with a
+  rest) counts in both. An order accepted and never collected, or voided unpaid, counts in
+  neither.
+
+The corte's "Del kiosco" sub-line is payments' per-terminal split. It counts every non-cash tender
+of a kiosk order in that drawer, including a card taken at the counter for a kiosk order. So it
+can be larger than the kiosk's own card charges.
 
 ## 11. Troubleshooting
 

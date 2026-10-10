@@ -219,7 +219,7 @@ export const EXPECTED_S = {
   },
   kioskReport: {
     orders: "4",
-    paidAtKiosk: "3",
+    paidAtKiosk: "4",
     paidAtCounter: "1",
     reviewOpen: "0",
     reviewResolved: "2",

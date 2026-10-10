@@ -1,6 +1,14 @@
 // Finanzas › Kiosco (039, §6.3; critic R27): the period's kiosk orders and how they were paid,
 // card charges approved without an order and how they ended, and the suggestion lines guests
 // accepted. One statement per block, bounded by business date; read from reports' snapshot.
+//
+// KIOSK-OPS-3: «Pagados en el kiosco» and «Pagados en caja» count by payment, never by who
+// accepted the hold: an order with a tender from a kiosk card charge (payment_attempts.target
+// 'kiosk_hold') was paid at the kiosk; an order with any other tender (cash, a manual or POS
+// terminal) was paid at the counter. An order paid partly each way («Aceptar con el pago del
+// kiosco» with a rest) counts in both; an accepted order nobody collected counts in neither.
+// «Pedidos del kiosco» are kiosk orders with a total above zero by the order's business date, as
+// Por canal counts them.
 import type { Tx } from "./db.js";
 import { managers, permit } from "./auth.js";
 import type { Session } from "../shared/domain.js";
@@ -29,11 +37,19 @@ export async function kioskReport(
   permit(s, managers);
   const { from, to } = parseRange(raw, LIMITS.aggregateDays);
   const [holds] = await tx`select
-      count(*) filter (where state='accepted')::int as orders,
-      count(*) filter (where state='accepted' and decision_source='kiosk')::int as kiosk,
-      count(*) filter (where state='accepted' and decision_source='staff')::int as counter
-    from public_order_holds
-    where channel='kiosk' and business_date between ${from}::date and ${to}::date`;
+      count(*) filter (where k.total>0)::int as orders,
+      count(*) filter (where k.at_kiosk)::int as kiosk,
+      count(*) filter (where k.at_counter)::int as counter
+    from (select o.total,
+        exists(select 1 from tenders t
+          join payment_attempts a on a.tenant_id=t.tenant_id and a.id=t.attempt_id
+          where t.tenant_id=o.tenant_id and t.order_id=o.id and a.target='kiosk_hold') as at_kiosk,
+        exists(select 1 from tenders t
+          left join payment_attempts a on a.tenant_id=t.tenant_id and a.id=t.attempt_id
+          where t.tenant_id=o.tenant_id and t.order_id=o.id
+            and a.target is distinct from 'kiosk_hold') as at_counter
+      from orders o
+      where o.channel='kiosk' and o.business_date between ${from}::date and ${to}::date) k`;
   const [review] = await tx`select
       count(*) filter (where a.state='review')::int as open,
       count(*) filter (where a.state in ('settled','dismissed')

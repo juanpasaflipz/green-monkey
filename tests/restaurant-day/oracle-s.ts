@@ -225,9 +225,9 @@ export function oracleS() {
     },
     kioskReport: {
       orders: String(orders.length),
-      paidAtKiosk: String(
-        orders.filter((x) => x.o.resolution.kind !== "acceptWithRest").length,
-      ),
+      // KIOSK-OPS-3: by payment. Every S order carries its kiosk card tender; S4's cash rest is a
+      // counter tender too, so it counts in both.
+      paidAtKiosk: String(orders.length),
       paidAtCounter: String(recorded.length),
       reviewOpen: "0",
       reviewResolved: String(reviews.length),

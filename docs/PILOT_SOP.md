@@ -745,4 +745,9 @@ kiosco de POS Lite (paso 1).
     Mercado Pago, escribe la nota con el folio del reembolso y confirma; el pedido queda rechazado.
 
   La caja no cierra mientras haya una tarjeta roja.
-- **Cerrar el día.** El corte muestra «Del kiosco: n · $» bajo cada terminal.
+- **Cerrar el día.** El corte muestra «Del kiosco: n · $» bajo cada terminal: todos los cobros
+  que no son efectivo de pedidos del kiosco en esa caja, también una tarjeta cobrada en el
+  mostrador por un pedido del kiosco. En Finanzas › Kiosco, «Pagados en el kiosco» cuenta los
+  pedidos que se cobraron con la tarjeta en el kiosco. «Pagados en caja» cuenta los que se
+  cobraron en el mostrador. Un pedido con cobro en el kiosco y diferencia en caja cuenta en los
+  dos. Un pedido aceptado que nadie cobró no cuenta en ninguno.

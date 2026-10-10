@@ -477,6 +477,27 @@ async function holdOf(key: string, tenantId = A) {
     where h.status_key_hash=${h}`,
   );
 }
+/**
+ * Finanzas › Kiosco's paid counts from the tenders (KIOSK-OPS-3), read the other way round from
+ * the report: kiosk card tenders through payment_attempts.tender_id, and every other tender.
+ */
+async function paidByTender(day: string) {
+  return (await one(
+    A,
+    (tx) => tx`select
+      (select count(*)::int from orders o where o.channel='kiosk' and o.business_date=${day}::date
+        and o.total>0) as orders,
+      (select count(distinct t.order_id)::int from payment_attempts a
+        join tenders t on t.tenant_id=a.tenant_id and t.id=a.tender_id
+        join orders o on o.tenant_id=t.tenant_id and o.id=t.order_id
+        where a.target='kiosk_hold' and o.channel='kiosk' and o.business_date=${day}::date) as kiosk,
+      (select count(distinct t.order_id)::int from tenders t
+        join orders o on o.tenant_id=t.tenant_id and o.id=t.order_id
+        where o.channel='kiosk' and o.business_date=${day}::date and not exists(
+          select 1 from payment_attempts a where a.tenant_id=t.tenant_id and a.tender_id=t.id
+            and a.target='kiosk_hold')) as counter`,
+  )) as { orders: number; kiosk: number; counter: number };
+}
 async function attemptOf(key: string) {
   const h = await holdOf(key);
   return one(
@@ -2189,16 +2210,11 @@ try {
     const r = await write(manager, (tx) =>
       kioskReport(tx, manager, { from: day, to: day }),
     );
-    const counts = await one(
-      A,
-      (tx) => tx`select
-        count(*) filter (where state='accepted' and decision_source='kiosk')::int as kiosk,
-        count(*) filter (where state='accepted' and decision_source='staff')::int as staff
-      from public_order_holds where tenant_id=${A} and channel='kiosk'`,
-    );
+    // KIOSK-OPS-3: reconciled with the tenders, never with who accepted the hold.
+    const counts = await paidByTender(day);
     assert.equal(r.paidAtKiosk, counts.kiosk);
-    assert.equal(r.paidAtCounter, counts.staff);
-    assert.equal(r.orders, counts.kiosk + counts.staff);
+    assert.equal(r.paidAtCounter, counts.counter);
+    assert.equal(r.orders, counts.orders);
     assert.ok(r.paidAtKiosk >= 8);
     assert.equal(r.suggestions.lines, 1, "K9's suggested papas");
     assert.equal(r.suggestions.amount, 3500);
@@ -3089,6 +3105,117 @@ try {
     const normal = await plain(cashier, h4.id);
     assert.equal(normal.hold.state, "accepted");
     assert.equal((await holdOf(o4.key)).policy_override, false);
+    await write(manager, (tx) =>
+      revokeLink(tx, manager, k.linkId, { operationId: randomUUID() }),
+    );
+  });
+
+  await test("K30. Finanzas › Kiosco counts by payment (KIOSK-OPS-3): a kiosk card tender is «Pagados en el kiosco»; a pay-first hold staff collect with «Cobrar y enviar», and a «Pagar en caja» hold paid after a decline, are «Pagados en caja»; a «Pagar en caja» hold accepted and never collected is neither; a manager's «Aceptar con el pago del kiosco» with a cash rest is both; the report reconciles with the tenders", async () => {
+    const day = new Intl.DateTimeFormat("en-CA", {
+      timeZone: restaurant.timezone,
+    }).format(new Date(Date.now() - restaurant.cutoff * 60_000));
+    const report = () =>
+      write(manager, (tx) => kioskReport(tx, manager, { from: day, to: day }));
+    // A kiosk of its own: an earlier test's kiosk with nothing pending makes room (as K29).
+    const spent = await one(
+      A,
+      (
+        tx,
+      ) => tx`select l.id from public_links l where l.tenant_id=${A} and l.kind='kiosk'
+        and l.revoked_at is null and l.id<>${main.linkId} and not exists (select 1 from public_order_holds h
+          where h.link_id=l.id and h.state='pending')
+        order by l.created_at limit 1`,
+    );
+    await write(manager, (tx) =>
+      revokeLink(tx, manager, spent.id, { operationId: randomUUID() }),
+    );
+    const k = await newKiosk("Reporte " + run);
+    await configure(k, terminals.clip);
+    await pair(k);
+    const before = await report();
+    const cash = { method: "cash", amount: 4500, tip: 0, received: 5000 };
+    // (a) The card approved at the kiosk.
+    const a = await order(k, [line(ids.taco)], 4500);
+    await charge(k, a.key);
+    const aa = await attemptOf(a.key);
+    await drive(aa.id, ["pending"]);
+    fake.approve(fake.chargeFor(aa.id)!.id, { ...TEST_CARD });
+    await drive(aa.id, ["settled"]);
+    // (b) A pay-first hold (the guest never chose «Pagar en caja»): «Cobrar y enviar» in cash.
+    const b = await order(k, [line(ids.taco)], 4500);
+    const bh = await holdOf(b.key);
+    const bo = await write(cashier, (tx) =>
+      acceptHold(tx, cashier, bh.id, {
+        operationId: randomUUID(),
+        target: { kind: "new" },
+        payment: cash,
+      }),
+    );
+    assert.equal(bo.order.paid, 4500);
+    // (c) «Pagar en caja», accepted under the counter policy and never collected.
+    const c = await order(k, [line(ids.taco)], 4500);
+    await call("POST", "/kiosk/counter", {
+      link: k.link,
+      tablet: k.tablet,
+      body: { statusKey: c.key },
+    });
+    const ch = await holdOf(c.key);
+    const co = await write(cashier, (tx) =>
+      acceptHold(tx, cashier, ch.id, {
+        operationId: randomUUID(),
+        target: { kind: "new" },
+      }),
+    );
+    assert.equal(co.order.paid, 0);
+    assert.equal(
+      (await holdOf(c.key)).decision_source,
+      "staff",
+      "the old rule counted this as paid at the counter",
+    );
+    // (d) The card declined, then «Pagar en caja» and cash at the counter.
+    const d = await order(k, [line(ids.taco)], 4500);
+    await charge(k, d.key);
+    const da = await attemptOf(d.key);
+    await drive(da.id, ["pending"]);
+    fake.decline(fake.chargeFor(da.id)!.id);
+    await drive(da.id, ["declined"]);
+    await call("POST", "/kiosk/counter", {
+      link: k.link,
+      tablet: k.tablet,
+      body: { statusKey: d.key },
+    });
+    const dh = await holdOf(d.key);
+    await write(cashier, (tx) =>
+      acceptHold(tx, cashier, dh.id, {
+        operationId: randomUUID(),
+        target: { kind: "new" },
+        payment: cash,
+      }),
+    );
+    const after = await report();
+    assert.deepEqual(
+      {
+        orders: after.orders - before.orders,
+        paidAtKiosk: after.paidAtKiosk - before.paidAtKiosk,
+        paidAtCounter: after.paidAtCounter - before.paidAtCounter,
+      },
+      { orders: 4, paidAtKiosk: 1, paidAtCounter: 2 },
+    );
+    // The whole day reconciles with the tenders, K24's «Aceptar con el pago del kiosco» with a
+    // cash rest counting in both.
+    const counts = await paidByTender(day);
+    assert.equal(after.orders, counts.orders);
+    assert.equal(after.paidAtKiosk, counts.kiosk);
+    assert.equal(after.paidAtCounter, counts.counter);
+    const both = await one(
+      A,
+      (tx) => tx`select count(*)::int as n from orders o where o.channel='kiosk'
+        and o.business_date=${day}::date
+        and exists(select 1 from tenders t join payment_attempts x on x.tenant_id=t.tenant_id
+          and x.id=t.attempt_id where t.order_id=o.id and x.target='kiosk_hold')
+        and exists(select 1 from tenders t where t.order_id=o.id and t.attempt_id is null)`,
+    );
+    assert.ok(both.n >= 1, "a kiosk charge plus a counter rest counts in both");
     await write(manager, (tx) =>
       revokeLink(tx, manager, k.linkId, { operationId: randomUUID() }),
     );
