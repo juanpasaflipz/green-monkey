@@ -193,11 +193,16 @@ export function ProductPhotoField({
         />
       ) : null}
       <p className="muted">{t.menuPhotoHint}</p>
+      {/* The picker behind the button: out of the tab order and the accessibility tree, so
+          keyboard and screen-reader users meet one «Subir foto» (the button), not two (assistive
+          technology exposes a file input as a button). Its label still names it for automation. */}
       <input
         ref={input}
         type="file"
         accept="image/jpeg,image/png,image/webp"
         className="sr-only"
+        tabIndex={-1}
+        aria-hidden="true"
         aria-label={image ? t.menuPhotoChange : t.menuPhotoUpload}
         disabled={disabled || busy}
         onChange={(e) => {

@@ -1198,6 +1198,13 @@ describe("the product editor's photo honours /capabilities menuPhotos (KIOSK-OPS
     expect(off).toContain("apagadas en este servidor");
     expect(render({ enabled: true })).toContain("Subir foto");
     expect(render(null)).toContain("Subir foto");
+    // One «Subir foto» for keyboard and screen-reader users: the button. The file input behind it
+    // (a button to assistive technology) is out of the tab order and the accessibility tree.
+    const on = render({ enabled: true });
+    const picker = /<input[^>]*type="file"[^>]*>/.exec(on)?.[0] ?? "";
+    expect(picker).toContain('tabindex="-1"');
+    expect(picker).toContain('aria-hidden="true"');
+    expect(on.match(/<button[^>]*>Subir foto<\/button>/g)).toHaveLength(1);
     expect(photosOffNotice({ enabled: true }, "en")).toBeNull();
     expect(
       photosOffNotice(
