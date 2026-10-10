@@ -102,9 +102,13 @@ rotate the
    `STRIPE_WEBHOOK_SECRET` and `BILLING_DATABASE_URL` only if billing is
    enabled; worker: `WORKER_DATABASE_URL`, `APP_URL`, `ALERT_WEBHOOK_URL`,
    Stripe keys only if billing is enabled, from cfdi (030) the Facturapi
-   keys and `CREDENTIAL_ENCRYPTION_KEY`, and from payments (037 P2)
-   `PAYMENTS_PROVIDERS` (`mercadopago,clip`; empty or unset keeps integrated
-   charging off, with manual terminals working). `MERCADOPAGO_API_URL` and
+   keys and `CREDENTIAL_ENCRYPTION_KEY`. Payments (037 P2) `PAYMENTS_PROVIDERS` is
+   not in this file: `.railway/railway.ts` declares it (`mercadopago,clip` on staging
+   for the device rehearsal; undeclared in production, so integrated charging stays
+   off there with manual terminals working, until the rehearsal passes and one
+   reviewed change to `railway.ts` plus a deploy switches it on: [RUNBOOK.md](RUNBOOK.md)
+   "Payments: real-device rehearsal" step 7). A worker with providers needs
+   `CREDENTIAL_ENCRYPTION_KEY` or it refuses to start. `MERCADOPAGO_API_URL` and
    `CLIP_API_URL` stay unset in staging and production (the providers' production
    APIs; a loopback fake is accepted only in development and test). The web gets
    `WORKER_URL` (the worker's private-network origin, e.g.

@@ -821,14 +821,26 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
     ])
       expect(webNames.has(name), `web declares ${name}`).toBe(false);
     expect([...webNames].filter((n) => n.startsWith("FACTURAPI_"))).toEqual([]);
-    // Never declared anywhere (code constant, development-only, operator-only).
+    // Never declared anywhere (code constant, development-only, operator-only; the payments
+    // API bases are loopback fakes only, refused in staging and production, so a stray value
+    // set on a deployed worker shows up as a planned deletion).
     for (const name of [
       "LEGAL_DOCUMENTS",
       "FACTURAPI_BASE_URL",
       "SUPPORT_DATABASE_URL",
       "TRUST_PROXY",
+      "MERCADOPAGO_API_URL",
+      "CLIP_API_URL",
     ])
       expect(names(code).has(name), name).toBe(false);
+    // PAYMENTS_PROVIDERS (P2V-GATE-1, LD-85): the worker's only; staging serves both providers
+    // for the device rehearsal, production leaves it undeclared (integrated charging off until
+    // the rehearsal passes; switching it on is a reviewed change here).
+    expect(code.match(/PAYMENTS_PROVIDERS/g)).toHaveLength(1);
+    expect(worker).toMatch(
+      /\.\.\.\(production \? \{\} : \{ PAYMENTS_PROVIDERS: "mercadopago,clip" \}\)/,
+    );
+    expect(names(web).has("PAYMENTS_PROVIDERS")).toBe(false);
     // DEMO_TENANT_ID: staging only (access A2, contracts D22).
     expect(code.match(/DEMO_TENANT_ID/g)).toHaveLength(1);
     expect(web).toMatch(
@@ -907,6 +919,7 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
         "CREDENTIAL_ENCRYPTION_KEY",
         "CFDI_LIVE_ENABLED",
         "CFDI_GLOBAL_GRACE_MINUTES",
+        "PAYMENTS_PROVIDERS",
       ],
     };
     for (const name of registered.common)

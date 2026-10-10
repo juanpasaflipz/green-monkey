@@ -140,7 +140,7 @@ Every outcome writes an attempt event and an audit row, and Excepciones lists it
 
 ### Configuration and capabilities
 
-- Worker: `PAYMENTS_PROVIDERS` (`mercadopago`, `clip`; empty = integrated charging off), `CREDENTIAL_ENCRYPTION_KEY`, `WORKER_DATABASE_URL`. `MERCADOPAGO_API_URL` and `CLIP_API_URL` may point at a loopback fake only in development and test.
+- Worker: `PAYMENTS_PROVIDERS` (`mercadopago`, `clip`; empty = integrated charging off; Railway: `mercadopago,clip` on staging, undeclared in production until the device rehearsal passes, `.railway/railway.ts`), `CREDENTIAL_ENCRYPTION_KEY`, `WORKER_DATABASE_URL`. `MERCADOPAGO_API_URL` and `CLIP_API_URL` may point at a loopback fake only in development and test.
 - Web: `WORKER_URL` lets the web wake the worker (`POST /wake`, 202, coalesced by `poke()`); without it the worker's 5 s sweep applies.
 - `/capabilities` has `mercadopago` and `clip` entries: `{enabled: true}` or a reason (`worker_not_configured`, `not_connected`, `verifying`, or the account's error code).
 

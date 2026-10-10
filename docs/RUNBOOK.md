@@ -607,8 +607,11 @@ still settle by polling (every 5 s on Mercado Pago and 2 s on Clip for 3 minutes
 LD-72). With one MP Point in PDV mode and one Clip reader on the restaurant's accounts (or a
 test merchant), charges are real and low-value:
 
-1. Staging worker: `PAYMENTS_PROVIDERS=mercadopago,clip`, production API bases (the defaults),
-   `CREDENTIAL_ENCRYPTION_KEY` set; web `WORKER_URL` set. Check `/capabilities`.
+1. Staging worker: `PAYMENTS_PROVIDERS=mercadopago,clip` comes from `.railway/railway.ts`
+   (declared for every environment but production, P2V-GATE-1), so CD applies it: never set it
+   by hand. Production API bases (the defaults: `MERCADOPAGO_API_URL` and `CLIP_API_URL` are
+   never declared), `CREDENTIAL_ENCRYPTION_KEY` set (the worker refuses to start with
+   providers and no key); web `WORKER_URL` (declared in `railway.ts`). Check `/capabilities`.
 2. The owner connects both accounts in Configuración, pastes the MP notification URL (event
    Órdenes), finds the devices and adds them as terminals with their fee rates.
 3. For each terminal, from a cashier's tablet, and timing tap → terminal prompt (≤ 3 s p95):
@@ -654,6 +657,16 @@ test merchant), charges are real and low-value:
    evidence-directory pattern; nothing with a token, a key or a card beyond the last 4.
 6. Afterwards: disconnect both accounts in Configuración (the worker wipes the credentials)
    and archive the rehearsal terminals.
+7. Switching production on (only after this rehearsal passes, LD-84/LD-85): one reviewed
+   change to `.railway/railway.ts` that declares `PAYMENTS_PROVIDERS: "mercadopago,clip"` for
+   production too (replace the line `...(production ? {} : { PAYMENTS_PROVIDERS: … })` with the
+   plain declaration, and update the PAYMENTS_PROVIDERS assertion in `tests/workflows.test.ts`
+   in the same pull request), merged to main; then the production deploy (dispatch, outside
+   service hours) applies it: `railway config plan` shows one added variable on `worker`, no
+   deletion. Confirm the production worker has `CREDENTIAL_ENCRYPTION_KEY` first. Never set the
+   variable by hand in production: an undeclared value is planned as a deletion and stops CD.
+   Switching it off again is the reverse change (see "Payments: provider outage" step 5 for
+   charges still live).
 
 ## Signing keys
 
