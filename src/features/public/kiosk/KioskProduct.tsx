@@ -96,7 +96,8 @@ export function KioskProductSheet({
   currency: string;
   /** Adds the product (opening the option picker when it needs choices). */
   onAdd: (p: Product, origin?: "suggestion") => void;
-  onPick: (p: Product) => void;
+  /** Opens the option picker; a suggested product keeps its origin through it (KIOSK-UX-23). */
+  onPick: (p: Product, origin?: "suggestion") => void;
   onClose: () => void;
 }) {
   const t = strings[locale];
@@ -132,7 +133,9 @@ export function KioskProductSheet({
             locale={locale}
             currency={currency}
             onAdd={(p) =>
-              pickerNeeded(p) ? onPick(p) : onAdd(p, "suggestion")
+              pickerNeeded(p)
+                ? onPick(p, "suggestion")
+                : onAdd(p, "suggestion")
             }
           />
         )}

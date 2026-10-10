@@ -80,6 +80,17 @@ export type Draft = { lines: DraftLine[]; name: string; note: string };
  * server keeps on the hold, not part of a priced line (quote's line input is strict, so a
  * suggestion line would read as invalid and block the cart). Diner lines carry no note.
  */
+/** The option picker's product and, when a suggestion opened it, that origin (KIOSK-UX-23). */
+export type PickerState = { product: Product; origin?: "suggestion" };
+
+/**
+ * The line the option picker adds: a suggested product that needs choices keeps origin
+ * 'suggestion' through the picker, so Finanzas › Kiosco counts it (pure, tests/kiosk.test.ts).
+ */
+export function pickedLine(picker: PickerState, options: string[]) {
+  return { product: picker.product, options, origin: picker.origin };
+}
+
 /**
  * «Agregado: {name}» for the live region; the same text twice in a row gets a trailing no-break
  * space, so a second tap on the same product is announced again (KIOSK-UX-15).
@@ -160,7 +171,7 @@ export function DinerApp({
   const [unknown, setUnknown] = useState<DinerOrderBody | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [picker, setPicker] = useState<Product | null>(null);
+  const [picker, setPicker] = useState<PickerState | null>(null);
   // A reload of a QR page returns to this phone's latest order.
   const [view, setView] = useState<
     "menu" | "status" | "kiosk-done" | "checkout"
@@ -650,7 +661,7 @@ export function DinerApp({
       (kioskState?.suggestions.byProduct[p.id]?.length ?? 0) > 0
     )
       setSheet(p);
-    else if (pickerNeeded(p)) setPicker(p);
+    else if (pickerNeeded(p)) setPicker({ product: p });
     else add(p);
   };
   const title = <h1>{menu.restaurant.name}</h1>;
@@ -798,7 +809,11 @@ export function DinerApp({
                 locale={locale}
                 kiosk={kiosk}
                 onPick={(p) =>
-                  kiosk ? pickKiosk(p) : pickerNeeded(p) ? setPicker(p) : add(p)
+                  kiosk
+                    ? pickKiosk(p)
+                    : pickerNeeded(p)
+                      ? setPicker({ product: p })
+                      : add(p)
                 }
               />
             </div>
@@ -846,7 +861,7 @@ export function DinerApp({
                       currency={menu.restaurant.currency}
                       onAdd={(p) =>
                         pickerNeeded(p)
-                          ? setPicker(p)
+                          ? setPicker({ product: p, origin: "suggestion" })
                           : add(p, [], "suggestion")
                       }
                     />
@@ -887,11 +902,14 @@ export function DinerApp({
         )}
         {picker && (
           <ModifierPicker
-            product={picker}
+            product={picker.product}
             locale={locale}
             currency={menu.restaurant.currency}
             canOpen={false}
-            onConfirm={(selection) => add(picker, selection.options)}
+            onConfirm={(selection) => {
+              const l = pickedLine(picker, selection.options);
+              add(l.product, l.options, l.origin);
+            }}
             onClose={() => setPicker(null)}
           />
         )}
@@ -904,9 +922,9 @@ export function DinerApp({
             locale={locale}
             currency={menu.restaurant.currency}
             onAdd={(p, origin) => add(p, [], origin)}
-            onPick={(p) => {
+            onPick={(p, origin) => {
               setSheet(null);
-              setPicker(p);
+              setPicker({ product: p, origin });
             }}
             onClose={() => setSheet(null)}
           />

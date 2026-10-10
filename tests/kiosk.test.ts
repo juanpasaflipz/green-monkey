@@ -60,6 +60,7 @@ import {
 import {
   addedAnnouncement,
   cartInputs,
+  pickedLine,
 } from "../src/features/public/DinerApp";
 import { createIdleController } from "../src/features/public/kioskIdle";
 import { priceCart } from "../shared/service";
@@ -1297,5 +1298,18 @@ describe("the terminal screens' own clock is the 5-minute cap the idle rules pro
       idleDeadline("charging", { cartEmpty: false }).resetAt!,
     );
     expect(t).toBe(KIOSK_IDLE.chargeTimeoutMs + KIOSK_IDLE.inProgressExtraMs);
+  });
+});
+
+describe("a suggested product that needs choices is still a suggestion line (KIOSK-UX-23)", () => {
+  it("the option picker opened from «Combínalo con…» or «¿Algo más?» keeps origin 'suggestion'; from the menu, none", () => {
+    const product = { id: id(), name: { es: "Taco", en: "Taco" } } as never;
+    const fromSuggestion = pickedLine({ product, origin: "suggestion" }, ["o1"]);
+    expect(fromSuggestion).toEqual({
+      product,
+      options: ["o1"],
+      origin: "suggestion",
+    });
+    expect(pickedLine({ product }, ["o1"]).origin).toBeUndefined();
   });
 });
