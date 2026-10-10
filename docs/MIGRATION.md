@@ -99,3 +99,31 @@ No historical payment is migrated: only configuration moves, by hand, through Co
   2. Rotate the Clip keys (pos-lite stored them in plain text), then **Reemplazar credenciales** in Configuración with the new ones.
   3. Delete pos-lite's `tenant_credentials` rows for MP and Clip.
 - Platform orders keep being re-rung from the tablets, now paid with **Plataforma** («Pagado por plataforma»); pos-lite's settlement CSV import stays reconciliation-only.
+
+
+## Día de cambio (cutover runbook, critic R43)
+
+One runbook for the day Juanberto's moves from pos-lite to Green Monkey. Payments' and loyalty's
+detailed steps are in their sections above; this is the order. PILOT_SOP §10 points here.
+
+1. **Stop pos-lite**: counter charging, the kiosk APK and club stamping. Never run the pos-lite kiosk
+   in parallel with Green Monkey's (two kiosks would sell from two menus and two drawers).
+2. **Settle pending pos-lite kiosk orders** (`draft_kiosk`, `fired_unpaid`) in pos-lite before
+   switching.
+3. **Cancel pending intents** on each Mercado Pago device.
+4. **Loyalty**: export, preview and commit the members, then «Verificado» and the 10-member spot
+   check (LOYALTY.md).
+5. **Payments configuration**: manual terminals, platforms, Mercado Pago and Clip credentials, the
+   webhook URL, «Buscar terminales» (MP in PDV mode), device defaults (payments steps above).
+6. **One low-value real charge per terminal**, then cancel or refund it.
+7. **Kiosk** (KIOSK.md §4): uninstall the APK; add the kiosk link and its station (terminal and
+   receiving till); pair the tablet; the field checks (LAUNCH_HANDOFF); set «Cobro en el kiosco».
+   Photos and descriptions: the owner uploads them in the product editor (the in-app import of
+   pos-lite's photos, critic R42/Q7, is still open: see KIOSK.md); curated suggestions per product
+   and for the cart (pos-lite's last curated set was Orden Papas, Brownie con crema, Refresco,
+   Cerveza and CHELA 3X2).
+8. **Club settings**: attestation, enable.
+9. **Go live.**
+10. **After go-live**: revoke pos-lite's MP OAuth grant; rotate the Clip keys; delete pos-lite's
+    `tenant_credentials` for MP and Clip; the final pos-lite wallet-pass update; delete the export
+    files; post the counter sign.

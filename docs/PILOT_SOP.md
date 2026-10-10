@@ -703,3 +703,33 @@ El club de Juanberto's pasa de POS Lite a Green Monkey el día de cambio
   Clientes › Imprimir datos del cliente o Eliminar datos del cliente (gerente).
   Clientes sigue disponible aunque el club esté desactivado o el plan sea
   Gratis, mientras haya socios con datos.
+
+## 10. Kiosco de autoservicio
+
+El «Kiosco de autoservicio» es la tableta donde el cliente pide y paga solo. No es el «modo
+kiosco» de §1.3 (imprimir sin el diálogo del navegador en la caja). Guía completa:
+[KIOSK.md](KIOSK.md).
+
+- **Configurarlo (dueño o gerente, unos 15 minutos).** En la tableta: desinstala la app del kiosco
+  de POS Lite, actualiza Chrome, pon bloqueo de pantalla con PIN y activa «Fijar aplicaciones» con
+  «Solicitar PIN para quitar la fijación». En Green Monkey: Configuración › Pedidos en línea ›
+  Agregar kiosco; en «Kiosco de autoservicio» elige la **Terminal** y la **Caja que recibe los
+  cobros**, y toca **Vincular tableta**: sale un código de 8 dígitos que vence en 10 minutos. En
+  la tableta abre el enlace del kiosco, deja presionado 3 segundos el nombre del restaurante,
+  escribe el código y toca **Vincular**. Toca «Toca para ordenar» una vez (pantalla completa) y
+  fija Chrome desde Recientes.
+- **Prueba antes de abrir.** Una venta con tarjeta, una tarjeta rechazada (cancela en la
+  terminal), un «Pagar en caja», dejar la tableta sola hasta que vuelva al inicio, y reiniciarla.
+- **Abrir el día.** La caja que recibe los cobros debe estar abierta: sin ella el kiosco solo
+  ofrece «Pagar en caja». Revisa en Configuración que diga «Tableta vinculada · vista hace…».
+  Después de un apagón, vuelve a fijar Chrome.
+- **Pedidos pagados en el kiosco.** Llegan solos a cocina en cuanto se aprueba la tarjeta, con
+  «Comer aquí» o «Para llevar». El cobro queda en la caja que recibe los cobros, en su terminal.
+- **«Pagar en caja».** El cliente trae su código (K-14): cóbralo y acéptalo en Órdenes como hoy.
+- **«Pagando en el kiosco…».** Ese pedido no se puede aceptar ni rechazar mientras el cliente paga.
+  Si se quedó atorado, un gerente toca **Cancelar cobro en curso**.
+- **Tarjeta roja «pagó … y no se pudo enviar a cocina».** El cliente pagó pero un producto se
+  acabó o cambió de precio. Toca **Resolver cobro del kiosco**: si el producto ya está, **Reintentar**
+  crea el pedido; si no, el gerente reembolsa en la app de Clip o Mercado Pago, lo registra como
+  «Se reembolsó» y luego rechaza el pedido. La caja no cierra mientras haya una tarjeta roja.
+- **Cerrar el día.** El corte muestra «Del kiosco: n · $» bajo cada terminal.

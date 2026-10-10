@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | Owner login, employee PIN, permissions | Both auth systems | Unify memberships, sessions, device-bound PIN access | 1–2, required |
 | Restaurants/organizations, branding | POS Lite tenants/org/branding; Luma restaurant selector | One tenant model; explicit org aggregation | 1, 4–5, required |
-| Catalog/categories/search/photos | Both menus; POS Lite uploads/R2 | New shared catalog and selling UI | 2, required; R2 when images enabled |
+| Catalog/categories/search/photos | Both menus; POS Lite uploads/R2 | New shared catalog and selling UI; product photos and bilingual descriptions since kiosk 039 (browser re-encode to WebP, container validated on the server, private R2 bucket served from the app's origin, [KIOSK](KIOSK.md) §7) | 2, required; R2 when images enabled |
 | Modifiers, combos, open amount | Both modifiers; POS Lite combos/open amount | Server validation and shared price calculation | 2, required |
 | Promotions, scheduled offers, discounts/courtesies | Luma promotions; POS Lite discounts/approvals | One promotion/discount engine and audit | 2, required |
 | Tables, waiter attribution, service rounds | Luma tables/waiter orders; POS Lite order edits | Rewrite table workspace and round dispatch | 2, required |
@@ -18,7 +18,7 @@
 | Split by items/amount; grouped settlement | Both splits; POS Lite payment groups | Canonical allocations; keep kitchen orders distinct | 3, required |
 | Full/partial refunds, cancellations, history | Both | Reversal records and scoped manager approval | 2–3, required |
 | Offline cash, menu cache, refresh recovery | POS Lite Dexie/sync; Luma local handling | Preserve/rebuild with visible reconciliation | 3, required |
-| QR customer ordering and kiosk | Both; dedicated POS Lite kiosk bundle | Rebuilt on the same order services as public ordering (032/033, [PUBLIC_ORDERING](PUBLIC_ORDERING.md)): revocable table, takeaway and kiosk codes, held orders accepted by staff or paid first at the counter, no online card payment; kiosk and QR are Pro. Locally verified, not staged | 3, required web flows |
+| QR customer ordering and kiosk | Both; dedicated POS Lite kiosk bundle | Rebuilt on the same order services as public ordering (032/033, [PUBLIC_ORDERING](PUBLIC_ORDERING.md)): revocable table, takeaway and kiosk codes, held orders accepted by staff or paid first at the counter, no online card payment; kiosk and QR are Pro. Locally verified, not staged | 3, required web flows. Kiosk self-checkout (039, [KIOSK](KIOSK.md)): card payment on the MP Point / Clip reader next to the kiosk with the order reaching the kitchen on approval (LD-72: on payment only), para aquí / para llevar, a paired tablet (HttpOnly binding), idle reset at 95 s, accessibility modes, club lookup without names | 3, required web flows |
 | Native iOS/Android wrappers | POS Lite ios/android/Capacitor | Preserve a compatible API path; reintroduce when needed | Optional follow-on |
 | Ingredients, recipe links, substitutions, costs | Luma recipes/substitutes; POS Lite recipe management | Stable IDs, units, snapshots, yield | 4, required |
 | Suppliers, purchase orders, receiving | POS Lite procurement; Luma merchandise | One receiving workflow and stock cause | 4, required |
@@ -39,7 +39,7 @@
 | Apple/Google wallet passes | POS Lite | Provider-gated loyalty extension. Pilot: pos-lite keeps serving its passes and `/gr` (LD-72; [Loyalty](LOYALTY.md)). | Optional configured module |
 | SMS/WhatsApp and voice operations | POS Lite Twilio/Meta | Retain adapter boundary and consent/preferences. Pilot: none sent; the club records marketing consent only (LD-72). | Optional configured module |
 | AI receipt/menu parsing and recipe matching | Both Anthropic/AI parsers | Draft suggestions, confidence, human review before writes | 4–5, optional assist; manual flow required |
-| Kiosk suggestions, menu boards/displays | POS Lite | Use shared catalog/branding; no separate pricing logic | Optional follow-on |
+| Kiosk suggestions, menu boards/displays | POS Lite | Kiosk suggestions built in 039 (curated per product and for the cart, "popular at this hour" fallback, suggestion lines attributed in Finanzas › Kiosco); menu boards remain a follow-on | Suggestions 3 (039); boards optional follow-on |
 | Incident monitoring / AI sentinel | POS Lite sentinel | Basic operational monitoring required; automated fixes off by default | 6 baseline; advanced optional module |
 | Financing, settlement/disbursement, marketing/site fragments | Legacy residual files/docs | Exclude from base POS; record any future demand explicitly | Outside base scope |
 

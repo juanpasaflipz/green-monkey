@@ -172,6 +172,10 @@ plain-http or `localhost` value stops the command before it writes anything
 **ARCO requests** (access, rectification, cancellation, opposition, LFPDPPP
 Arts. 28–34) arrive at `LEGAL_PRIVACY_CONTACT_EMAIL`:
 
+- kiosk (039, critic R41): `kiosk_checkouts.loyalty_member_id` holds a member id only (never a name
+  or phone) and retention blanks it 30 days after the checkout; a member's deletion is loyalty's
+  (Clientes › Eliminar datos del cliente). Kiosk tablets store no IP or user agent;
+
 - answer within **20 business days** and make the decision effective within
   **15 business days** after answering; free of charge;
 - verify identity as above (INE; for a restaurant's diners or staff, refer

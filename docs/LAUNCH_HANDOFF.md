@@ -591,6 +591,31 @@ outside the repository. **Yours:** take the offline copy of `CREDENTIAL_ENCRYPTI
   printed table card scanned by the diners' phone cameras keeps its `#` code, and a
   kiosk tablet uses its own browser profile.
 
+### 1.16a Kiosk self-checkout: the media bucket and the field checks (039)
+
+- **Why.** Kiosk card payment, photos and the tablet setup have never run on the real Tab S10 FE,
+  the real Mercado Pago Point and Clip readers, or a real R2 bucket ([KIOSK.md](KIOSK.md)).
+- **What only you can supply.** A private Cloudflare R2 bucket for menu photos (separate from the
+  backup bucket) and a **bucket-scoped Object Read & Write token that does not expire** (LD-66's
+  backup token expires on 2026-11-07; do not repeat that). They go on web only:
+  `MEDIA_STORE=r2`, `MEDIA_R2_ACCOUNT_ID`, `MEDIA_R2_BUCKET`, `MEDIA_R2_ACCESS_KEY_ID`,
+  `MEDIA_R2_SECRET_ACCESS_KEY` ([INFRASTRUCTURE.md](INFRASTRUCTURE.md)). Without them the kiosk and
+  the QR menu work without photos.
+- **Counsel.** The kiosk's club lookup shows counts and a masked phone only (no name, no
+  enrolment, critic R21); the tablet stores one binding cookie and no IP. Counsel confirms the
+  restaurant's privacy notice covers the club lookup at a public screen (LD-3 list).
+- **Field checks (gate before the pilot uses the kiosk; kiosk spec §8.4), recorded here:**
+  - On the Tab S10 FE: app pinning with PIN and the exit attempts (back, home and recents gestures,
+    notification shade); fullscreen re-entry after the system bars return; the wake lock over
+    8 hours on the charger; reboot recovery (re-pin); the heartbeat in Configuración; the reload
+    when a new build ships; Chrome auto-update behaviour.
+  - With the real terminals: one Mercado Pago Point and one Clip sale, a decline, an on-device
+    cancel, a timeout (3 minutes, then «La terminal sigue procesando…»), a busy terminal; the MP
+    device in PDV mode (parity B2).
+  - The KDS auto-print of a kiosk order on the GHIA `ghia-web` queue (B1).
+  - A photo upload from the iPad's camera roll: Safari may not encode WebP on a canvas
+    (LD-88); if «Súbela desde Chrome o Edge» shows, upload from the store Mac.
+
 ### 1.17 Contacts, escalation and the go-live decision
 
 - Fill in [RUNBOOK.md, "Contacts and escalation"](RUNBOOK.md#contacts-and-escalation)

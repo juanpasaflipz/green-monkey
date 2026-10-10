@@ -961,6 +961,31 @@ never double-post) and the `loyalty_ledger_vs_members` alert in Finanzas › Clu
 de lealtad (the alert is a count: escalate with the restaurant and the day;
 support compares members with their ledger sums).
 
+## Kiosk self-checkout and menu photos
+
+Area doc: [KIOSK.md](KIOSK.md) (troubleshooting table in §11).
+
+- **"El kiosco no cobra con tarjeta."** Configuración › Pedidos en línea › Kiosco de autoservicio:
+  the station shows "Tableta vinculada · vista hace …" (else re-pair: Vincular tableta, then on the
+  tablet a 3-second press on the restaurant name), a terminal and a till; the till's drawer is open;
+  the provider shows Conectado; "Cobro en el kiosco" is not "Solo en caja"; `KIOSK_SELF_CHECKOUT_ENABLED`
+  is not `false`. Meanwhile the kiosk takes counter orders.
+- **"Terminal ocupada."** Another live charge on the reader (a POS charge or another kiosk). Wait, or a
+  manager cancels it from the inbox card ("Cancelar cobro en curso") or Cobros en terminal.
+- **"Cobrado sin pedido" (red card).** "Resolver cobro del kiosco": retry once the product is back
+  (any operator), or refund in the provider app, record "Se reembolsó" (manager, PIN), then reject the
+  hold. The drawer cannot close until it is resolved.
+- **Kill switch.** `KIOSK_SELF_CHECKOUT_ENABLED=false` on web (redeploy) turns card at the kiosk off;
+  charges already taken still settle.
+- **Menu photos store outage.** The media route answers 503 (`media_unavailable`, alert on the logs);
+  menus show text tiles; uploads fail with "No pudimos guardar la foto". Check R2 status and the
+  token; nothing to repair in the database. `MENU_PHOTOS_ENABLED=false` hides photos entirely.
+- **R2 media token rotation.** Create a new bucket-scoped Object Read & Write token without expiry
+  for the media bucket, set `MEDIA_R2_ACCESS_KEY_ID` and `MEDIA_R2_SECRET_ACCESS_KEY` on web
+  (railway-vars.sh), redeploy, check one photo loads and one upload works, then revoke the old token.
+- **Tenant offboarding.** After the account's data deletion, delete the prefix `m/<tenantId>/` from the
+  media bucket (critic R36: a runbook step, not a hook).
+
 ## Open follow-ups
 
 Known gaps this release leaves open, with their owner:
