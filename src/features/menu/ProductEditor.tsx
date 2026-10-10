@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import {
   currencyExponent,
   type Locale,
@@ -185,7 +185,11 @@ export function ProductEditor({
     descEn,
   ]);
   const [opened] = useState(snapshot);
-  const dirty = snapshot !== opened;
+  // «Sugerir con este producto» saves on its own; its unsaved ticks are unsaved edits too, and
+  // «Guardar» saves them before the product (KIOSK-UX-12).
+  const [suggestionsDirty, setSuggestionsDirty] = useState(false);
+  const saveSuggestions = useRef<(() => Promise<boolean>) | null>(null);
+  const dirty = snapshot !== opened || suggestionsDirty;
   const discard = useDiscardGuard(dirty, t);
 
   const linked = groupIds
@@ -246,6 +250,12 @@ export function ProductEditor({
   async function save(): Promise<Product | null> {
     const value = body();
     if (!value) return null;
+    if (
+      suggestionsDirty &&
+      saveSuggestions.current &&
+      !(await saveSuggestions.current())
+    )
+      return null;
     setBusy(true);
     setError("");
     try {
@@ -710,6 +720,8 @@ export function ProductEditor({
                 products={payload.products}
                 locale={locale}
                 disabled={!online || busy}
+                onDirtyChange={setSuggestionsDirty}
+                saveRef={saveSuggestions}
               />
             )}
           </fieldset>

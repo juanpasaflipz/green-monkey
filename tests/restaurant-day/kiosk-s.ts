@@ -293,8 +293,7 @@ async function kiosksSetup(owner: Device, state: RunState) {
   ])
     await kiosk.getByLabel(label, { exact: true }).check();
   await kiosk
-    .getByRole("button", { name: "Guardar kiosco", exact: true })
-    .first()
+    .getByRole("button", { name: "Guardar configuración", exact: true })
     .click();
   await expect(kiosk.getByText("Kiosco guardado").first()).toBeVisible();
   for (const k of Object.keys(KIOSKS_S) as KioskKeyS[]) {
@@ -316,7 +315,7 @@ async function kiosksSetup(owner: Device, state: RunState) {
   for (const id of KIOSK_SETTINGS_S.cartSuggestions)
     await sides.getByLabel(productS(id).name, { exact: true }).check();
   await sides
-    .getByRole("button", { name: "Guardar kiosco", exact: true })
+    .getByRole("button", { name: "Guardar sugerencias", exact: true })
     .click();
   await expect(kiosk.getByText("Kiosco guardado").first()).toBeVisible();
   // Read back after a reload: what the owner saved.

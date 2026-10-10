@@ -108,11 +108,19 @@ export default defineArea({
     kioskPairCode:
       "Escribe este código en la tableta: {code} (vence en 10 min)",
     kioskUnpair: "Desvincular",
+    kioskUnpairTitle: "Desvincular la tableta",
+    kioskUnpairConfirm:
+      "La tableta de {station} deja de cobrar con tarjeta en este momento: el kiosco solo ofrecerá «Pagar en caja» hasta que vincules una tableta otra vez desde ella.",
+    kioskReplaceTablet: "Reemplazar tableta",
+    kioskReplaceConfirm:
+      "Al generar el código, la tableta vinculada a {station} deja de cobrar con tarjeta hasta que escribas el código en la tableta nueva.",
+    kioskReplaceGo: "Generar código",
     kioskPairPending: "Código pendiente · vence {time}",
     kioskLastSeen: "Tableta vinculada · vista hace {ago} · versión {build}",
     kioskSilentSince: "Sin señal desde las {time}",
     kioskNoTablet: "Sin tableta vinculada",
-    kioskSaveSettings: "Guardar kiosco",
+    kioskSaveSettings: "Guardar configuración",
+    kioskSaveCart: "Guardar sugerencias",
     kioskSaved: "Kiosco guardado",
     kioskNoStations:
       "Agrega un kiosco en «Códigos» para configurar su terminal y su tableta.",
@@ -272,11 +280,19 @@ export default defineArea({
     kioskPairTablet: "Pair tablet",
     kioskPairCode: "Enter this code on the tablet: {code} (expires in 10 min)",
     kioskUnpair: "Unpair",
+    kioskUnpairTitle: "Unpair the tablet",
+    kioskUnpairConfirm:
+      "{station}'s tablet stops taking cards right now: the kiosk offers only «Pay at the counter» until you pair a tablet from it again.",
+    kioskReplaceTablet: "Replace tablet",
+    kioskReplaceConfirm:
+      "Once you generate the code, the tablet paired to {station} stops taking cards until you enter the code on the new tablet.",
+    kioskReplaceGo: "Generate code",
     kioskPairPending: "Code pending · expires {time}",
     kioskLastSeen: "Tablet paired · seen {ago} ago · build {build}",
     kioskSilentSince: "No signal since {time}",
     kioskNoTablet: "No tablet paired",
-    kioskSaveSettings: "Save kiosk",
+    kioskSaveSettings: "Save settings",
+    kioskSaveCart: "Save suggestions",
     kioskSaved: "Kiosk saved",
     kioskNoStations:
       "Add a kiosk under «Codes» to set up its card reader and tablet.",

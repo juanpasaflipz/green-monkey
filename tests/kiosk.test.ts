@@ -20,7 +20,12 @@ import {
   suggestionsInput,
   type KioskCheckoutView,
 } from "../shared/kiosk";
-import { cardOffText } from "../src/features/public/KioskSettings";
+import {
+  cardOffText,
+  keepsDraft,
+  pairActionKey,
+} from "../src/features/public/KioskSettings";
+import { suggestionsDirty } from "../src/features/menu/ProductSuggestionsField";
 import { kioskReportTiles } from "../src/features/public/KioskReport";
 import { moneyFormatter } from "../src/features/menu/format";
 import { orderModeKey } from "../src/labels";
@@ -1024,5 +1029,41 @@ describe("a kiosk «para aquí» order reads «Comer aquí», never table servic
     expect(
       group.value({ group: "mode", key: "eat_in" } as never),
     ).toBe("Tipo de servicio: Comer aquí");
+  });
+});
+
+describe("Configuración › Kiosco de autoservicio keeps unsaved edits and asks before cutting a tablet off (KIOSK-UX-12)", () => {
+  it("a save reloads only its own part: the settings keep the cart ticks and the reverse; a station save keeps both", () => {
+    expect(keepsDraft("all", "settings")).toBe(false);
+    expect(keepsDraft("all", "cart")).toBe(false);
+    expect(keepsDraft("settings", "settings")).toBe(false);
+    expect(keepsDraft("settings", "cart")).toBe(true);
+    expect(keepsDraft("cart", "cart")).toBe(false);
+    expect(keepsDraft("cart", "settings")).toBe(true);
+    expect(keepsDraft("station", "settings")).toBe(true);
+    expect(keepsDraft("station", "cart")).toBe(true);
+  });
+  it("each save has its own label; a paired tablet's new code is «Reemplazar tableta»", () => {
+    const es = strings.es;
+    const saves = [es.kioskSaveSettings, es.kioskSaveCart, es.kioskSaveStation];
+    expect(new Set(saves).size).toBe(3);
+    expect(saves).toEqual([
+      "Guardar configuración",
+      "Guardar sugerencias",
+      "Guardar estación",
+    ]);
+    const device = (state: "pending" | "paired") =>
+      ({ id: id(), state }) as never;
+    expect(pairActionKey(null)).toBe("kioskPairTablet");
+    expect(pairActionKey(device("pending"))).toBe("kioskPairTablet");
+    expect(pairActionKey(device("paired"))).toBe("kioskReplaceTablet");
+    expect(es[pairActionKey(device("paired"))]).toBe("Reemplazar tableta");
+  });
+  it("«Sugerir con este producto»: ticks that differ from the saved set, in order, are unsaved edits", () => {
+    expect(suggestionsDirty([], [])).toBe(false);
+    expect(suggestionsDirty(["a", "b"], ["a", "b"])).toBe(false);
+    expect(suggestionsDirty(["a"], [])).toBe(true);
+    expect(suggestionsDirty([], ["a"])).toBe(true);
+    expect(suggestionsDirty(["b", "a"], ["a", "b"])).toBe(true);
   });
 });

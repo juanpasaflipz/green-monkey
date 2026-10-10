@@ -14,8 +14,32 @@ import { strings, translateError, type Key } from "../../i18n";
 import { api } from "../../api";
 import { Button, Modal } from "../../components/ui";
 import { fill } from "../menu/format";
+import { ConfirmDialog } from "../menu/ConfirmDialog";
 
 const MANAGERS = ["owner", "manager"];
+
+/** Which save reloaded the section; "all" is the first load (KIOSK-UX-12). */
+export type KioskSavePart = "all" | "settings" | "cart" | "station";
+
+/**
+ * Whether a reload after a save keeps the manager's local edits of one part (pure,
+ * tests/kiosk.test.ts): only the part that was saved, or the first load, takes the server's copy,
+ * so saving the settings never drops unsaved cart-suggestion ticks, and the reverse (KIOSK-UX-12).
+ */
+export function keepsDraft(
+  saved: KioskSavePart,
+  part: "settings" | "cart",
+): boolean {
+  return saved !== "all" && saved !== part;
+}
+
+/**
+ * The station's pairing button: with a paired tablet, a new code revokes it (createPairing), so
+ * the button says «Reemplazar tableta» and asks first (KIOSK-UX-12).
+ */
+export function pairActionKey(device: KioskStationView["device"]): Key {
+  return device?.state === "paired" ? "kioskReplaceTablet" : "kioskPairTablet";
+}
 
 export function KioskSettings({
   session,
@@ -39,12 +63,16 @@ export function KioskSettings({
     null,
   );
   const canEdit = MANAGERS.includes(session.role);
-  async function load() {
+  async function load(saved: KioskSavePart = "all") {
     try {
       const v = await api<KioskSettingsView>("/kiosk/settings");
       setView(v);
-      setForm(v.settings);
-      setCart(v.cartSuggestions.productIds);
+      setForm((local) =>
+        local && keepsDraft(saved, "settings") ? local : v.settings,
+      );
+      setCart((local) =>
+        keepsDraft(saved, "cart") ? local : v.cartSuggestions.productIds,
+      );
       const catalog = await api<Product[]>("/catalog").catch(
         () => [] as Product[],
       );
@@ -56,15 +84,32 @@ export function KioskSettings({
   useEffect(() => {
     if (canEdit) void load();
   }, []);
-  if (!canEdit || !view || !form) return null;
-  async function run(fn: () => Promise<unknown>, ok?: string) {
+  if (!canEdit) return null;
+  if (!view || !form)
+    // A failed first load says why instead of leaving the section out (KIOSK-UX-12).
+    return error ? (
+      <section
+        className="settings-section kiosk-settings"
+        aria-labelledby="kiosk-settings-title"
+      >
+        <h3 id="kiosk-settings-title">{t("kioskSettingsTitle")}</h3>
+        <p className="error" role="alert">
+          {error}
+        </p>
+      </section>
+    ) : null;
+  async function run(
+    part: KioskSavePart,
+    fn: () => Promise<unknown>,
+    ok?: string,
+  ) {
     setBusy(true);
     setError("");
     setMessage("");
     try {
       await fn();
       if (ok) setMessage(ok);
-      await load();
+      await load(part);
     } catch (e) {
       setError(translateError((e as Error).message, locale));
     } finally {
@@ -73,6 +118,7 @@ export function KioskSettings({
   }
   const save = () =>
     run(
+      "settings",
       () =>
         api("/kiosk/settings", {
           operationId: crypto.randomUUID(),
@@ -86,6 +132,7 @@ export function KioskSettings({
     );
   const saveCart = () =>
     run(
+      "cart",
       () =>
         api("/kiosk/cart-suggestions", {
           operationId: crypto.randomUUID(),
@@ -162,6 +209,7 @@ export function KioskSettings({
           busy={busy || !online}
           onSave={(terminalId, registerDeviceId) =>
             run(
+              "station",
               () =>
                 api(`/kiosk/stations/${st.id}`, {
                   operationId: crypto.randomUUID(),
@@ -173,7 +221,7 @@ export function KioskSettings({
             )
           }
           onPair={() =>
-            run(async () => {
+            run("station", async () => {
               const r = await api<{ code: string }>(
                 `/kiosk/stations/${st.id}/pairing`,
                 {},
@@ -182,7 +230,7 @@ export function KioskSettings({
             })
           }
           onUnpair={() =>
-            run(() =>
+            run("station", () =>
               api(`/kiosk/devices/${st.device!.id}/revoke`, {
                 operationId: crypto.randomUUID(),
               }),
@@ -213,7 +261,7 @@ export function KioskSettings({
             ))}
           </div>
           <Button disabled={busy || !online} onClick={() => void saveCart()}>
-            {t("kioskSaveSettings")}
+            {t("kioskSaveCart")}
           </Button>
         </fieldset>
       )}
@@ -306,6 +354,7 @@ function StationRow({
     values ? fill(strings[locale][k], values) : strings[locale][k];
   const [terminal, setTerminal] = useState(station.terminalId ?? "");
   const [till, setTill] = useState(station.registerDeviceId ?? "");
+  const [confirm, setConfirm] = useState<"unpair" | "replace" | null>(null);
   const tillName = view.tills.find((x) => x.id === till)?.name ?? "";
   const d = station.device;
   const time = (iso: string) =>
@@ -383,15 +432,49 @@ function StationRow({
                 })}
       </p>
       <div className="row wrap">
-        <Button disabled={busy} onClick={onPair}>
-          {t("kioskPairTablet")}
+        <Button
+          disabled={busy}
+          onClick={() =>
+            pairActionKey(d) === "kioskReplaceTablet"
+              ? setConfirm("replace")
+              : onPair()
+          }
+        >
+          {t(pairActionKey(d))}
         </Button>
         {d && (
-          <Button variant="ghost" disabled={busy} onClick={onUnpair}>
+          <Button
+            variant="ghost"
+            disabled={busy}
+            onClick={() => setConfirm("unpair")}
+          >
             {t("kioskUnpair")}
           </Button>
         )}
       </div>
+      {confirm && (
+        <ConfirmDialog
+          title={t(
+            confirm === "unpair" ? "kioskUnpairTitle" : "kioskReplaceTablet",
+          )}
+          message={t(
+            confirm === "unpair" ? "kioskUnpairConfirm" : "kioskReplaceConfirm",
+            { station: station.label || "—" },
+          )}
+          confirmLabel={t(
+            confirm === "unpair" ? "kioskUnpair" : "kioskReplaceGo",
+          )}
+          cancelLabel={t("cancel")}
+          danger
+          t={t}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => {
+            const go = confirm === "unpair" ? onUnpair : onPair;
+            setConfirm(null);
+            go();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -1,6 +1,8 @@
 // "Sugerir con este producto" (039, §2.8): up to 4 products the kiosk offers as "Combínalo con…"
-// on this product's sheet. Its own save (the set is replaced by UPDATE, versioned).
-import { useEffect, useState } from "react";
+// on this product's sheet. Its own save (the set is replaced by UPDATE, versioned); unsaved ticks
+// count as the product editor's unsaved edits, and the product's «Guardar» saves them first
+// (KIOSK-UX-12).
+import { useEffect, useState, type MutableRefObject } from "react";
 import type { Locale, Product } from "../../../shared/domain";
 import { KIOSK_LIMITS } from "../../../shared/kiosk";
 import { strings, translateError } from "../../i18n";
@@ -11,19 +13,31 @@ type Sets = {
   byProduct: Record<string, { productIds: string[]; version: number }>;
 };
 
+/** Ticks differ from the saved set (order counts: the sheet shows them in this order). */
+export function suggestionsDirty(ids: string[], saved: string[]): boolean {
+  return ids.length !== saved.length || ids.some((id, i) => id !== saved[i]);
+}
+
 export function ProductSuggestionsField({
   productId,
   products,
   locale,
   disabled,
+  onDirtyChange,
+  saveRef,
 }: {
   productId: string;
   products: Product[];
   locale: Locale;
   disabled: boolean;
+  /** Called when the ticks start or stop differing from the saved set. */
+  onDirtyChange?: (dirty: boolean) => void;
+  /** Set to this field's save, which resolves false when it failed (its message says why). */
+  saveRef?: MutableRefObject<(() => Promise<boolean>) | null>;
 }) {
   const t = strings[locale];
   const [ids, setIds] = useState<string[]>([]);
+  const [saved, setSaved] = useState<string[]>([]);
   const [version, setVersion] = useState(0);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -32,6 +46,7 @@ export function ProductSuggestionsField({
       .then((r) => {
         const own = r.byProduct[productId];
         setIds(own?.productIds ?? []);
+        setSaved(own?.productIds ?? []);
         setVersion(own?.version ?? 0);
       })
       .catch(() => {});
@@ -39,9 +54,17 @@ export function ProductSuggestionsField({
   const options = products.filter(
     (p) => p.id !== productId && !p.archived && !p.openAmount,
   );
-  async function save() {
+  const dirty = suggestionsDirty(ids, saved);
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty]);
+  useEffect(() => {
+    if (saveRef) saveRef.current = save;
+  });
+  async function save(): Promise<boolean> {
     setBusy(true);
     setMessage("");
+    const sent = ids;
     try {
       const r = await api<{ version: number }>(
         `/menu/products/${productId}/suggestions`,
@@ -52,9 +75,12 @@ export function ProductSuggestionsField({
         },
       );
       setVersion(r.version);
+      setSaved(sent);
       setMessage(t.kioskSaved);
+      return true;
     } catch (e) {
       setMessage(translateError((e as Error).message, locale));
+      return false;
     } finally {
       setBusy(false);
     }
