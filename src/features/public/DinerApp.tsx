@@ -69,6 +69,13 @@ export type DraftLine = {
   origin?: "suggestion";
 };
 export type Draft = { lines: DraftLine[]; name: string; note: string };
+/**
+ * The cart's lines as the menu prices them: a kiosk line's `origin` is report attribution the
+ * server keeps on the hold, not part of a priced line (quote's line input is strict, so a
+ * suggestion line would read as invalid and block the cart). Diner lines carry no note.
+ */
+export const cartInputs = (lines: DraftLine[]) =>
+  lines.map(({ origin: _origin, ...l }) => ({ ...l, note: "" }));
 /** A diner's own order on this phone (QR only, sessionStorage). */
 export type StoredHold = {
   key: string;
@@ -318,12 +325,7 @@ export function DinerApp({
 
   const catalog = menu?.catalog ?? [];
   const cart = useMemo(
-    () =>
-      priceCart(
-        draft.lines.map((l) => ({ ...l, note: "" })),
-        catalog,
-        false,
-      ),
+    () => priceCart(cartInputs(draft.lines), catalog, false),
     [draft.lines, catalog],
   );
 

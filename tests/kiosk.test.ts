@@ -20,6 +20,8 @@ import {
   type KioskCheckoutView,
 } from "../shared/kiosk";
 import { stepFor } from "../src/features/public/kiosk/KioskCheckout";
+import { cartInputs } from "../src/features/public/DinerApp";
+import { priceCart } from "../shared/service";
 import {
   keepAwake,
   viewportClass,
@@ -215,6 +217,48 @@ describe("the checkout's next step while charging", () => {
     expect(stepFor(view({ state: "expired" }), "still")).toBe("askCounter");
     expect(stepFor(view({ state: "pending" }), "charging")).toBe(null);
     expect(stepFor(view({ state: "approved" }), "charging")).toBe(null);
+  });
+});
+
+describe("the kiosk cart", () => {
+  it("a line added from a suggestion prices like any other (its origin is attribution only), so it never blocks the cart", () => {
+    const productId = id();
+    const catalog = [
+      {
+        id: productId,
+        name: { es: "Papas de prueba", en: "Test fries" },
+        category: { es: "Acompañantes", en: "Sides" },
+        categoryId: id(),
+        price: 4500,
+        available: true,
+        station: "kitchen",
+        groups: [],
+        cost: null,
+        recipe: [],
+        version: 1,
+      },
+    ] as never;
+    const lines = [
+      {
+        id: id(),
+        productId,
+        quantity: 1,
+        options: [],
+        origin: "suggestion" as const,
+      },
+    ];
+    expect(cartInputs(lines)[0]).not.toHaveProperty("origin");
+    const priced = priceCart(cartInputs(lines), catalog, false);
+    expect(priced.blocked).toBe(false);
+    expect(priced.total).toBe(4500);
+    // The raw line would not price: quote's line input is strict.
+    expect(
+      priceCart(
+        lines.map((l) => ({ ...l, note: "" })),
+        catalog,
+        false,
+      ).blocked,
+    ).toBe(true);
   });
 });
 
