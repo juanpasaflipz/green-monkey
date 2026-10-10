@@ -133,6 +133,10 @@ async function queueHint(
   return true;
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A manager's «No se cobró» of the last 24 hours (PAYMENTS_LIMITS.lateWatchForMs). */
+const recentlyDismissed = (tx: Tx) =>
+  tx`(state='dismissed' and resolution='not_charged'
+      and resolved_at > now() - ${PAYMENTS_LIMITS.lateWatchForMs / 1000} * interval '1 second')`;
 
 /**
  * Resolves the hook to its account and the notified id to one live attempt of that account, in a
@@ -158,10 +162,12 @@ async function match(
       where hook_hash=${hash}`;
     if (!account || account.provider !== provider || account.state !== "active")
       return null;
+    // Live attempts, and the «No se cobró» of the last 24 h (P2V-FIXES-2): a payment the
+    // provider took after the dismissal must reach the worker's late-approval check.
     const [attempt] = await tx`select id from payment_attempts
       where tenant_id=${account.tenant_id} and provider=${provider}
         and lower(provider_reference)=lower(${reference})
-        and state in ('sending','pending','unknown') limit 1`;
+        and (state in ('sending','pending','unknown') or ${recentlyDismissed(tx)}) limit 1`;
     if (attempt)
       return {
         tenantId: account.tenant_id as string,
@@ -172,11 +178,13 @@ async function match(
       provider === "mercadopago"
         ? await tx`select id from payment_attempts
             where tenant_id=${account.tenant_id} and provider=${provider}
-              and id=${externalReference} and provider_reference is null and state='unknown'`
+              and id=${externalReference} and provider_reference is null
+              and (state='unknown' or ${recentlyDismissed(tx)})`
         : await tx`select id from payment_attempts
             where tenant_id=${account.tenant_id} and provider=${provider}
-              and provider_reference is null and state='unknown'
-            order by created_at desc limit 3`;
+              and provider_reference is null
+              and (state='unknown' or ${recentlyDismissed(tx)})
+            order by (state='unknown') desc, created_at desc limit 3`;
     return orphans.length
       ? {
           tenantId: account.tenant_id as string,

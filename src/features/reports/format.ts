@@ -104,6 +104,7 @@ const EXCEPTION_KEYS: Record<ExceptionKind, Key> = {
   terminal_attempt_review: "payExKindAttemptReview",
   terminal_attempt_dismissed: "payExKindAttemptDismissed",
   terminal_attempt_unknown_open: "payExKindAttemptUnknown",
+  terminal_attempt_late_approval: "payExKindAttemptLate",
 };
 export function exceptionKindLabel(kind: ExceptionKind, locale: Locale) {
   return strings[locale][EXCEPTION_KEYS[kind]];

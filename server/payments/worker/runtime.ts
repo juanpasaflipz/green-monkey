@@ -75,6 +75,8 @@ export type WorkerAttempt = {
   cancel_requested_at: Date | null;
   created_at: Date;
   sent_at: Date | null;
+  resolution: string | null;
+  resolved_at: Date | null;
 };
 
 export async function readAttempt(
@@ -84,7 +86,7 @@ export async function readAttempt(
   const [a] = await tx<WorkerAttempt[]>`
     select tenant_id,id,target,origin,order_id,terminal_id,provider,provider_device_id,
       terminal_label,amount,tip,state,provider_reference,provider_status,paid_amount,error_code,
-      cancel_requested_at,created_at,sent_at
+      cancel_requested_at,created_at,sent_at,resolution,resolved_at
     from payment_attempts where id=${attemptId}`;
   return a ?? null;
 }
@@ -96,7 +98,7 @@ export async function lockAttempt(
   const [a] = await tx<WorkerAttempt[]>`
     select tenant_id,id,target,origin,order_id,terminal_id,provider,provider_device_id,
       terminal_label,amount,tip,state,provider_reference,provider_status,paid_amount,error_code,
-      cancel_requested_at,created_at,sent_at
+      cancel_requested_at,created_at,sent_at,resolution,resolved_at
     from payment_attempts where id=${attemptId} for update`;
   return a ?? null;
 }

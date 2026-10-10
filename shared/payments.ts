@@ -77,6 +77,13 @@ export const PAYMENTS_LIMITS = {
    */
   clipSerialSettleMs: 60_000,
   /**
+   * After a manager's «No se cobró» of a charge with a provider reference, the worker keeps
+   * reading it this often for this long (P2V-FIXES-2/-3): a payment the provider takes later is
+   * a late approval (event, critical alert, Excepciones), never silently lost.
+   */
+  lateWatchMs: 300_000,
+  lateWatchForMs: 86_400_000,
+  /**
    * A worker that serves no provider (PAYMENTS_PROVIDERS unset while charges are live) still
    * carries each pending charge to its deadline, one poll link this often (P2V-GATE-4).
    */

@@ -960,6 +960,16 @@ export async function resolveAttempt(
       await event(tx, s, attemptId, "resolved", s.employeeId, {
         outcome: resolution,
       });
+      // The late watch (P2V-FIXES-2/-3): the worker keeps reading a dismissed charge that has a
+      // provider reference, so a payment the provider takes later is alerted and listed in
+      // Excepciones (a late_approval), never lost.
+      if (resolution === "not_charged" && row.provider_reference)
+        await enqueueJob(tx, s, {
+          kind: "payments_poll",
+          dedupeKey: `${attemptId}:late:1`,
+          payload: { attemptId, chain: "late", seq: 1 },
+          runAt: new Date(Date.now() + PAYMENTS_LIMITS.lateWatchMs),
+        });
       await audit(tx, s, "payment.terminal_resolved", a.order_id ?? attemptId, {
         attemptId,
         outcome: resolution,

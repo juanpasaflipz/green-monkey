@@ -981,6 +981,12 @@ try {
         at: at(yesterday, "15:30:00"),
       },
     });
+    // ...and the provider reported the dismissed one paid afterwards (P2V-FIXES-2): the worker's
+    // late_approval event, with MP's paid amount.
+    await tx`insert into payment_attempt_events(tenant_id,id,attempt_id,kind,actor,detail,created_at)
+      values(${T},${id()},${attemptDismissed},'late_approval','job',
+        ${tx.json({ status: "processed/accredited", paidAmount: 5000, before: "dismissed", source: "late_watch" })},
+        ${at(yesterday, "15:40:00")})`;
     await attempt(attemptUnknown, {
       amount: 3000,
       tip: 0,
@@ -1035,7 +1041,7 @@ try {
   assert.deepEqual(
     [...new Set(every.rows.map((r: any) => r.kind))].sort(),
     [...EXCEPTION_KINDS].sort(),
-    "all sixteen kinds",
+    "all seventeen kinds",
   );
   const view = (r: any) => ({
     kind: r.kind,
@@ -1283,6 +1289,25 @@ try {
   });
   assert.equal(
     only("terminal_attempt_dismissed").detail.resolution,
+    "not_charged",
+  );
+  assert.deepEqual(
+    attemptRow("terminal_attempt_late_approval", attemptDismissed),
+    {
+      ...expected(
+        "terminal_attempt_late_approval",
+        5000,
+        "Carlos",
+        "Olga",
+        oy.id,
+        "Caja mostrador",
+      ),
+      code: "dismissed",
+      note: "",
+    },
+  );
+  assert.equal(
+    only("terminal_attempt_late_approval").detail.resolution,
     "not_charged",
   );
   assert.deepEqual(

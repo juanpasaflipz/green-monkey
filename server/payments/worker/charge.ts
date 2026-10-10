@@ -293,7 +293,16 @@ async function applyRead(
   source: string,
 ): Promise<"restart" | "continue" | "stop"> {
   const a = await lockAttempt(tx, attemptId);
-  if (!a || (a.state !== "pending" && a.state !== "unknown")) return "stop";
+  if (!a) return "stop";
+  if (a.state !== "pending" && a.state !== "unknown") {
+    // Final already: a paid read never reopens it (037), it is a late approval (P2V-FIXES-2).
+    if (
+      lateWatchable(a) &&
+      (read.outcome === "approved" || read.outcome === "refunded")
+    )
+      await lateApproval(tx, rt, tenantId, a, read, source, null);
+    return "stop";
+  }
   const status = read.providerStatus || null;
   if (read.outcome === "pending") {
     if (clipWatch(a)) {
@@ -392,6 +401,135 @@ function unknownAlert(tenantId: string, reason: string) {
     title: "terminal charge outcome unknown",
     body: `payments_attempt_unknown tenant=${tenantTag(tenantId)} reason=${reason}`,
   };
+}
+
+/**
+ * A final attempt the provider may still report as paid (P2V-FIXES-2, P2-CONCURRENCY-5): one a
+ * manager dismissed as «No se cobró», or one the worker closed (cancelled, declined, expired).
+ */
+const lateWatchable = (a: WorkerAttempt) =>
+  (a.state === "dismissed" && a.resolution === "not_charged") ||
+  a.state === "cancelled" ||
+  a.state === "declined" ||
+  a.state === "expired";
+
+/**
+ * The provider reads a final attempt as paid (or paid and refunded): final rows never change
+ * (037), so it is recorded once as a `late_approval` event (Reportes → Excepciones lists it), and
+ * alerted critical: a diner may have paid twice, or the reader charged a card for an order the
+ * POS considers settled another way. A manager refunds it in the provider's app or records it.
+ */
+async function lateApproval(
+  tx: Tx,
+  rt: PaymentsRuntime,
+  tenantId: string,
+  a: WorkerAttempt,
+  read: Read,
+  source: string,
+  reference: string | null,
+) {
+  const [seen] = await tx`select 1 from payment_attempt_events
+    where attempt_id=${a.id} and kind='late_approval' limit 1`;
+  if (seen) return;
+  await workerEvent(tx, tenantId, a.id, "late_approval", {
+    status: read.providerStatus || null,
+    paidAmount: read.paidAmount,
+    mismatch: read.mismatch,
+    reference: reference ?? a.provider_reference,
+    source,
+    before: a.state,
+  });
+  raise(rt, {
+    key: `payments_late_approval_${tenantTag(tenantId)}`,
+    severity: "critical",
+    title: "terminal charge paid after it was closed",
+    body: `payments_late_approval tenant=${tenantTag(tenantId)} provider=${a.provider} state=${a.state}`,
+  });
+}
+
+/**
+ * One read of a final attempt for a late approval: its own reference, or (a notification for a
+ * dismissed attempt that has none) the notified id, adopted only if the provider's record names
+ * this attempt. "final" = the provider's answer is final (paid, refused, cancelled, expired);
+ * "pending" = still waiting on the device; "failed" = no answer.
+ */
+async function lateCheck(
+  ctx: JobContext,
+  rt: PaymentsRuntime,
+  l: Usable,
+  dataId: string | null,
+  source: string,
+): Promise<"final" | "pending" | "failed"> {
+  const a = l.attempt;
+  const reference = a.provider_reference ?? dataId;
+  if (!lateWatchable(a) || !reference) return "final";
+  let read: Read | null;
+  try {
+    read = await readProvider(
+      rt,
+      { ...l, attempt: { ...a, provider_reference: reference } },
+      ctx.signal,
+    );
+  } catch (e) {
+    if (!(e instanceof ProviderError)) throw e;
+    return "failed";
+  }
+  if (!read) return "failed";
+  // A notified id is this attempt's only if the provider's record names it.
+  if (
+    !a.provider_reference &&
+    (read.mismatch === "external_reference" || read.mismatch === "reference")
+  )
+    return "final";
+  if (read.outcome === "pending") return "pending";
+  const r = read;
+  await ctx.tenant(async (tx) => {
+    const now = await lockAttempt(tx, a.id);
+    if (
+      now &&
+      lateWatchable(now) &&
+      (r.outcome === "approved" || r.outcome === "refunded")
+    )
+      await lateApproval(tx, rt, ctx.job.tenantId, now, r, source, reference);
+  });
+  return "final";
+}
+
+/**
+ * The late watch of a «No se cobró» with a provider reference (P2V-FIXES-2/-3): the web queues
+ * its first link at the dismissal; each link reads the provider until its answer is final or
+ * PAYMENTS_LIMITS.lateWatchForMs after the dismissal, every lateWatchMs (also while the provider
+ * or the account cannot be read).
+ */
+async function lateWatchLink(
+  ctx: JobContext,
+  rt: PaymentsRuntime,
+  l: Loaded,
+  chain: string,
+  seq: number,
+): Promise<JobOutcome> {
+  const a = l.attempt;
+  if (a.state !== "dismissed" || !lateWatchable(a) || !a.resolved_at)
+    return { status: "done" };
+  const result = usable(l)
+    ? await lateCheck(ctx, rt, l, null, "late_watch")
+    : "failed";
+  if (
+    result !== "final" &&
+    Date.now() <
+      new Date(a.resolved_at).getTime() + PAYMENTS_LIMITS.lateWatchForMs
+  )
+    await ctx.tenant((tx) =>
+      schedulePoll(
+        tx,
+        ctx.job.tenantId,
+        a.id,
+        chain,
+        seq + 1,
+        PAYMENTS_LIMITS.lateWatchMs,
+      ),
+    );
+  return { status: "done" };
 }
 
 async function schedulePoll(
@@ -1241,13 +1379,10 @@ export async function pollHandler(ctx: JobContext): Promise<JobOutcome> {
   // which would end the chain with the attempt pending).
   const loaded = await load(ctx, rt, attemptId);
   const a = loaded?.attempt;
-  if (
-    !loaded ||
-    !a ||
-    (a.state !== "pending" && !clipWatch(a)) ||
-    !a.provider_reference
-  )
-    return { status: "done" };
+  if (!loaded || !a || !a.provider_reference) return { status: "done" };
+  if (a.state === "dismissed")
+    return lateWatchLink(ctx, rt, loaded, chain, seq);
+  if (a.state !== "pending" && !clipWatch(a)) return { status: "done" };
   let withdraw = false;
   /** The chain's next link, or `unknown` once the deadline passed (the only pending → unknown). */
   const next = async (
@@ -1529,14 +1664,21 @@ export async function webhookHandler(ctx: JobContext): Promise<JobOutcome> {
       workerEvent(tx, tenantId, attemptId, "webhook", { source }),
     );
   let l: Usable = loaded;
+  const dataId =
+    typeof p.dataId === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(p.dataId)
+      ? p.dataId
+      : null;
+  if (a.state === "dismissed") {
+    // A notification about a «No se cobró» (the route matches those of the last 24 h,
+    // P2V-FIXES-2): read it, and a payment the provider took after all is a late approval.
+    if (source === "mercadopago" || source === "clip" || source === "check")
+      await lateCheck(ctx, rt, l, source === "check" ? null : dataId, source);
+    return { status: "done" };
+  }
   if (a.state === "unknown" && !a.provider_reference) {
     // No reference to read (P2-MONEY-2, P2-UX-4): recover one. A verified MP notification or a
     // Clip hint names an id to check against this attempt; a re-check or the automatic recovery
     // re-POSTs MP's identical create, or withdraws a Clip request by serial (never a Clip create).
-    const dataId =
-      typeof p.dataId === "string" && /^[A-Za-z0-9_-]{1,100}$/.test(p.dataId)
-        ? p.dataId
-        : null;
     let adopted = false;
     if ((source === "mercadopago" || source === "clip") && dataId)
       adopted = await adoptNotified(ctx, rt, l, dataId, source);

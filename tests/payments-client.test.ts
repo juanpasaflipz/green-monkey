@@ -304,6 +304,36 @@ describe("Excepciones and the tender CSV", () => {
       "Cobro en terminal sin confirmar",
     );
   });
+  it("a late approval in Excepciones (P2V-FIXES-2): the terminal and how the charge had been closed, in both languages", () => {
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_late_approval", 4500, {
+          terminal: "Clip Caja",
+          state: "dismissed",
+          resolution: "not_charged",
+        }),
+        "es",
+        m,
+      ),
+    ).toBe("Clip Caja · no se cobró");
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_late_approval", 4500, {
+          terminal: "MP Caja",
+          state: "cancelled",
+          resolution: null,
+        }),
+        "en",
+        m,
+      ),
+    ).toBe("MP Caja · it was cancelled");
+    expect(exceptionKindLabel("terminal_attempt_late_approval", "es")).toBe(
+      "Cobro en terminal aprobado después de cerrarse",
+    );
+    expect(exceptionKindLabel("terminal_attempt_late_approval", "en")).toBe(
+      "Terminal charge approved after it was closed",
+    );
+  });
   it("the tender CSV carries terminal, provider, card, platform and fee columns", () => {
     const tender: TenderReportRow = {
       id: "1",

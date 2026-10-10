@@ -346,10 +346,15 @@ const eventsOf = async (attemptId: string) =>
     detail: e.detail,
   }));
 
-/** Makes the tenant's waiting payments jobs due (polls are scheduled seconds ahead). */
-async function due(tenantId: string) {
+/**
+ * Makes the tenant's waiting payments jobs due (polls are scheduled seconds ahead). The late
+ * watch of a dismissed charge (P2V-FIXES-2: one read every 5 minutes for a day) only with
+ * `late`, so a drain still ends while dismissed charges are watched.
+ */
+async function due(tenantId: string, late = false) {
   await admin`update jobs set next_at = now() where tenant_id = ${tenantId}
-    and state = 'available' and kind like 'payments\\_%'`;
+    and state = 'available' and kind like 'payments\\_%'
+    and (${late} or kind <> 'payments_poll' or payload->>'chain' is distinct from 'late')`;
 }
 /** Postpones the tenant's waiting jobs of these kinds (a check that must not rely on them). */
 async function hold(tenantId: string, kinds: string[]) {
@@ -358,10 +363,14 @@ async function hold(tenantId: string, kinds: string[]) {
 }
 /**
  * One round: every due payments job of the tenant, worker kinds then the web settle. With
- * `due: false` only what is already due runs (held polls stay held).
+ * `due: false` only what is already due runs (held polls stay held); with `late: true` the late
+ * watches are made due too.
  */
-async function round(tenantId: string, o: { due?: boolean } = {}) {
-  if (o.due !== false) await due(tenantId);
+async function round(
+  tenantId: string,
+  o: { due?: boolean; late?: boolean } = {},
+) {
+  if (o.due !== false) await due(tenantId, o.late ?? false);
   const w = await workerRunner.drainTenant(tenantId);
   while (workerRunner.running() > 0) await sleep(10);
   const s = await webRunner.drainTenant(tenantId);
@@ -1856,6 +1865,139 @@ try {
         serial[1].detail.askedAfterMs >= 60_000,
       "the second delete is the settled one",
     );
+  });
+
+  await test("late approvals (P2V-FIXES-2, P2-CONCURRENCY-5): a Clip «No se cobró» with no id whose request lands and is paid afterwards is caught by Clip's notification (the route matches the day's dismissals); an MP «No se cobró» with an order id is kept under a late watch that reads it paid; each is a late_approval event (once), a critical alert and an Excepciones row, and the attempt stays dismissed", async () => {
+    const mgr = fresh(A, ids.manager, "manager");
+    const lateRows = async (attemptId: string) =>
+      (
+        await write(owner, (tx) =>
+          exceptionRows(tx, owner, {
+            from: today,
+            to: today,
+            limit: "500",
+          }),
+        )
+      ).rows.filter(
+        (r: any) =>
+          r.kind === "terminal_attempt_late_approval" &&
+          r.detail.attemptId === attemptId,
+      );
+    const lateEvents = async (attemptId: string) =>
+      (await eventsOf(attemptId)).filter((e) => e.kind === "late_approval");
+    const critical = () =>
+      alerts.filter(
+        (x) =>
+          x.key === `payments_late_approval_${A.slice(0, 8)}` &&
+          x.severity === "critical",
+      );
+    // (a) Clip, no id: the settled delete by serial found nothing, the manager dismissed it.
+    const o1 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    fake.next("clip", "timeoutLanding");
+    const v1 = await start(cashier, o1.id, terminals.clip, o1.total);
+    assert.equal(await drive(v1.id, ["unknown", "cancelled"]), "unknown");
+    await asOwner(
+      A,
+      (
+        tx,
+      ) => tx`update payment_attempts set sent_at = now() - interval '2 minutes'
+        where id=${v1.id}`,
+    );
+    await round(A);
+    assert.equal((await attemptRow(v1.id)).provider_status, "serial_clear");
+    await resolve(mgr, v1.id, {
+      outcome: "not_charged",
+      note: NOTE,
+      confirmed: true,
+    });
+    assert.equal(await stateOf(v1.id), "dismissed");
+    // ...yet the request reaches the reader much later and a diner pays it. Clip's notification
+    // names only its own id.
+    const charge1 = fake.chargeFor(v1.id)!;
+    fake.land(charge1.id);
+    fake.approve(charge1.id, { ...TEST_CARD });
+    alerts.length = 0;
+    await notify(hooks.clip, { body: { id: charge1.id } });
+    await round(A, { due: false });
+    const e1 = await lateEvents(v1.id);
+    assert.equal(e1.length, 1);
+    assert.deepEqual(
+      [e1[0].actor, e1[0].detail.before, e1[0].detail.reference],
+      ["worker", "dismissed", charge1.id],
+    );
+    assert.equal(e1[0].detail.paidAmount, o1.total);
+    assert.equal(critical().length, 1, "a critical alert");
+    assert.equal((await lateRows(v1.id)).length, 1, "listed in Excepciones");
+    assert.equal(await stateOf(v1.id), "dismissed", "a final row never moves");
+    // A second notification records nothing new.
+    await notify(hooks.clip, { body: { id: charge1.id } });
+    await round(A, { due: false });
+    assert.equal((await lateEvents(v1.id)).length, 1, "once");
+    // (b) MP, with its order id: dismissed after its expiry margin, then watched.
+    const o2 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const c2 = await pending(o2, terminals.mp);
+    await asOwner(
+      A,
+      (
+        tx,
+      ) => tx`update payment_attempts set sent_at = now() - interval '13 minutes'
+        where id=${c2.id}`,
+    );
+    fake.rateLimitReads(1);
+    await round(A);
+    assert.equal(await stateOf(c2.id), "unknown");
+    await resolve(mgr, c2.id, {
+      outcome: "not_charged",
+      note: NOTE,
+      confirmed: true,
+    });
+    const watch = await asOwner(
+      A,
+      (tx) => tx`select payload, next_at > now() + interval '4 minutes' as later
+        from jobs where kind='payments_poll' and state='available'
+          and payload->>'attemptId'=${c2.id}`,
+    );
+    assert.deepEqual(
+      watch.map((w: any) => [w.payload.chain, w.later]),
+      [["late", true]],
+      "the late watch's first link, five minutes out",
+    );
+    // Still at the device: the watch keeps reading.
+    await round(A, { late: true });
+    assert.equal((await lateEvents(c2.id)).length, 0);
+    assert.equal(
+      await count(
+        A,
+        (
+          tx,
+        ) => tx`select count(*)::int as n from jobs where kind='payments_poll'
+          and state='available' and payload->>'attemptId'=${c2.id}`,
+      ),
+      1,
+    );
+    alerts.length = 0;
+    fake.approve(c2.ref, { ...TEST_CARD });
+    await round(A, { late: true });
+    const e2 = await lateEvents(c2.id);
+    assert.equal(e2.length, 1);
+    assert.deepEqual(
+      [e2[0].detail.before, e2[0].detail.source],
+      ["dismissed", "late_watch"],
+    );
+    assert.equal(critical().length, 1);
+    assert.equal((await lateRows(c2.id)).length, 1);
+    assert.equal(
+      await count(
+        A,
+        (
+          tx,
+        ) => tx`select count(*)::int as n from jobs where kind='payments_poll'
+          and state in ('queued','available','running') and payload->>'attemptId'=${c2.id}`,
+      ),
+      0,
+      "the watch ends at the provider's final answer",
+    );
+    assert.equal(await stateOf(c2.id), "dismissed");
   });
 
   await test("an unknown charge later read as paid with no usable amount (P2V-FIXES-5): the attempt takes the provider's status and payments_provider_mismatch, «No se cobró» is refused (payments_provider_says_paid), and a manager records it", async () => {

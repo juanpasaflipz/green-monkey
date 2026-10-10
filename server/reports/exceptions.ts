@@ -278,6 +278,21 @@ export function exceptionsCte(
       ${cfgOn("pa.resolved_at")}
      where pa.resolved_at >= ${w.ws} and pa.resolved_at < ${w.we} and pa.resolution is not null
     union all
+    -- ...and a charge the provider reported paid after it was closed (P2V-FIXES-2): the worker's
+    -- late_approval event, with the provider's paid amount, the state it had, and the manager
+    -- who dismissed it (if one did).
+    select 'terminal_attempt_late_approval', e.id, e.created_at, pa.employee_id, pa.resolved_by, null,
+      coalesce(case when jsonb_typeof(e.detail->'paidAmount') = 'number' then (e.detail->>'paidAmount')::int8 end,
+        pa.amount + pa.tip)::int8,
+      pa.order_id, coalesce(e.detail->>'before', pa.state), '', pa.device_id,
+      jsonb_build_object('attemptId', pa.id, 'terminal', pa.terminal_label, 'provider', pa.provider,
+        'state', pa.state, 'resolution', pa.resolution, 'target', pa.target),
+      ${day("e.created_at")}
+      from payment_attempt_events e
+      join payment_attempts pa on pa.tenant_id = e.tenant_id and pa.id = e.attempt_id
+      ${cfgOn("e.created_at")}
+     where e.created_at >= ${w.ws} and e.created_at < ${w.we} and e.kind = 'late_approval'
+    union all
     -- ...and charges whose outcome is still unknown after 10 minutes (spec §8).
     select 'terminal_attempt_unknown_open', pa.id, pa.created_at, pa.employee_id, null, null,
       (pa.amount + pa.tip)::int8, pa.order_id, pa.error_code, '', pa.device_id,
