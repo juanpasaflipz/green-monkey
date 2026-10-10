@@ -33,6 +33,11 @@ export function keepsDraft(
   return saved !== "all" && saved !== part;
 }
 
+/** The heartbeat's build in the station row: a commit id shortened to 7 characters (KIOSK-UX-13). */
+export function shortBuild(build: string): string {
+  return /^[0-9a-f]{40}$/.test(build) ? build.slice(0, 7) : build;
+}
+
 /**
  * The station's pairing button: with a paired tablet, a new code revokes it (createPairing), so
  * the button says «Reemplazar tableta» and asks first (KIOSK-UX-12).
@@ -428,7 +433,7 @@ function StationRow({
                     seen === null
                       ? "—"
                       : `${Math.max(1, Math.round(seen / 60_000))} min`,
-                  build: d.build ?? "—",
+                  build: d.build ? shortBuild(d.build) : "—",
                 })}
       </p>
       <div className="row wrap">

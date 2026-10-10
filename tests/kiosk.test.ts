@@ -24,6 +24,7 @@ import {
   cardOffText,
   keepsDraft,
   pairActionKey,
+  shortBuild,
 } from "../src/features/public/KioskSettings";
 import { suggestionsDirty } from "../src/features/menu/ProductSuggestionsField";
 import {
@@ -52,6 +53,7 @@ import { cartInputs } from "../src/features/public/DinerApp";
 import { createIdleController } from "../src/features/public/kioskIdle";
 import { priceCart } from "../shared/service";
 import {
+  heartbeatBuild,
   keepAwake,
   viewportClass,
   watchDevice,
@@ -1113,5 +1115,18 @@ describe("the product editor's photo honours /capabilities menuPhotos (KIOSK-OPS
         "en",
       ),
     ).toMatch(/^Photos aren't set up on this server/);
+  });
+});
+
+declare const __BUILD_ID__: string;
+describe("the heartbeat reports the bundle's build (KIOSK-UX-13)", () => {
+  it("is vite's __BUILD_ID__ (what connectivity.ts compares with /api/version), never 'local' in a build", () => {
+    expect(typeof __BUILD_ID__).toBe("string");
+    expect(heartbeatBuild()).toBe(__BUILD_ID__.slice(0, 40));
+    expect(heartbeatBuild()).not.toBe("local");
+  });
+  it("Configuración shows a commit id short", () => {
+    expect(shortBuild("4f2e092a1b2c3d4e5f60718293a4b5c6d7e8f901")).toBe("4f2e092");
+    expect(shortBuild("1.2.0-1760000000000")).toBe("1.2.0-1760000000000");
   });
 });

@@ -55,6 +55,20 @@ export const viewportClass = (
   h: number,
 ): "landscape" | "portrait" => (w >= h ? "landscape" : "portrait");
 
+declare const __BUILD_ID__: string;
+
+/**
+ * The build the heartbeat reports: the bundle's own id (vite.config.ts defines __BUILD_ID__, the
+ * one connectivity.ts compares with /api/version), at most 40 characters; "local" only where no
+ * bundler defined it (KIOSK-UX-13).
+ */
+export function heartbeatBuild(): string {
+  return (typeof __BUILD_ID__ === "undefined" ? "local" : __BUILD_ID__).slice(
+    0,
+    40,
+  );
+}
+
 /**
  * Every `everyMs` while visible: `beat()` (the heartbeat), then the deployed build from
  * /api/version; a new build reloads the page when `idle()` says the kiosk is on its welcome

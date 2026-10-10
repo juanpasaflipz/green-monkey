@@ -61,6 +61,7 @@ import {
   enterFullscreen,
   keepAwake,
   viewportClass,
+  heartbeatBuild,
   watchDevice,
 } from "./kiosk/kioskDevice";
 import "./diner.css";
@@ -262,10 +263,7 @@ export function DinerApp({
       beat: () =>
         kioskApi.heartbeat(
           token,
-          (
-            (import.meta as unknown as { env?: Record<string, string> }).env
-              ?.VITE_BUILD_ID ?? "local"
-          ).slice(0, 40),
+          heartbeatBuild(),
           viewportClass(window.innerWidth, window.innerHeight),
         ),
       idle: () => idleRef.current,
