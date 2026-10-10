@@ -65,6 +65,7 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
 | 1.18 | Custody of the `neondb_owner` password | Rotated 2026-10-07; held by the operator | Held by the operator, never displayed; yours: reset and keep it |
 | 1.19 | The older staging Neon branch | **Done: both restore branches deleted (2026-10-07, 2026-10-08)** | — |
 | 1.20 | Loyalty club inputs (038): the club reward and its cap (LD-72: one free product up to $150 by default), the restaurant's privacy-notice update that covers the club (counsel), the pos-lite export run at cutover and pos-lite's copy purged after it; the platform notice and DPA that cover the club are published first (1.12; the club refuses to turn on before, `loyalty_legal_required`) | — | Yours, before enabling the club |
+| 1.21 | Kiosk self-checkout and menu photos (039; [1.16a](#116a-kiosk-self-checkout-the-media-bucket-and-the-field-checks-039)): a private R2 **media** bucket per environment with a bucket-scoped, non-expiring Object Read & Write token (R46); the R44a device rehearsal at both readers, then `PAYMENTS_PROVIDERS` on the production worker (a reviewed `railway.ts` change); the kiosk field checks and the R44b combined Wave 4 rehearsal; then the reviewed `railway.ts` change that sets `KIOSK_SELF_CHECKOUT_ENABLED` and `MENU_PHOTOS_ENABLED` to `"true"` in production | Switches on (`preserve()`, unset means on); integrated charging served (`mercadopago,clip`); yours: the media bucket and token, R44a and R44b | Switches `"false"` and `PAYMENTS_PROVIDERS` undeclared until R44a, the field checks and R44b pass; yours: the media bucket and token |
 
 ### 1.1 Railway access and project tokens
 
@@ -606,10 +607,34 @@ outside the repository. **Yours:** take the offline copy of `CREDENTIAL_ENCRYPTI
   without the four values stops the web from starting (`media_store_invalid`). Without them, photos
   are unavailable (uploads answer `media_store_not_configured`), and the kiosk and the QR menu
   work without photos.
+- **Prerequisites, in order (KIOSK-OPS-6).** Kiosk card payment in production needs
+  integrated charging on the production worker. `kioskState` reads the providers the worker
+  publishes at boot (`payments_platform.providers`), and `railway.ts` leaves `PAYMENTS_PROVIDERS`
+  undeclared in production until R44a passes. Until then the kiosk offers only «Pagar en caja»
+  even with a paired tablet and an open till, and Configuración's station row says «Mercado
+  Pago no está activo en este servidor» (KIOSK-UX-10).
+  1. **R44a**, payments' real-device rehearsal at both readers on staging
+     ([RUNBOOK.md](RUNBOOK.md) "Payments: real-device rehearsal").
+  2. **`PAYMENTS_PROVIDERS` on the production worker:** one reviewed change to its
+     `railway.ts` line, so production declares the providers, then a production deploy. Check
+     `/capabilities`: `mercadopago` and `clip` stop answering `worker_not_configured`. The owner
+     connects the production accounts and adds the terminals (RUNBOOK step 2).
+  3. **The media bucket and token** for each environment (below), set with `railway-vars.sh`.
+  4. **The field checks** below, on staging with the real tablet and readers.
+  5. **R44b, the combined Wave 4 rehearsal** (critic R44(b); staging, the Tab S10 FE, both
+     readers; low-value real charges refunded in the provider apps; evidence kept locally in
+     the LD-67 pattern):
+     - kiosk spec §8.4 (the field checks);
+     - a club member identified at the kiosk, linked and stamped, once paid by card at the kiosk
+       and once at the counter (KIOSK-UX-01);
+     - a platform order;
+     - a drawer close whose batch totals include the kiosk reader and its «Del kiosco» line;
+     - a corte reprint.
+  6. **The switch-on:** the reviewed `railway.ts` change described in the next bullet.
 - **Production stays off until these checks pass.** `.railway/railway.ts` declares
   `KIOSK_SELF_CHECKOUT_ENABLED` and `MENU_PHOTOS_ENABLED` as `"false"` in production (on in
-  staging). When the field checks below and the R44a device rehearsal have passed, and the
-  production bucket is set, one reviewed change to `railway.ts` (production declares `"true"`)
+  staging). When steps 1–5 above have passed, and the production bucket is set, one reviewed
+  change to `railway.ts` (production declares `"true"`)
   and a production deploy switch them on: [RUNBOOK.md](RUNBOOK.md) "Kiosk self-checkout and
   menu photos". Never set them by hand in production: the next deploy's apply puts back what
   `railway.ts` says.
@@ -834,7 +859,10 @@ As of October 9, 2026:
   ([RUNBOOK.md](RUNBOOK.md), "R44a").
 - **Owner inputs not yet given:** legal values and counsel review (1.11, 1.12),
   accountant sign-off (1.13), the production R2 bucket and token (1.8), the alert topic
-  (1.7), the Sentry decision (1.9), contacts (1.17). Housekeeping: revoke the temporary
+  (1.7), the Sentry decision (1.9), contacts (1.17), and for the kiosk (1.21, 1.16a) the R2
+  media bucket and its non-expiring token per environment plus the R44a and R44b rehearsals
+  at both readers. These come before production's `PAYMENTS_PROVIDERS` and the kiosk
+  switch-on. Housekeeping: revoke the temporary
   Neon API key and Cloudflare DNS token (1.2, 1.3), take the offline copy of
   `CREDENTIAL_ENCRYPTION_KEY` (1.10), and rotate at cutover every credential that passed
   through a chat (1.5, 1.14).

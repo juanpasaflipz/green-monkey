@@ -159,7 +159,9 @@ CREATE INDEX kiosk_checkouts_member_retention ON kiosk_checkouts (created_at)
   WHERE loyalty_member_id IS NOT NULL;
 
 -- 6. Menu media: image assets (bytes in the object store, never in the database) ----------------
--- variants = {thumb|card|hero: {w, h, bytes, sha256}}. Object keys m/<tenant_id>/<id>/<variant>.webp.
+-- variants = {thumb|card|hero: {w, h, bytes, sha256, type}}. Object keys
+-- m/<tenant_id>/<id>/<variant>.webp, or .jpg when type is image/jpeg (WebKit browsers upload JPEG,
+-- KIOSK-UX-11).
 CREATE TABLE menu_media (
   tenant_id uuid NOT NULL REFERENCES restaurants(id),
   id uuid NOT NULL,
