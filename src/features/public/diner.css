@@ -1,10 +1,14 @@
 /* Public QR/kiosk diner page (032): 390 px phone first, a side cart from
-   768 px, kiosk sizes with targets of at least 64 px. Never printed. */
+   768 px, kiosk sizes with targets of at least 64 px. Never printed.
+   --kiosk-zoom is «Texto grande»'s zoom (1 otherwise). Chromium multiplies a
+   zoomed element's viewport units by its zoom, so every vh/dvh length inside
+   .diner is divided by it to keep its on-screen size (KIOSK-UX-06). */
 .diner {
   max-width: 1100px;
   margin: 0 auto;
   padding: 16px 16px 96px;
   min-height: 100vh;
+  min-height: calc(100vh / var(--kiosk-zoom, 1));
   overflow-wrap: anywhere;
 }
 .diner h1 {
@@ -345,6 +349,7 @@
   align-content: center;
   gap: 32px;
   min-height: 80vh;
+  min-height: calc(80vh / var(--kiosk-zoom, 1));
   text-align: center;
 }
 .kiosk-welcome h1 {
@@ -489,10 +494,12 @@
 }
 /* Texto grande: 125 %. Modo alcance: the content starts a third of the way down. */
 .diner.kiosk-large {
-  zoom: 1.25;
+  --kiosk-zoom: 1.25;
+  zoom: var(--kiosk-zoom);
 }
 .diner.kiosk-reach {
   padding-top: 33vh;
+  padding-top: calc(33vh / var(--kiosk-zoom, 1));
 }
 @media (prefers-reduced-motion: reduce) {
   .kiosk * {
@@ -522,8 +529,8 @@
   .diner-cart {
     position: sticky;
     top: 16px;
-    max-height: calc(100vh - 32px);
-    max-height: calc(100dvh - 32px);
+    max-height: calc(100vh / var(--kiosk-zoom, 1) - 32px);
+    max-height: calc(100dvh / var(--kiosk-zoom, 1) - 32px);
     overflow-y: auto;
     padding-bottom: 0;
   }
