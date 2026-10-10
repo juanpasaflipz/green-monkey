@@ -12,6 +12,9 @@ import { resolve } from "node:path";
 import postgres from "postgres";
 import { connect, tenant, type Tx } from "../server/db.js";
 import { exceptionRows } from "../server/reports/exceptions.js";
+import { buildGlobalRequests } from "../server/cfdi/build.js";
+import { loadTickets } from "../server/cfdi/worker/tickets.js";
+import { paymentFormFor } from "../shared/cfdi.js";
 import type { Session } from "../shared/domain.js";
 import {
   DATABASE,
@@ -22,6 +25,7 @@ import {
 } from "./restaurant-day/env.js";
 import { EXPECTED_P } from "./restaurant-day/expected-p.js";
 import {
+  CFDI_FORMS_P,
   ORDERS_P,
   PAYMENTS_P,
   RESTAURANT_P,
@@ -194,9 +198,12 @@ if (state.branch === "P") {
             );
             assert.equal(x.ref, p.reference, `${o.id} external reference`);
           } else
-            assert.ok(
+            // The provider's own id of the charge the fake made for this sale (P2V-GATE-5:
+            // MP's order id, Clip's pinpad request id), never just any value.
+            assert.equal(
               x.provider_reference,
-              `${o.id}: the provider's reference`,
+              (state.paymentsCharges as Record<string, string>)[o.id],
+              `${o.id}: the provider's reference is the fake's charge`,
             );
         } else {
           assert.equal(x.provider, null, `${o.id}: no provider`);
@@ -298,7 +305,7 @@ if (state.branch === "P") {
 
   await check(
     "DP3",
-    "Restaurant P's Excepciones for the day: exactly the charge Ulises recorded (who started it, who resolved it, the amount, the terminal and the reason); no charge in review or unconfirmed",
+    "Restaurant P's Excepciones for the day: exactly the charge Ulises recorded (who started it, who resolved it, the amount, the terminal and the reason) and his partial refund of the Rappi order (platform money); no charge in review or unconfirmed",
     async () => {
       const [restaurant] = await inP(
         (tx) => tx`select name,currency,timezone,cutoff from restaurants`,
@@ -328,27 +335,45 @@ if (state.branch === "P") {
         (typeof resolved)["payment"],
         { kind: "unknown" }
       >;
+      const ulises = RESTAURANT_P.staff.find((s) => s.key === "ulises")!.name;
+      const refund = EXPECTED_P.refunds[0]!;
       assert.deepEqual(
-        page.rows.map((r) => ({
-          kind: r.kind,
-          order: r.orderNumber,
-          actor: r.actorName,
-          approver: r.approverName,
-          amount: mxn(r.amount),
-          note: r.note,
-          terminal: r.detail.terminal,
-          resolution: r.detail.resolution,
-        })),
+        page.rows
+          .map((r) => ({
+            kind: r.kind,
+            order: r.orderNumber,
+            actor: r.actorName,
+            approver: r.approverName,
+            amount: mxn(r.amount),
+            note: r.note,
+            terminal: r.detail.terminal,
+            resolution: r.detail.resolution,
+            platform: r.detail.platform,
+          }))
+          .sort((a, b) => a.kind.localeCompare(b.kind)),
         [
+          // Ulises's partial refund of the Rappi order: platform money only (P2V-GATE-3).
+          {
+            kind: "refund",
+            order: refund.order,
+            actor: ulises,
+            approver: ulises,
+            amount: refund.amount,
+            note: refund.note,
+            terminal: undefined,
+            resolution: undefined,
+            platform: cents(refund.platform),
+          },
           {
             kind: "terminal_attempt_dismissed",
             order: EXPECTED_P.exception.number,
             actor: RESTAURANT_P.staff.find((s) => s.key === "ximena")!.name,
-            approver: RESTAURANT_P.staff.find((s) => s.key === "ulises")!.name,
+            approver: ulises,
             amount: EXPECTED_P.exception.amount,
             note: p.note,
             terminal: EXPECTED_P.exception.terminal,
             resolution: "recorded",
+            platform: undefined,
           },
         ],
       );
@@ -471,6 +496,98 @@ if (state.branch === "P") {
             (select count(*)::int from jobs where tenant_id=${P} and kind like 'payments\\_%' and state='running') as running`,
       );
       assert.deepEqual(r, { dead: 0, running: 0 });
+    },
+  );
+
+  await check(
+    "DP7",
+    "Restaurant P's refund: Ulises's partial refund of the Rappi order is one batch of platform money only (no cash, no card), with his reason; the drawer's expected cash did not move",
+    async () => {
+      const batches = await inP(
+        (tx) =>
+          tx`select o.number::int as n, b.mode, b.amount::int as amount, b.cash_amount::int as cash,
+            b.external_amount::int as external, b.platform_amount::int as platform, b.reason_code,
+            b.note, ea.name as actor, ep.name as approver,
+            (select array_agg(r.method order by r.created_at) from refunds r where r.batch_id=b.id) as methods,
+            (select count(*)::int from refunds r where r.batch_id=b.id and r.session_id is not null) as on_drawer
+          from refund_batches b join orders o on o.id=b.order_id
+            join employees ea on ea.id=b.actor_id join employees ep on ep.id=b.approver_id
+          order by b.created_at`,
+      );
+      assert.deepEqual(
+        batches.map((b) => ({
+          order: b.n,
+          amount: mxn(b.amount),
+          cash: mxn(b.cash),
+          external: mxn(b.external),
+          platform: mxn(b.platform),
+          reason: b.reason_code,
+          note: b.note,
+          actor: b.actor,
+        })),
+        EXPECTED_P.refunds,
+      );
+      for (const b of batches) {
+        assert.equal(b.mode, "amount");
+        assert.equal(b.approver, b.actor, "a manager's own refund");
+        assert.deepEqual(b.methods, ["platform"]);
+      }
+      const [drawer] = await inP(
+        (tx) => tx`select expected::int as expected from cash_sessions`,
+      );
+      assert.equal(mxn(drawer.expected), EXPECTED_P.corteZ.cash.expected);
+    },
+  );
+
+  await check(
+    "DP8",
+    "Restaurant P's CFDI forms of payment: each ticket's FormaPago from its tenders and the restaurant's forms (credit 04, debit 28, no card type the card form, cash 01, platform 31), and the daily global invoice built from the day's tickets net of the refund: one concept per ticket, the largest ticket's form",
+    async () => {
+      const [settings] = await inP(
+        (tx) =>
+          tx`select card_payment_form, platform_payment_form from cfdi_settings`,
+      );
+      // No CFDI settings row yet (the restaurant never activated CFDI): 030/037's defaults.
+      const forms = {
+        card: (settings?.card_payment_form ?? "04") as "04" | "28",
+        platform: (settings?.platform_payment_form ?? "31") as "31",
+      };
+      assert.deepEqual(forms, CFDI_FORMS_P);
+      const day = await inP(async (tx) => {
+        const ids = await tx`select id from fiscal_tickets order by number`;
+        return loadTickets(
+          tx,
+          ids.map((r) => r.id as string),
+        );
+      });
+      assert.deepEqual(day.excluded, []);
+      const tickets = [...day.tickets].sort((a, b) =>
+        a.folio.localeCompare(b.folio),
+      );
+      assert.deepEqual(
+        Object.fromEntries(
+          tickets.map((t) => [t.folio, paymentFormFor(t.payments, forms)]),
+        ),
+        EXPECTED_P.cfdi.forms,
+      );
+      const parts = buildGlobalRequests({
+        docIds: () => "00000000-0000-4000-8000-0000000000d8",
+        tickets,
+        period: { periodicity: "day", months: "01", year: 2026 },
+        issuerPostalCode: RESTAURANT_P.fiscal.zip,
+        cardForm: forms.card,
+        platformForm: forms.platform,
+        maxConcepts: Infinity,
+      } as Parameters<typeof buildGlobalRequests>[0]);
+      assert.equal(parts.length, 1);
+      assert.deepEqual(
+        {
+          form: parts[0]!.body.payment_form,
+          concepts: parts[0]!.body.items.length,
+          total: mxn(parts[0]!.expectedTotal),
+        },
+        EXPECTED_P.cfdi.global,
+      );
     },
   );
 

@@ -223,7 +223,8 @@ export const ORDERS_P: OrderP[] = [
       terminal: "mp",
       tip: 1500,
       card: { brand: "visa", type: "credit_card", last4: "4242" },
-      providerFee: 560,
+      // Not the 3.5 % estimate ($5.60): the amount alone shows MP's own fee was used (GATE-6).
+      providerFee: 581,
     },
   },
   {
@@ -233,6 +234,8 @@ export const ORDERS_P: OrderP[] = [
     payment: {
       kind: "integrated",
       terminal: "clip",
+      // Clip takes the tip apart (tip_amount) and its fee is estimated on bill + tip (GATE-6).
+      tip: 2000,
       card: { brand: "visa", type: "debit_card", last4: "4444" },
     },
   },
@@ -295,3 +298,27 @@ export const ORDERS_P: OrderP[] = [
     },
   },
 ];
+
+/**
+ * Branch P's refund (payments spec §12.4; P2V-GATE-3): after the service Ulises refunds part of
+ * a platform order through the refund dialog («Por importe»). The platform pays it back, so it is
+ * never cash: expected cash does not move, and the platform's net drops.
+ */
+export const REFUNDS_P = [
+  {
+    id: "RP1",
+    order: "P7",
+    actor: "ulises",
+    amount: 5000,
+    reasonLabel: "Producto con defecto o queja",
+    reasonCode: "quality",
+    explanation: "Rappi devolvió parte del pozole",
+  },
+] as const;
+
+/**
+ * The CFDI forms of payment (SAT FormaPago, c_FormaPago) the restaurant's settings give, as
+ * cfdi_settings sets them by default (030/037): an external tender with no card type takes the
+ * card form 04, a platform tender the platform form 31.
+ */
+export const CFDI_FORMS_P = { card: "04", platform: "31" } as const;

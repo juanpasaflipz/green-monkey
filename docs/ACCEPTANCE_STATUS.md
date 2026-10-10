@@ -78,16 +78,22 @@ on Uber Eats, Rappi and DiDi Food with their commissions and sets platform price
 sells an MP charge with a tip and a Clip charge (approved at the terminal), a BBVA record, an MP
 charge the card refuses then paid in cash, a Clip charge whose answer is lost after the reader took
 it (unknown: the manager records it from «Cobros en terminal en curso» with the provider's
-reference) and three platform orders at their platform prices. The manager closes the drawer with
-each terminal's batch total, and the owner's corte Z, Excepciones and Finanzas › Pagos show the
-oracle's figures. Its rules and hand-typed table live in `oracle-p.ts` and `expected-p.ts` (also
-checked by `tests/restaurant-day-oracle.test.ts`), and checks DP1–DP6 reconcile tenders, attempts,
-exceptions, drawer counts and the absence of every credential from tables and logs.
+reference) and three platform orders at their platform prices. The MP sale's tip carries MP's
+own fee, the Clip sale's tip goes apart (`tip_amount`) with the fee estimated on bill + tip. The
+manager refunds $50.00 of the Rappi order (platform money, never cash) and closes the drawer with
+each terminal's batch total, and the owner's corte Z, Excepciones and Finanzas › Pagos (by method,
+by terminal, by platform) show the oracle's figures; the fake must have seen no contract breach and
+hold exactly the day's charges per device, and the unknown outcome alerts once. Its rules and
+hand-typed table live in `oracle-p.ts` and `expected-p.ts` (also checked by
+`tests/restaurant-day-oracle.test.ts`), and checks DP1–DP8 reconcile tenders (with the fake's charge
+ids), attempts, exceptions, drawer counts, the absence of every credential from tables and logs,
+the refund batch, and the CFDI FormaPago of each ticket and of the daily global invoice built from
+the day's tickets (`loadTickets` + `buildGlobalRequests`, no Facturapi call; P2V-GATE-3).
 
 | Piece | Where |
 | --- | --- |
 | Browser chain (12 serial tests, 53 checkpoints in branch N with axe, overflow and the production-text scanner at three sizes; branch L is the last two tests; branch P runs G1 and its own two tests, 7 checkpoints, and skips the rest) | `tests/browser/restaurant-day.spec.ts`, `tests/restaurant-day/*.ts`, `playwright.restaurant-day.config.ts` |
-| DB reconciliation | `tests/restaurant-day-db.ts` (`npm run test:db:restaurant-day`): D1–D23, or DP1–DP6 in branch P |
+| DB reconciliation | `tests/restaurant-day-db.ts` (`npm run test:db:restaurant-day`): D1–D23, or DP1–DP8 in branch P |
 | Local run | `bash scripts/restaurant-day.sh` (`npm run test:acceptance:day`) with `RD_LEGAL_*` and `RD_SUPPORT_*` exported; it refuses any database but the disposable `green_monkey_acceptance_dev` on loopback |
 | CI | `.github/workflows/restaurant-day.yml`: on demand, nightly (`vars.RD_NIGHTLY_REF`) and on release/* PRs into `main`; jobs `restaurant-day` and `restaurant-day-cfdi` are required checks in `ops/github/main-ruleset.json`. Job `restaurant-day-payments` (branch P) runs on the same events; the lead adds it to the ruleset once it is green on `main` |
 | Branch P | `RD_PAYMENTS_FAKE_PORT` (CI: 4899): global setup starts `tests/fakes/payments-fake.ts` there and runs the worker with `PAYMENTS_PROVIDERS=mercadopago,clip`, `MERCADOPAGO_API_URL`/`CLIP_API_URL` on the fake (`APP_ENV=test`, the only place a loopback base is accepted) and a `CREDENTIAL_ENCRYPTION_KEY` it generates per run in memory; the web stays production. The browser chain runs G1 and P only; the DB suite runs DP1–DP6 only |

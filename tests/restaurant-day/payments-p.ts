@@ -9,8 +9,11 @@
  *        terminal), a manual BBVA sale, an MP charge the card refuses then paid in cash, a Clip
  *        charge whose answer is lost after the reader took it (unknown: Ulises records it with
  *        the provider's reference), and three platform orders at their platform prices;
- *   P5   Ulises closes the drawer with each terminal's batch total;
- *   P6   the owner's corte Z, Excepciones and Finanzas › Pagos show the oracle's figures.
+ *   P5   Ulises refunds part of a platform order (the platform pays it back, never cash) and
+ *        closes the drawer with each terminal's batch total;
+ *   P6   the owner's corte Z, Excepciones and Finanzas › Pagos (by method, terminal and
+ *        platform) show the oracle's figures; the fake saw no contract breach and holds exactly
+ *        the day's charges; the unknown outcome alerted once.
  *
  * tests/restaurant-day-db.ts reconciles the rows (tenders, attempts, exceptions, drawer counts,
  * no credential anywhere: branch P's checks).
@@ -19,19 +22,26 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { OUT, type RunState } from "./env.js";
-import { EXPECTED_P } from "./expected-p.js";
+import { EXPECTED_P, FAKE_CHARGES_P } from "./expected-p.js";
 import { mxn } from "./oracle.js";
 import { oracleP } from "./oracle-p.js";
 import {
   ORDERS_P,
   PAYMENTS_P,
+  REFUNDS_P,
   RESTAURANT_P,
   type OrderP,
   type PlatformKey,
   type TerminalKey,
 } from "./scenario-p.js";
 import { nextSale, productCard } from "./selling.js";
-import { switchUser, toCash, toSell } from "./service-a.js";
+import {
+  orderCard,
+  switchUser,
+  toCash,
+  toOrders,
+  toSell,
+} from "./service-a.js";
 import { openFinance } from "./close-a.js";
 import {
   checkpoint,
@@ -65,6 +75,7 @@ type FakeCharge = {
   reference: string;
   device: string;
   amount: number;
+  tip: number;
   status: string;
 };
 
@@ -397,15 +408,28 @@ async function integratedSale(caja: Device, state: RunState, o: OrderP) {
   const dialog = await openPayment(caja, o);
   const before = await sendToTerminal(caja, state, dialog, p.terminal, p.tip);
   const charge = await newCharge(state, t.device!, before);
-  // The terminal is asked for the bill plus the tip, in one charge.
-  expect(charge.amount, `${o.id}: the amount sent to ${t.name}`).toBe(
-    cents(totalOf(o)) + (p.tip ?? 0),
-  );
+  // The terminal is asked for the bill plus the tip, in one charge: MP's order carries the total
+  // with the tip; Clip's request the bill with the tip apart (tip_amount), never tip twice.
+  const tip = p.tip ?? 0;
+  if (t.provider === "clip") {
+    expect(charge.amount, `${o.id}: the bill sent to ${t.name}`).toBe(
+      cents(totalOf(o)),
+    );
+    expect(charge.tip, `${o.id}: the tip sent to ${t.name}`).toBe(tip);
+  } else {
+    expect(charge.amount, `${o.id}: the amount sent to ${t.name}`).toBe(
+      cents(totalOf(o)) + tip,
+    );
+    expect(charge.tip, `${o.id}: MP's order has no separate tip`).toBe(0);
+  }
+  (state.paymentsCharges as Record<string, string>)[o.id] = charge.id;
   const wait = dialog.locator("section.terminal-wait");
   await expect(wait.getByRole("status")).toHaveText(
     `Esperando el pago en ${t.name}…`,
   );
-  await expect(wait.locator(".large-money")).toHaveText(mxn(charge.amount));
+  await expect(wait.locator(".large-money")).toHaveText(
+    mxn(cents(totalOf(o)) + tip),
+  );
   if (o.id === "P1")
     await checkpoint(caja, "P4-terminal-wait", { settle: wait });
   await fake(state, "approve", {
@@ -489,6 +513,7 @@ async function declinedThenCash(caja: Device, state: RunState, o: OrderP) {
   const dialog = await openPayment(caja, o);
   const before = await sendToTerminal(caja, state, dialog, p.terminal);
   const charge = await newCharge(state, t.device!, before);
+  (state.paymentsCharges as Record<string, string>)[o.id] = charge.id;
   await fake(state, "decline", { ref: charge.id });
   const wait = dialog.locator("section.terminal-wait");
   await expect(wait.getByRole("status")).toContainText(
@@ -543,7 +568,9 @@ async function unknownResolved(caja: Device, state: RunState, o: OrderP) {
   const dialog = await openPayment(caja, o);
   await fake(state, "next", { provider: "clip", behaviour: "timeoutTaken" });
   const before = await sendToTerminal(caja, state, dialog, p.terminal);
-  await newCharge(state, t.device!, before);
+  (state.paymentsCharges as Record<string, string>)[o.id] = (
+    await newCharge(state, t.device!, before)
+  ).id;
   const wait = dialog.locator("section.terminal-wait");
   await expect(wait.getByRole("status")).toContainText(
     "No sabemos si el cobro se completó.",
@@ -671,11 +698,88 @@ async function platformSale(caja: Device, o: OrderP) {
 
 // ------------------------------------------------------------------ P5: the close
 
+/**
+ * P5.0: Ulises refunds part of a platform order through the refund dialog («Por importe»), right
+ * after signing in (his own refund needs no second approval and his PIN is fresh). The platform
+ * pays it back: no cash leaves the drawer.
+ */
+async function platformRefunds(caja: Device) {
+  const page = caja.page;
+  for (const x of REFUNDS_P) {
+    run.step = `P5.0 ${x.id}`;
+    const o = ORDERS_P.find((y) => y.id === x.order)!;
+    if (o.payment.kind !== "platform") throw Error(x.id);
+    const label = pay.platforms[o.payment.platform].label;
+    await toOrders(caja);
+    await press(
+      caja,
+      orderCard(page, o.number).getByRole("button", {
+        name: "Reembolsar",
+        exact: true,
+      }),
+    );
+    const dialog = page.getByRole("dialog", {
+      name: `Reembolso · Orden #${o.number}`,
+    });
+    const modes = dialog
+      .getByRole("group", { name: /./ })
+      .filter({ has: page.getByRole("button", { name: "Por importe" }) });
+    await press(
+      caja,
+      modes.getByRole("button", { name: "Por importe", exact: true }),
+    );
+    await dialog.getByLabel(/^Pago a reembolsar/).selectOption({
+      label: `Pagado en ${label} · ${totalOf(o)} cobrado · ${totalOf(o)} reembolsable`,
+    });
+    await fill(
+      caja,
+      dialog.getByLabel("Importe", { exact: true }),
+      pesos(x.amount),
+    );
+    await expect(
+      dialog.getByText(
+        `Reembolso por plataforma (sin efectivo): ${mxn(x.amount)}`,
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await dialog
+      .getByLabel(/^Motivo del reembolso/)
+      .selectOption({ label: x.reasonLabel });
+    await fill(
+      caja,
+      dialog.getByLabel("Explicación", { exact: true }),
+      x.explanation,
+    );
+    await expect(
+      dialog.getByRole("group", { name: "Autorización de gerente" }),
+    ).toHaveCount(0);
+    await checkpoint(caja, "P5-refund", { settle: dialog });
+    await press(
+      caja,
+      dialog.getByRole("button", {
+        name: `Reembolsar ${mxn(x.amount)}`,
+        exact: true,
+      }),
+    );
+    await expect(
+      dialog.getByText(`Reembolso registrado: ${mxn(x.amount)}`, {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await press(
+      caja,
+      dialog.getByRole("button", { name: "Listo", exact: true }),
+    );
+  }
+}
+
 async function closeDrawer(caja: Device) {
   const page = caja.page;
   const z = O().corteZ;
   run.step = "P5.1";
   await switchUser(caja, staffP("ulises"));
+  await platformRefunds(caja);
+  run.step = "P5.1";
   await toCash(caja);
   await press(
     caja,
@@ -888,13 +992,77 @@ async function finance(owner: Device) {
     [...rows].sort((a, b) => a[0]!.localeCompare(b[0]!, "es"));
   const byTerminal = await tableRows(page, "Por terminal");
   const byPlatform = await tableRows(page, "Por plataforma");
+  // «Cobros por método» (shared/reports byMethod: another path than the corte's drawer totals,
+  // P2V-GATE-7), with its totals row.
+  const byMethod = await tableRows(page, "Cobros por método");
+  const byMethodTotal = (
+    await page
+      .locator("section.panel")
+      .filter({
+        has: page.getByRole("heading", {
+          name: "Cobros por método",
+          exact: true,
+        }),
+      })
+      .locator("tfoot tr")
+      .first()
+      .locator("td,th")
+      .allInnerTexts()
+  ).map((x) => x.replace(/\s+/g, " ").trim());
   record("P Finanzas por terminal", f.byTerminal, byTerminal);
   record("P Finanzas por plataforma", f.byPlatform, byPlatform);
+  record("P Finanzas por método", f.byMethod, byMethod);
+  record("P Finanzas por método total", f.byMethodTotal, byMethodTotal);
   expect(byTerminal).toEqual(sorted(f.byTerminal));
   expect(byPlatform).toEqual(sorted(f.byPlatform));
+  expect(byMethod).toEqual(sorted(f.byMethod));
+  expect(byMethodTotal).toEqual(f.byMethodTotal);
+  expect(byMethodTotal[2], "collected").toBe(f.collected);
   await checkpoint(owner, "P6-finance-payments", {
     settle: page.getByRole("heading", { name: "Por terminal", exact: true }),
   });
+}
+
+/**
+ * The payments fake at the end of the day (P2V-GATE-5): no contract breach seen (a Clip read
+ * without Pinpad-Include-Detail, an MP key reused with another body, a Clip create with an
+ * idempotency key, an MP cancel without its header, an internal error), and exactly the day's
+ * charges per device (a duplicate push would add one).
+ */
+async function fakeAtClose(state: RunState) {
+  const res = await fetch(`${state.paymentsFakeUrl}/__fake/violations`);
+  expect(res.status, "GET /__fake/violations").toBe(200);
+  expect(await res.json(), "the fake saw no contract breach").toEqual([]);
+  const charges = await fakeCharges(state);
+  const ids = state.paymentsCharges as Record<string, string>;
+  const byDevice: Record<
+    string,
+    { order: string; amount: number; tip: number; status: string }[]
+  > = {};
+  for (const c of charges)
+    (byDevice[c.device] ??= []).push({
+      order: Object.entries(ids).find(([, id]) => id === c.id)?.[0] ?? "?",
+      amount: c.amount,
+      tip: c.tip,
+      status: c.status,
+    });
+  record("P fake charges", FAKE_CHARGES_P, byDevice);
+  expect(byDevice).toEqual(FAKE_CHARGES_P);
+}
+
+/** The unknown outcome alerted the operator exactly once, and nothing else of payments did. */
+function alertsAtClose(state: RunState) {
+  const lines = readFileSync(resolve(OUT, "worker.log"), "utf8")
+    .split("\n")
+    .filter((l) => l.includes('"message":"alert"'));
+  const tag = state.tenantP!.slice(0, 8);
+  expect(
+    lines.filter((l) => l.includes(`payments_attempt_unknown_${tag}`)),
+    "one payments_attempt_unknown alert",
+  ).toHaveLength(1);
+  expect(
+    lines.filter((l) => /payments_(late_approval|account_failed)_/.test(l)),
+  ).toEqual([]);
 }
 
 /** No notification token in any process log (payments spec §9.4; DB check DP5 covers tables). */
@@ -918,6 +1086,8 @@ export async function serviceP(dev: Devices, state: RunState) {
   ).toBeTruthy();
   // The unknown outcome alerts the operator by design (payments spec §8).
   run.expectedAlerts.push(/^payments_attempt_unknown_/);
+  // The fake's charge id of each integrated sale (DP1 compares the tenders' references).
+  state.paymentsCharges = {};
   await paymentsSetup(owner);
   // The register reads the new options (terminals, platforms, prices) on a reload.
   run.step = "P4.0";
@@ -949,6 +1119,8 @@ export async function serviceP(dev: Devices, state: RunState) {
   await finance(owner);
   run.step = "P6.4";
   tokensNowhere();
+  await fakeAtClose(state);
+  alertsAtClose(state);
   // The hand-typed table is the one the screens were held to (§5.1 double entry).
   expect(O()).toEqual(EXPECTED_P);
 }

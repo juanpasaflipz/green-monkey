@@ -35,8 +35,8 @@
  * Over HTTP for the browser suite (`npm run dev:payments-fake`, 127.0.0.1, PAYMENTS_FAKE_PORT or
  * --port): the same scripting through POST /__fake/{next,approve,decline,expire,cancelOnTerminal,
  * atTerminalUncancellable} with a JSON body ({provider, behaviour} for next; {ref} or {device}
- * — the newest charge waiting on that device — plus the approval fields for the others) and
- * GET /__fake/charges. Every default credential is obviously fictional ("...-not-real");
+ * — the newest charge waiting on that device — plus the approval fields for the others),
+ * GET /__fake/charges and GET /__fake/violations. Every default credential is obviously fictional ("...-not-real");
  * PAYMENTS_FAKE_MP_TOKEN replaces the MP access token (as fictional) for a production-mode web.
  *
  * It never answers like a real provider beyond what the adapters read (server/payments/worker/
@@ -292,10 +292,15 @@ export async function startPaymentsFake(
             id: c.id,
             reference: c.reference,
             device: c.device,
+            // MP: the total with the tip; Clip: the bill, its tip apart (tip_amount).
             amount: c.amount,
+            tip: c.tip,
             status: c.status,
           })),
         );
+      // The contract breaches the fake saw (P2V-GATE-5): the gate requires none.
+      if (req.method === "GET" && action === "violations")
+        return send(res, 200, [...violations]);
       if (req.method !== "POST") return send(res, 405, {});
       if (action === "next") {
         const provider = body.provider === "clip" ? "clip" : "mercadopago";

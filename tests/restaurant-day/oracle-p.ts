@@ -18,11 +18,22 @@
  * - P-R4 attempts: every integrated charge is one attempt; a decline leaves its attempt
  *   declined and the order is paid in cash; an unknown outcome is settled by the manager's
  *   record (resolution `recorded`), with no card data and the estimated fee.
+ * - P-R5 refunds: a refund of a platform tender is paid back by the platform: never cash
+ *   (expected cash does not move), it lowers that platform's net (amount − refunds) and the
+ *   method's net (amount + tips − refunds); the estimated commission stays on the amount
+ *   charged. The refund batch carries it all as platform_amount.
+ * - P-R6 FormaPago (SAT c_FormaPago, CFDI 4.0): a ticket's form is the form of its largest
+ *   tender: cash 01; a card tender 04 credit / 28 debit when the provider reported the type,
+ *   else the restaurant's card form; a platform tender the restaurant's platform form. The daily
+ *   global invoice has one concept per ticket at its amount net of refunds and takes the form of
+ *   the ticket with the greatest net amount (the first in folio order on a tie).
  */
 import { extractTax, mxn } from "./oracle.js";
 import {
+  CFDI_FORMS_P,
   ORDERS_P,
   PAYMENTS_P,
+  REFUNDS_P,
   RESTAURANT_P,
   type OrderP,
   type PlatformKey,
@@ -156,19 +167,67 @@ export function oracleP() {
       estimated: rows.some((t) => t.feeSource === "estimated"),
     };
   });
+  // P-R5: every refund of the day is of a platform order (paid back by the platform).
+  const refunds = REFUNDS_P.map((x) => {
+    const tender = tenders.find((t) => t.order === x.order)!;
+    if (tender.method !== "platform")
+      throw Error(`oracle P: ${x.id} refunds a ${tender.method} tender`);
+    return { ...x, platform: tender.platform! };
+  });
+  const refundedOf = (order: string) =>
+    sum(
+      refunds.filter((x) => x.order === order),
+      (x) => x.amount,
+    );
   const platformKeys = Object.keys(PAYMENTS_P.platforms) as PlatformKey[];
   const byPlatform = platformKeys.map((k) => {
     const rows = platform.filter((t) => t.platform === k);
     const amount = sum(rows, (t) => t.amount);
     const commission = sum(rows, (t) => t.fee ?? 0);
+    const refunded = sum(
+      refunds.filter((x) => x.platform === k),
+      (x) => x.amount,
+    );
     return {
       key: k,
       label: PAYMENTS_P.platforms[k].label,
       count: rows.length,
       amount,
+      refunds: refunded,
+      net: amount - refunded,
       commission,
     };
   });
+  const methods = (["cash", "external", "platform"] as const).map((m) => {
+    const rows = tenders.filter((t) => t.method === m);
+    const amount = sum(rows, (t) => t.amount);
+    const tips = sum(rows, (t) => t.tip);
+    const refunded = sum(rows, (t) => refundedOf(t.order));
+    return {
+      label:
+        m === "cash"
+          ? "Efectivo"
+          : m === "external"
+            ? "Terminal bancaria externa"
+            : "Plataforma",
+      count: rows.length,
+      amount,
+      tips,
+      refunds: refunded,
+      net: amount + tips - refunded,
+    };
+  });
+  // P-R6: FormaPago per ticket and of the daily global invoice.
+  const formOf = (t: TenderP): string =>
+    t.method === "cash"
+      ? "01"
+      : t.method === "platform"
+        ? CFDI_FORMS_P.platform
+        : t.card?.type === "credit"
+          ? "04"
+          : t.card?.type === "debit"
+            ? "28"
+            : CFDI_FORMS_P.card;
   type AttemptP = {
     order: string;
     terminal: "mp" | "clip";
@@ -256,7 +315,7 @@ export function oracleP() {
       platforms: Object.fromEntries(
         byPlatform.map((p) => [
           `${p.label} (${p.count})`,
-          { net: mxn(p.amount), commission: mxn(p.commission) },
+          { net: mxn(p.net), commission: mxn(p.commission) },
         ]),
       ),
       payments: tenders.length,
@@ -277,13 +336,59 @@ export function oracleP() {
         p.label,
         String(p.count),
         mxn(p.amount),
-        mxn(0),
+        mxn(p.refunds),
         mxn(p.commission),
-        mxn(p.amount),
-        mxn(p.amount - p.commission),
+        mxn(p.net),
+        mxn(p.net - p.commission),
       ]),
+      byMethod: methods.map((m) => [
+        m.label,
+        String(m.count),
+        mxn(m.amount),
+        mxn(m.tips),
+        mxn(m.refunds),
+        mxn(m.net),
+      ]),
+      byMethodTotal: [
+        "Total",
+        String(sum(methods, (m) => m.count)),
+        mxn(sum(methods, (m) => m.amount)),
+        mxn(sum(methods, (m) => m.tips)),
+        mxn(sum(methods, (m) => m.refunds)),
+        mxn(sum(methods, (m) => m.net)),
+      ],
       collected: mxn(sum(tenders, (t) => t.amount)),
     },
+    refunds: refunds.map((x) => {
+      const order = ORDERS_P.find((o) => o.id === x.order)!;
+      return {
+        order: order.number,
+        amount: mxn(x.amount),
+        cash: mxn(0),
+        external: mxn(0),
+        platform: mxn(x.amount),
+        reason: x.reasonCode,
+        note: x.explanation,
+        actor: RESTAURANT_P.staff.find((st) => st.key === x.actor)!.name,
+      };
+    }),
+    cfdi: (() => {
+      const net = orders.map((x) => ({
+        folio: x.folio,
+        net: x.total - refundedOf(x.o.id),
+        form: formOf(x.tender),
+      }));
+      let largest = net[0]!;
+      for (const t of net) if (t.net > largest.net) largest = t;
+      return {
+        forms: Object.fromEntries(net.map((t) => [t.folio, t.form])),
+        global: {
+          form: largest.form,
+          concepts: net.filter((t) => t.net > 0).length,
+          total: mxn(sum(net, (t) => t.net)),
+        },
+      };
+    })(),
     exception: {
       number: resolved.number,
       amount: mxn(resolvedRow.total),
