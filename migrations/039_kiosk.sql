@@ -176,8 +176,10 @@ CREATE TABLE menu_media (
   UNIQUE (id),
   FOREIGN KEY (tenant_id, created_by) REFERENCES employees(tenant_id, id),
   FOREIGN KEY (tenant_id, deleted_by) REFERENCES employees(tenant_id, id),
+  -- Variants exist once ready; an upload removed before it finished never had any.
   CONSTRAINT menu_media_shape CHECK (
-    (state = 'uploading') = (variants IS NULL) AND
+    (state <> 'uploading' OR variants IS NULL) AND
+    (state <> 'ready' OR variants IS NOT NULL) AND
     (variants IS NULL) = (width IS NULL) AND
     (width IS NULL) = (height IS NULL) AND
     (state IN ('deleted', 'purged')) = (deleted_at IS NOT NULL) AND

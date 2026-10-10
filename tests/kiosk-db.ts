@@ -59,6 +59,21 @@ import {
   saveSuggestions,
 } from "../server/kiosk-settings.js";
 import { DomainError, type Session } from "../shared/domain.js";
+import { legalConfig } from "../server/legal.js";
+import { LEGAL_CI_ENV } from "./fixtures/legal-ci.js";
+import {
+  getLoyaltySettings,
+  saveLoyaltySettings,
+} from "../server/loyalty/settings.js";
+import { enrollMember } from "../server/loyalty/members.js";
+import type { LoyaltySettingsView } from "../shared/loyalty.js";
+import { runRetention } from "../server/ops/retention.js";
+import {
+  mediaRoute,
+  removeProductImage,
+  uploadProductImage,
+} from "../server/media.js";
+import { uploadBody } from "./fixtures/webp.js";
 import { LINK_HEADER, STATUS_HEADER } from "../shared/public-ordering.js";
 import { KIOSK_COOKIE, type KioskCheckoutView } from "../shared/kiosk.js";
 import type { SessionAccess } from "../shared/access.js";
@@ -274,6 +289,7 @@ app.set("trust proxy", "loopback");
 app.use(express.json({ limit: "256kb" }));
 app.use(cookieParser());
 app.use("/api/public", publicOrdering(sql));
+app.get("/media/:assetId/:variant.webp", mediaRoute(sql));
 app.use(
   (
     error: unknown,
@@ -723,6 +739,9 @@ try {
       ),
       /menu_media_immutable/,
     );
+    await write(manager, (tx) =>
+      revokeLink(tx, manager, k.linkId, { operationId: randomUUID() }),
+    );
   });
 
   await test("K2. holds: a kiosk hold may be dine-in without a table; a counter QR hold may not; decision_source 'kiosk' only on an accepted kiosk hold", async () => {
@@ -753,6 +772,9 @@ try {
           tx`update public_order_holds set state='cancelled',decided_at=now(),decision_source='kiosk' where link_id=${k.linkId}`,
       ),
       /public_order_holds_kiosk_decision/,
+    );
+    await write(manager, (tx) =>
+      revokeLink(tx, manager, k.linkId, { operationId: randomUUID() }),
     );
   });
 
@@ -955,6 +977,19 @@ try {
       body: { phone: "5555550101" },
     });
     assert.equal(m.body.error, "kiosk_device_required");
+    // A tablet bound to another station is unbound here.
+    const elsewhere = await newKiosk("Otra " + run);
+    await configure(elsewhere, terminals.clip);
+    await pair(elsewhere);
+    const cross = await call("GET", "/kiosk/state", {
+      link: k.link,
+      tablet: elsewhere.tablet,
+    });
+    assert.equal(cross.body.bound, false);
+    assert.equal(
+      (await charge({ ...k, tablet: elsewhere.tablet }, o.key)).body.error,
+      "kiosk_device_required",
+    );
     // A forged cookie is the same as none.
     t.cookie = "AAAAAAAAAAAAAAAAAAAAAA";
     assert.equal((await charge(k, o.key)).body.error, "kiosk_device_required");
@@ -1219,6 +1254,35 @@ try {
     const h2 = await holdOf(o.key);
     assert.equal(h2.state, "accepted");
     assert.equal(h2.decision_source, "kiosk");
+    // A price that changed between the start and the approval is a review too.
+    const op = await order(main, [line(ids.agua, 2)], 600);
+    await charge(main, op.key);
+    const ap = await attemptOf(op.key);
+    await drive(ap.id, ["pending"]);
+    await asOwner(
+      A,
+      (tx) =>
+        tx`update catalog set data=jsonb_set(data,'{price}','350') where id=${ids.agua}`,
+    );
+    fake.approve(fake.chargeFor(ap.id)!.id, { ...TEST_CARD });
+    await drive(ap.id, ["review"]);
+    assert.equal(
+      (await attemptOf(op.key)).error_code,
+      "kiosk_settle_price_changed",
+    );
+    assert.equal((await holdOf(op.key)).state, "pending");
+    await asOwner(
+      A,
+      (tx) =>
+        tx`update catalog set data=jsonb_set(data,'{price}','300') where id=${ids.agua}`,
+    );
+    await write(cashier, (tx) =>
+      resolveAttempt(tx, cashier, ap.id, {
+        operationId: randomUUID(),
+        outcome: "retry",
+      }),
+    );
+    assert.equal((await attemptOf(op.key)).state, "settled");
     // (c) Another 86: the manager records the provider refund, then rejects the hold.
     const o2 = await order(main, [line(ids.papas)], 3500);
     await charge(main, o2.key);
@@ -1414,6 +1478,561 @@ try {
       (select count(*)::int from kiosk_devices) as devices`,
     );
     assert.deepEqual({ ...rows[0] }, { stations: 0, checkouts: 0, devices: 0 });
+  });
+
+  await test("K16. club at the kiosk: lookup by phone never creates and shows no name; 5 lookups per device per 5 minutes; the member token rides on the checkout and the settle links the order before the tender; stamps on the done screen; a join offer for non-members; retention blanks the reference at 30 days", async () => {
+    const LEGAL = legalConfig(LEGAL_CI_ENV);
+    const v = (await write(owner, (tx) =>
+      getLoyaltySettings(tx, owner, LEGAL),
+    )) as LoyaltySettingsView;
+    await write(owner, (tx) =>
+      saveLoyaltySettings(
+        tx,
+        owner,
+        {
+          operationId: randomUUID(),
+          expectedVersion: v.version,
+          enabled: true,
+          programName: "",
+          stampsRequired: 10,
+          stampThreshold: 0,
+          maxStampsPerOrder: null,
+          rewardKind: "item",
+          rewardDescription: "Un producto gratis",
+          rewardAmount: null,
+          rewardMaxAmount: 15000,
+          maxRewardsPerOrder: 1,
+          promptAtCheckout: true,
+          receiptJoinQr: true,
+          linkWindowDays: 7,
+          privacyAttested: true,
+        },
+        LEGAL,
+      ),
+    );
+    const member = (
+      await write(cashier, (tx) =>
+        enrollMember(tx, cashier, {
+          operationId: randomUUID(),
+          phone: "5555550123",
+          country: "MX",
+          name: "Ana Ficticia",
+          consent: true,
+          marketingOptIn: false,
+        }),
+      )
+    ).member;
+    const k = await newKiosk("Club " + run);
+    await configure(k, terminals.clip);
+    await pair(k);
+    // Off at the kiosk until the setting is on.
+    const off = await call("POST", "/kiosk/member", {
+      link: k.link,
+      tablet: k.tablet,
+      body: { phone: "5555550123" },
+    });
+    assert.equal(off.body.error, "loyalty_disabled");
+    const sv = await one(
+      A,
+      (tx) => tx`select version from kiosk_settings where tenant_id=${A}`,
+    );
+    await write(manager, (tx) =>
+      saveKioskSettings(tx, manager, {
+        operationId: randomUUID(),
+        expectedVersion: sv.version,
+        paymentMode: "card_and_counter",
+        askFulfillment: true,
+        suggestions: true,
+        loyaltyAtKiosk: true,
+      }),
+    );
+    const membersBefore = (
+      await one(
+        A,
+        (tx) =>
+          tx`select count(*)::int as n from loyalty_members where tenant_id=${A}`,
+      )
+    ).n;
+    const ip = "203.0.113.77";
+    const found = await call("POST", "/kiosk/member", {
+      link: k.link,
+      tablet: k.tablet,
+      ip,
+      body: { phone: "5555550123" },
+    });
+    assert.equal(found.status, 200, JSON.stringify(found.body));
+    assert.equal(found.body.found, true);
+    assert.equal(found.body.stamps, 0);
+    assert.equal(found.body.required, 10);
+    assert.ok(
+      !JSON.stringify(found.body).includes("Ana"),
+      "no name at the kiosk (R21)",
+    );
+    assert.ok(
+      !JSON.stringify(found.body).includes("5555550123"),
+      "the phone is masked",
+    );
+    const missing = await call("POST", "/kiosk/member", {
+      link: k.link,
+      tablet: k.tablet,
+      ip,
+      body: { phone: "5555550199" },
+    });
+    assert.deepEqual(missing.body, { found: false });
+    assert.equal(
+      (
+        await one(
+          A,
+          (tx) =>
+            tx`select count(*)::int as n from loyalty_members where tenant_id=${A}`,
+        )
+      ).n,
+      membersBefore,
+      "a lookup never creates",
+    );
+    for (let i = 0; i < 3; i++)
+      await call("POST", "/kiosk/member", {
+        link: k.link,
+        tablet: k.tablet,
+        ip,
+        body: { phone: "5555550199" },
+      });
+    const limited = await call("POST", "/kiosk/member", {
+      link: k.link,
+      tablet: k.tablet,
+      ip,
+      body: { phone: "5555550199" },
+    });
+    assert.equal(
+      limited.status,
+      429,
+      "the sixth lookup in 5 minutes from one device",
+    );
+    // The token is bound to this station: another kiosk's order drops it.
+    const o = await order(k, [line(ids.taco, 2)], 9000, {
+      memberToken: found.body.memberToken,
+    });
+    assert.equal((await holdOf(o.key)).loyalty_member_id, member.id);
+    const otherKiosk = await newKiosk("Club2 " + run);
+    await configure(otherKiosk, terminals.clip);
+    await pair(otherKiosk);
+    const other = await order(otherKiosk, [line(ids.taco)], 4500, {
+      memberToken: found.body.memberToken,
+    });
+    assert.equal((await holdOf(other.key)).loyalty_member_id, null);
+    await charge(k, o.key);
+    const a = await attemptOf(o.key);
+    await drive(a.id, ["pending"]);
+    fake.approve(fake.chargeFor(a.id)!.id, { ...TEST_CARD });
+    await drive(a.id, ["settled"]);
+    const h = await holdOf(o.key);
+    const link = await one(
+      A,
+      (tx) =>
+        tx`select member_id,via from loyalty_order_links where order_id=${h.order_id}`,
+    );
+    assert.deepEqual({ ...link }, { member_id: member.id, via: "kiosk" });
+    const done = (await sync(k, o.key)).body as KioskCheckoutView;
+    assert.equal(done.loyalty!.member, true);
+    assert.equal(done.loyalty!.stampsEarned, 1);
+    assert.equal(done.loyalty!.stamps, 1);
+    assert.equal(done.joinOffer, null);
+    // A non-member's paid order offers the join QR.
+    const o2 = await order(k, [line(ids.taco)], 4500);
+    await charge(k, o2.key);
+    const a2 = await attemptOf(o2.key);
+    await drive(a2.id, ["pending"]);
+    fake.approve(fake.chargeFor(a2.id)!.id, { ...TEST_CARD });
+    await drive(a2.id, ["settled"]);
+    const done2 = (await sync(k, o2.key)).body as KioskCheckoutView;
+    assert.equal(done2.loyalty, null);
+    assert.match(done2.joinOffer!.url, /\/club#/);
+    // Retention: the member reference is blanked 30 days after the checkout, nothing else changes.
+    await admin.begin(async (tx) => {
+      await tx`alter table kiosk_checkouts disable trigger kiosk_checkouts_transition`;
+      await tx`update kiosk_checkouts set created_at=now()-interval '31 days' where hold_id=${h.id}`;
+      await tx`alter table kiosk_checkouts enable trigger kiosk_checkouts_transition`;
+    });
+    await runRetention(admin, { pauseMs: 0 });
+    const after = await one(
+      A,
+      (tx) =>
+        tx`select loyalty_member_id,attempt_id from kiosk_checkouts where hold_id=${h.id}`,
+    );
+    assert.equal(after.loyalty_member_id, null);
+    assert.equal(after.attempt_id, a.id);
+    assert.equal(
+      (
+        await one(
+          A,
+          (tx) =>
+            tx`select member_id from loyalty_order_links where order_id=${h.order_id}`,
+        )
+      ).member_id,
+      member.id,
+      "loyalty keeps its own link under its own rule",
+    );
+  });
+
+  await test("K17. photos: upload (fs store) → ready asset → the product's image → revision bump → the diner catalog; served immutable, nosniff, sandboxed, same-origin; removal 404s at once; purge at 7 days; a half-done upload is swept; another tenant's id is 404", async () => {
+    const before = (
+      await one(
+        A,
+        (tx) => tx`select revision from menu_state where tenant_id=${A}`,
+      )
+    ).revision;
+    const uploadOp = randomUUID();
+    const r = await uploadProductImage(
+      sql,
+      owner,
+      { operationId: uploadOp, productId: ids.taco },
+      uploadBody(1600, 1200, { metadata: true }),
+    );
+    assert.equal(r.image!.w, 1200);
+    const m = await one(
+      A,
+      (tx) =>
+        tx`select state,width,height,variants from menu_media where id=${r.image!.id}`,
+    );
+    assert.equal(m.state, "ready");
+    assert.deepEqual(Object.keys(m.variants).sort(), ["card", "hero", "thumb"]);
+    assert.ok(
+      Number(
+        (
+          await one(
+            A,
+            (tx) => tx`select revision from menu_state where tenant_id=${A}`,
+          )
+        ).revision,
+      ) > Number(before),
+    );
+    const menu = await call("GET", "/menu", { link: main.link });
+    const taco = menu.body.catalog.find((p: any) => p.id === ids.taco);
+    assert.deepEqual(taco.image, { id: r.image!.id, w: 1200, h: 900 });
+    // A replay of the operation id answers the first result (no second asset).
+    const assets = (
+      await one(
+        A,
+        (tx) =>
+          tx`select count(*)::int as n from menu_media where tenant_id=${A}`,
+      )
+    ).n;
+    const same = await uploadProductImage(
+      sql,
+      owner,
+      { operationId: uploadOp, productId: ids.taco },
+      uploadBody(1600, 1200),
+    );
+    assert.equal(same.image!.id, r.image!.id);
+    assert.equal(
+      (
+        await one(
+          A,
+          (tx) =>
+            tx`select count(*)::int as n from menu_media where tenant_id=${A}`,
+        )
+      ).n,
+      assets,
+    );
+    // Served: headers and bytes without metadata.
+    const res = await fetch(`${origin}/media/${r.image!.id}/hero.webp`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("content-type"), "image/webp");
+    assert.equal(
+      res.headers.get("cache-control"),
+      "public, max-age=31536000, immutable",
+    );
+    assert.equal(res.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(
+      res.headers.get("content-security-policy"),
+      "default-src 'none'; sandbox",
+    );
+    assert.equal(
+      res.headers.get("cross-origin-resource-policy"),
+      "same-origin",
+    );
+    assert.equal(res.headers.get("etag"), `"${m.variants.hero.sha256}"`);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    assert.ok(
+      !bytes.includes(Buffer.from("GPS")),
+      "no EXIF/GPS in what is served",
+    );
+    assert.equal(
+      (
+        await fetch(`${origin}/media/${r.image!.id}/hero.webp`, {
+          headers: { "if-none-match": `"${m.variants.hero.sha256}"` },
+        })
+      ).status,
+      304,
+    );
+    assert.equal(
+      (await fetch(`${origin}/media/${r.image!.id}/huge.webp`)).status,
+      404,
+    );
+    assert.equal(
+      (await fetch(`${origin}/media/${randomUUID()}/hero.webp`)).status,
+      404,
+    );
+    // Staff only; managers and owners.
+    await rejects(
+      uploadProductImage(
+        sql,
+        cashier,
+        { operationId: randomUUID(), productId: ids.taco },
+        uploadBody(400, 300),
+      ),
+      "forbidden",
+    );
+    await rejects(
+      uploadProductImage(
+        sql,
+        owner,
+        { operationId: randomUUID(), productId: ids.taco },
+        Buffer.from("not an image"),
+      ),
+      /media_/,
+    );
+    // Removal: 404 at once, purge 7 days later.
+    const doc = await one(
+      A,
+      (tx) =>
+        tx`select (data->>'version')::int as v from catalog where id=${ids.taco}`,
+    );
+    await write(manager, (tx) =>
+      removeProductImage(tx, manager, ids.taco, {
+        operationId: randomUUID(),
+        expectedVersion: doc.v,
+      }),
+    );
+    assert.equal(
+      (await fetch(`${origin}/media/${r.image!.id}/hero.webp`)).status,
+      404,
+    );
+    assert.equal(
+      (await call("GET", "/menu", { link: main.link })).body.catalog.find(
+        (p: any) => p.id === ids.taco,
+      ).image,
+      undefined,
+    );
+    await webRunner.drainTenant(A);
+    assert.equal(
+      (
+        await one(
+          A,
+          (tx) => tx`select state from menu_media where id=${r.image!.id}`,
+        )
+      ).state,
+      "deleted",
+      "not before 7 days",
+    );
+    await admin.begin(async (tx) => {
+      await tx`alter table menu_media disable trigger menu_media_transition`;
+      await tx`update menu_media set deleted_at=now()-interval '8 days' where id=${r.image!.id}`;
+      await tx`alter table menu_media enable trigger menu_media_transition`;
+    });
+    await admin`update jobs set next_at=now() where tenant_id=${A} and kind='media_purge'`;
+    await webRunner.drainTenant(A);
+    while (webRunner.running() > 0) await sleep(10);
+    assert.equal(
+      (
+        await one(
+          A,
+          (tx) => tx`select state from menu_media where id=${r.image!.id}`,
+        )
+      ).state,
+      "purged",
+    );
+    const { readdir } = await import("node:fs/promises");
+    assert.deepEqual(
+      await readdir(join(mediaRoot, "m", A, r.image!.id)).catch(() => []),
+      [],
+    );
+    // A half-done upload (tx A only) is swept after an hour.
+    const stale = randomUUID();
+    await asOwner(
+      A,
+      (tx) =>
+        tx`insert into menu_media(tenant_id,id,created_by) values(${A},${stale},${ids.owner})`,
+    );
+    await asOwner(
+      A,
+      (
+        tx,
+      ) => tx`insert into jobs(tenant_id,id,kind,dedupe_key,payload,state,next_at)
+      values(${A},${randomUUID()},'media_stale',${stale},${tx.json({ assetId: stale })},'available',now())`,
+    );
+    await webRunner.drainTenant(A);
+    while (webRunner.running() > 0) await sleep(10);
+    assert.equal(
+      (await one(A, (tx) => tx`select state from menu_media where id=${stale}`))
+        .state,
+      "purged",
+    );
+    // MENU_PHOTOS_ENABLED=false: no photos anywhere.
+    const r2 = await uploadProductImage(
+      sql,
+      owner,
+      { operationId: randomUUID(), productId: ids.agua },
+      uploadBody(400, 300),
+    );
+    process.env.MENU_PHOTOS_ENABLED = "false";
+    assert.equal(
+      (await fetch(`${origin}/media/${r2.image!.id}/thumb.webp`)).status,
+      404,
+    );
+    assert.equal(
+      (await call("GET", "/menu", { link: main.link })).body.catalog.find(
+        (p: any) => p.id === ids.agua,
+      ).image,
+      undefined,
+    );
+    await rejects(
+      uploadProductImage(
+        sql,
+        owner,
+        { operationId: randomUUID(), productId: ids.agua },
+        uploadBody(400, 300),
+      ),
+      "media_disabled",
+    );
+    delete process.env.MENU_PHOTOS_ENABLED;
+    // Another tenant cannot attach to A's product nor read A's asset by id with its session.
+    await rejects(
+      uploadProductImage(
+        sql,
+        ownerB,
+        { operationId: randomUUID(), productId: ids.taco },
+        uploadBody(400, 300),
+      ),
+      "not_found",
+    );
+    assert.equal(
+      (await write(ownerB, (tx) => tx`select id from menu_media`)).length,
+      0,
+    );
+  });
+
+  await test("K18. suggestions: product and cart sets are replaced by UPDATE (never deleted); the kiosk reads only sellable products", async () => {
+    const save = (
+      source: string | null,
+      productIds: string[],
+      expectedVersion: number,
+    ) =>
+      write(manager, (tx) =>
+        saveSuggestions(tx, manager, source, {
+          operationId: randomUUID(),
+          expectedVersion,
+          productIds,
+        }),
+      );
+    const p1 = await save(ids.taco, [ids.papas, ids.agua], 0);
+    assert.equal(p1.version, 1);
+    await rejects(save(ids.taco, [ids.papas], 0), "menu_changed");
+    await save(ids.taco, [ids.agua, ids.papas], 1);
+    await save(null, [ids.papas, ids.agua, ids.gratis], 0);
+    await rejects(
+      save(
+        ids.taco,
+        [ids.agua, ids.papas, ids.gratis, ids.taco, randomUUID()],
+        2,
+      ),
+      "invalid_input",
+    );
+    await setAvailable(ids.agua, false);
+    const st = await call("GET", "/kiosk/state", {
+      link: main.link,
+      tablet: main.tablet,
+    });
+    assert.deepEqual(st.body.suggestions.byProduct[ids.taco], [ids.papas]);
+    assert.deepEqual(st.body.suggestions.cart, [ids.papas, ids.gratis]);
+    assert.deepEqual(
+      st.body.suggestions.popular,
+      [],
+      "curated cart set: no popular fallback",
+    );
+    await setAvailable(ids.agua, true);
+    const rows = await one(
+      A,
+      (tx) =>
+        tx`select count(*)::int as n from menu_suggestions where tenant_id=${A}`,
+    );
+    assert.equal(rows.n, 2, "one row per product set plus the cart row");
+  });
+
+  await test("K19. malformed link tokens cost no database work and have their own bucket; a non-kiosk link is not a kiosk", async () => {
+    const r = await call("GET", "/kiosk/state", { link: "not-a-token" });
+    assert.equal(r.status, 404);
+    assert.equal(r.body.error, "public_link_invalid");
+    const counter = await write(manager, (tx) =>
+      createLink(tx, manager, { kind: "counter", label: "Barra " + run }),
+    );
+    assert.equal(
+      (await call("GET", "/kiosk/state", { link: counter.token })).body.error,
+      "public_link_invalid",
+    );
+  });
+
+  await test("K23. burst under noRetries: kiosk settles, staff accepts and rejects, a link rotation and drawer reads run together without a deadlock or a retry", async () => {
+    const k = await newKiosk("Burst " + run);
+    await configure(k, terminals.mp);
+    await pair(k);
+    const k2 = await newKiosk("Burst2 " + run);
+    await configure(k2, terminals.clip);
+    await pair(k2);
+    const paid = [];
+    for (const kk of [k, k2]) {
+      const o = await order(kk, [line(ids.taco, 2)], 9000);
+      await charge(kk, o.key);
+      const a = await attemptOf(o.key);
+      await drive(a.id, ["pending"]);
+      fake.approve(fake.chargeFor(a.id)!.id, { ...TEST_CARD });
+      await workerUntil(a.id, "approved");
+      paid.push({ kk, o, a });
+    }
+    const counterHolds = [];
+    for (let i = 0; i < 4; i++) {
+      const o = await order(k, [line(ids.agua)], 300);
+      await call("POST", "/kiosk/counter", {
+        link: k.link,
+        tablet: k.tablet,
+        body: { statusKey: o.key },
+      });
+      counterHolds.push((await holdOf(o.key)).id);
+    }
+    await noRetries("K23 burst", () =>
+      Promise.all([
+        ...paid.map((p) => sync(p.kk, p.o.key)),
+        webRunner.drainTenant(A),
+        ...counterHolds.slice(0, 2).map((id) =>
+          write(cashier, (tx) =>
+            acceptHold(tx, cashier, id, {
+              operationId: randomUUID(),
+              target: { kind: "new" },
+              payment: { method: "cash", amount: 300, tip: 0, received: 300 },
+            }),
+          ),
+        ),
+        ...counterHolds.slice(2).map((id) =>
+          write(cashier, (tx) =>
+            rejectHold(tx, cashier, id, {
+              operationId: randomUUID(),
+              reason: "other",
+            }),
+          ),
+        ),
+        write(manager, (tx) => rotateLink(tx, manager, k2.linkId)),
+        write(cashier, (tx) => inbox(tx, cashier)),
+      ]),
+    );
+    while (webRunner.running() > 0) await sleep(10);
+    for (const p of paid)
+      assert.equal((await attemptOf(p.o.key)).state, "settled");
+    const tickets = await one(
+      A,
+      (tx) =>
+        tx`select count(*)::int as n, count(distinct order_id)::int as d from fiscal_tickets where tenant_id=${A}`,
+    );
+    assert.equal(tickets.n, tickets.d, "one ticket per order");
   });
 
   assert.deepEqual(dead, [], "no job went dead");

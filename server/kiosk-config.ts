@@ -91,3 +91,23 @@ export function kioskWebConfig(env: Env, appEnv: string): void {
   )
     throw new ConfigError("media_store_fs_deployed");
 }
+
+/** /capabilities entries (critic R30): {enabled, reason?} with snake_case reasons. */
+export function kioskCapabilities(env: Env = process.env) {
+  let store: MediaStoreConfig | null = null;
+  try {
+    store = mediaStoreConfig(env);
+  } catch {
+    store = null;
+  }
+  return {
+    kioskSelfCheckout: kioskSelfCheckoutEnabled(env)
+      ? { enabled: true }
+      : { enabled: false, reason: "switched_off" },
+    menuPhotos: !menuPhotosEnabled(env)
+      ? { enabled: false, reason: "switched_off" }
+      : store
+        ? { enabled: true }
+        : { enabled: false, reason: "media_store_not_configured" },
+  };
+}

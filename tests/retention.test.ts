@@ -40,13 +40,14 @@ describe("retention pass (OPS-R6)", () => {
       "jobs",
       "public_order_holds",
       "loyalty_members",
+      "kiosk_checkouts",
     ]);
     expect(alerts).toEqual([
       {
         key: "retention_failed",
         severity: "warning",
         title: "retention failed",
-        body: "retention_failed tables=oauth_login_attempts,jobs,public_order_holds,loyalty_members",
+        body: "retention_failed tables=oauth_login_attempts,jobs,public_order_holds,loyalty_members,kiosk_checkouts",
       },
     ]);
   });
@@ -61,6 +62,7 @@ describe("retention pass (OPS-R6)", () => {
       "jobs",
       "public_order_holds",
       "loyalty_members",
+      "kiosk_checkouts",
     ]);
     expect(alerts).toEqual([]);
   });
@@ -72,7 +74,7 @@ describe("retention pass (OPS-R6)", () => {
     });
     expect(result).toEqual({
       deleted: { oauth_login_attempts: 0, jobs: 0 },
-      redacted: { public_order_holds: 0, loyalty_members: 0 },
+      redacted: { public_order_holds: 0, loyalty_members: 0, kiosk_checkouts: 0 },
       backlog: [],
       skipped: [],
       failed: [],
@@ -90,6 +92,7 @@ describe("retention pass (OPS-R6)", () => {
       "jobs",
       "public_order_holds",
       "loyalty_members",
+      "kiosk_checkouts",
     ]);
     expect(result?.skipped).toEqual([]);
     expect(alerts.map((a) => a.key)).toEqual(["retention_failed"]);
@@ -126,6 +129,7 @@ describe("retention bounds and off-hours window (OPS-R10)", () => {
       "jobs",
       "public_order_holds",
       "loyalty_members",
+      "kiosk_checkouts",
     ]) {
       const alter = statements.findIndex(
         (s) => s.text === `alter table ${table} no force row level security`,
@@ -163,6 +167,13 @@ describe("retention bounds and off-hours window (OPS-R10)", () => {
         predicate: `redacted_at IS NULL
     AND coalesce(last_activity_at, legacy_last_visit_at, joined_at) < now() - interval '24 months'`,
       },
+      // Kiosk (039, critic R25/R41): the checkout's member reference is blanked at 30 days.
+      {
+        table: "kiosk_checkouts",
+        set: "loyalty_member_id = NULL",
+        predicate:
+          "loyalty_member_id IS NOT NULL AND created_at < now() - interval '30 days'",
+      },
     ]);
     const statements: string[] = [];
     const tx = Object.assign(
@@ -199,6 +210,12 @@ describe("retention bounds and off-hours window (OPS-R10)", () => {
     expect(members[2]).toBe(
       "alter table loyalty_members force row level security",
     );
+    expect(statements.filter((t) => t.includes("kiosk_checkouts"))).toEqual([
+      "alter table kiosk_checkouts no force row level security",
+      "update kiosk_checkouts set loyalty_member_id = NULL where ctid in (select ctid from kiosk_checkouts where loyalty_member_id IS NOT NULL AND created_at < now() - interval '30 days' limit $1)",
+      "alter table kiosk_checkouts force row level security",
+    ]);
+    expect(statements.some((t) => /^delete from kiosk_/.test(t))).toBe(false);
   });
 
   it("the window is 04:00-07:00 in Mexico City, before breakfast service (OPS-R15)", () => {
@@ -414,13 +431,14 @@ describe("retentionPasses (P-24)", () => {
       "jobs",
       "public_order_holds",
       "loyalty_members",
+      "kiosk_checkouts",
     ]);
     expect(alerts.map((a) => a.key)).toEqual(["retention_failed"]);
     expect(
       await retentionPasses(empty, noAlert, { now: () => inside }),
     ).toEqual({
       deleted: { oauth_login_attempts: 0, jobs: 0 },
-      redacted: { public_order_holds: 0, loyalty_members: 0 },
+      redacted: { public_order_holds: 0, loyalty_members: 0, kiosk_checkouts: 0 },
       backlog: [],
       skipped: [],
       failed: [],
@@ -477,6 +495,7 @@ describe("retentionPasses stops without an extra empty pass (PLAT-R3)", () => {
     ["oauth_login_attempts", "deleted"],
     ["public_order_holds", "redacted"],
     ["loyalty_members", "redacted"],
+    ["kiosk_checkouts", "redacted"],
   ] as const)
     for (const n of [
       0,
@@ -554,6 +573,7 @@ describe("retentionPasses stops without an extra empty pass (PLAT-R3)", () => {
       "jobs",
       "public_order_holds",
       "loyalty_members",
+      "kiosk_checkouts",
     ]);
   });
 });

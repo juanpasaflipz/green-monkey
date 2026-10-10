@@ -86,6 +86,7 @@ import { configureWake } from "./payments/wake.js";
 import * as loyaltyRoutes from "./routes/loyalty.js";
 import * as kioskRoutes from "./routes/kiosk.js";
 import { mediaRoute } from "./media.js";
+import { kioskCapabilities } from "./kiosk-config.js";
 import { publicLimiter } from "./public-limits.js";
 import { loyaltyCapability } from "./loyalty/settings.js";
 import {
@@ -490,6 +491,8 @@ route("get", "/capabilities", async (tx) => ({
   printer: { enabled: false, reason: "device_not_paired" },
   resend: { enabled: false, reason: "sender_and_sandbox_required" },
   loyalty: await loyaltyCapability(tx),
+  // kiosk (039, critic R30)
+  ...kioskCapabilities(),
 }));
 opsRoutes.register({ app, sql, route });
 accessRoutes.register({ app, sql, route });
