@@ -595,12 +595,24 @@ outside the repository. **Yours:** take the offline copy of `CREDENTIAL_ENCRYPTI
 
 - **Why.** Kiosk card payment, photos and the tablet setup have never run on the real Tab S10 FE,
   the real Mercado Pago Point and Clip readers, or a real R2 bucket ([KIOSK.md](KIOSK.md)).
-- **What only you can supply.** A private Cloudflare R2 bucket for menu photos (separate from the
-  backup bucket) and a **bucket-scoped Object Read & Write token that does not expire** (LD-66's
-  backup token expires on 2026-11-07; do not repeat that). They go on web only:
-  `MEDIA_STORE=r2`, `MEDIA_R2_ACCOUNT_ID`, `MEDIA_R2_BUCKET`, `MEDIA_R2_ACCESS_KEY_ID`,
-  `MEDIA_R2_SECRET_ACCESS_KEY` ([INFRASTRUCTURE.md](INFRASTRUCTURE.md)). Without them the kiosk and
-  the QR menu work without photos.
+- **What only you can supply.** A private Cloudflare R2 bucket for menu photos, one per
+  environment (separate from the backup buckets), and for each a **bucket-scoped Object Read &
+  Write token that does not expire** (LD-66's backup token expires on 2026-11-07; do not repeat
+  that). They go on web only, from your private file with `scripts/ops/railway-vars.sh <env>`
+  under `# service: web`: `MEDIA_STORE=r2`, `MEDIA_R2_ACCOUNT_ID` (the 32-character account
+  ID), `MEDIA_R2_BUCKET`, `MEDIA_R2_ACCESS_KEY_ID`, `MEDIA_R2_SECRET_ACCESS_KEY`
+  ([INFRASTRUCTURE.md](INFRASTRUCTURE.md)). `.railway/railway.ts` declares all five as
+  `preserve()`, so a deploy keeps them (KIOSK-OPS-1). Set all five together. `MEDIA_STORE=r2`
+  without the four values stops the web from starting (`media_store_invalid`). Without them, photos
+  are unavailable (uploads answer `media_store_not_configured`), and the kiosk and the QR menu
+  work without photos.
+- **Production stays off until these checks pass.** `.railway/railway.ts` declares
+  `KIOSK_SELF_CHECKOUT_ENABLED` and `MENU_PHOTOS_ENABLED` as `"false"` in production (on in
+  staging). When the field checks below and the R44a device rehearsal have passed, and the
+  production bucket is set, one reviewed change to `railway.ts` (production declares `"true"`)
+  and a production deploy switch them on: [RUNBOOK.md](RUNBOOK.md) "Kiosk self-checkout and
+  menu photos". Never set them by hand in production: the next deploy's apply puts back what
+  `railway.ts` says.
 - **Counsel.** The kiosk's club lookup shows counts and a masked phone only (no name, no
   enrolment, critic R21); the tablet stores one binding cookie and no IP. Counsel confirms the
   restaurant's privacy notice covers the club lookup at a public screen (LD-3 list).

@@ -206,7 +206,12 @@ and why.
 | `PUBLIC_ORDERING_ENABLED` (031) | on | The kiosk closes; charge settlement continues (payments' jobs). |
 
 Invalid values refuse to start (`kiosk_flag_invalid`, `media_flag_invalid`, `media_store_invalid`).
-`MEDIA_R2_*` are forbidden on the worker (critic R36).
+`MEDIA_R2_*` are forbidden on the worker (critic R36). `.railway/railway.ts` declares the kiosk's
+variables on web only (KIOSK-OPS-1). The two switches are `preserve()` on staging and `"false"` in
+production until the field checks and the R44a device rehearsal pass; switching production on is
+one reviewed change there plus a deploy (RUNBOOK "Kiosk self-checkout and menu photos").
+`MEDIA_STORE` and `MEDIA_R2_*` are `preserve()` in both environments, and `MEDIA_FS_ROOT` is never
+declared.
 
 ## 9. Data, retention and export
 

@@ -11,10 +11,7 @@ import {
   loadConfig,
 } from "../server/config-rules.js";
 import { ConfigError as PureConfigError } from "../server/config-error.js";
-import {
-  kioskCapabilities,
-  mediaStoreConfig,
-} from "../server/kiosk-config.js";
+import { kioskCapabilities, mediaStoreConfig } from "../server/kiosk-config.js";
 
 const secret = "x".repeat(40);
 // A synthetic keyring entry built at runtime (no key material is committed).
@@ -825,7 +822,7 @@ describe("menu photos store in a deployed web (kiosk 039; KIOSK-OPS-1, LD-95)", 
       );
     }
   });
-  it("production as .railway/railway.ts declares it: both switches \"false\", the web starts and /capabilities says switched_off", () => {
+  it('production as .railway/railway.ts declares it: both switches "false", the web starts and /capabilities says switched_off', () => {
     const env = {
       ...production,
       KIOSK_SELF_CHECKOUT_ENABLED: "false",

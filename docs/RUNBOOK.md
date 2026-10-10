@@ -975,8 +975,30 @@ Area doc: [KIOSK.md](KIOSK.md) (troubleshooting table in §11).
 - **"Cobrado sin pedido" (red card).** "Resolver cobro del kiosco": retry once the product is back
   (any operator), or refund in the provider app, record "Se reembolsó" (manager, PIN), then reject the
   hold. The drawer cannot close until it is resolved.
-- **Kill switch.** `KIOSK_SELF_CHECKOUT_ENABLED=false` on web (redeploy) turns card at the kiosk off;
-  charges already taken still settle.
+- **Variables (KIOSK-OPS-1, LD-95).** `.railway/railway.ts` declares all seven on web only.
+  `KIOSK_SELF_CHECKOUT_ENABLED` and `MENU_PHOTOS_ENABLED` are `preserve()` on staging (unset means
+  on) and the literal `"false"` in production until the switch-on below. `MEDIA_STORE` and the
+  four `MEDIA_R2_*` are `preserve()` in both environments. They are set with railway-vars.sh
+  once the owner provides the media bucket (LAUNCH_HANDOFF 1.16a): `MEDIA_STORE=r2` together
+  with the four values. Never set `MEDIA_STORE=fs` or `MEDIA_FS_ROOT` on Railway. Without the
+  bucket, uploads answer `media_store_not_configured` and the menus show text tiles.
+- **Kill switch.** Staging: `KIOSK_SELF_CHECKOUT_ENABLED=false` on web (railway-vars.sh, redeploy)
+  turns card at the kiosk off; charges already taken still settle; `preserve()` keeps it through
+  later applies. Production: off until the switch-on. After it, the switch is a reviewed change
+  of that line back to `"false"` plus a deploy. A value set by hand there is overwritten by the
+  next apply.
+- **Switching production on.** Do this only after the kiosk field checks (LAUNCH_HANDOFF 1.16a)
+  and the R44a device rehearsal ("Payments: real-device rehearsal") have passed, and after the
+  production worker has `PAYMENTS_PROVIDERS` (card at the kiosk needs integrated charging). For
+  photos, the production web also needs `MEDIA_STORE=r2` and the four `MEDIA_R2_*` values set
+  with `railway-vars.sh production`. Then make one reviewed change to `.railway/railway.ts`: the
+  production side of the kiosk spread declares `"true"` for the switches being turned on.
+  `preserve()` would keep the `"false"` already applied. Update the kiosk assertion in
+  `tests/workflows.test.ts` in the same pull request and merge to main. The production deploy
+  (dispatch, outside service hours) applies it: `railway config plan` shows the changed values
+  on `web` and no deletion. Check `/capabilities`, which should report `kioskSelfCheckout` and
+  `menuPhotos` enabled, then upload one photo and confirm it loads. Switching off again is the
+  reverse change.
 - **Menu photos store outage.** The media route answers 503 (`media_unavailable`, alert on the logs);
   menus show text tiles; uploads fail with "No pudimos guardar la foto". Check R2 status and the
   token; nothing to repair in the database. `MENU_PHOTOS_ENABLED=false` hides photos entirely.

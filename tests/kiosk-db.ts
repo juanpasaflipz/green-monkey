@@ -2741,7 +2741,10 @@ try {
       }
     });
     const r = await reply;
-    assert.ok(waited, "the start passed the hold's check and waited for the terminal row");
+    assert.ok(
+      waited,
+      "the start passed the hold's check and waited for the terminal row",
+    );
     assert.equal(r.status, 409);
     assert.equal(r.body.error, "public_order_expired");
     const attempts = await one(
