@@ -500,8 +500,11 @@ export async function kioskSubmit(
         : (st.counterOnly ?? "unbound")
       : "unbound",
     member: !!c?.loyalty_member_id,
+    // From the hold's current state, not from `created` (KIOSK-CONCURRENCY-3): a replay of a
+    // submit whose zero-total accept failed (a 500 the kiosk retries with the same keys) runs it
+    // again; kioskAccept is idempotent on the checkout's fire_operation_id (spec §4.3).
     zeroTotal:
-      placed.created &&
+      placed.hold.state === "pending" &&
       !!c &&
       st.selfCheckout &&
       placed.hold.quoted_total === 0,

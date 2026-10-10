@@ -75,6 +75,7 @@ import {
 import { riff, uploadBody, vp8l } from "./fixtures/webp.js";
 import { jpeg, jpegUploadBody } from "./fixtures/jpeg.js";
 import { kioskReport } from "../server/kiosk-report.js";
+import { kioskSubmit } from "../server/kiosk-diner.js";
 import { sellingCatalog } from "../server/menu-read.js";
 import { LINK_HEADER, STATUS_HEADER } from "../shared/public-ordering.js";
 import { KIOSK_COOKIE, type KioskCheckoutView } from "../shared/kiosk.js";
@@ -1555,6 +1556,39 @@ try {
     assert.equal(h.decision_source, "kiosk");
     assert.equal(o.checkout.holdState, "accepted");
     assert.equal(o.checkout.paid, true);
+    // KIOSK-CONCURRENCY-3: the zero-total accept failed after the hold committed (only the
+    // submit's first transaction ran, as when its second one hits a non-domain error and the
+    // route answers 500); the kiosk's retry with the same keys accepts it.
+    const body = {
+      operationId: randomUUID(),
+      statusKey: statusKey(),
+      lines: [line(ids.gratis)],
+      name: "Ana",
+      expectedTotal: 0,
+      fulfillment: "here",
+    };
+    await write(manager, (tx) =>
+      kioskSubmit(tx, k.linkId, body, k.tablet.cookie),
+    );
+    assert.equal((await holdOf(body.statusKey)).state, "pending");
+    const replay = await call("POST", "/kiosk/orders", {
+      link: k.link,
+      tablet: k.tablet,
+      body,
+    });
+    assert.equal(replay.status, 200, JSON.stringify(replay.body));
+    assert.equal(replay.body.checkout.holdState, "accepted");
+    assert.equal((await holdOf(body.statusKey)).state, "accepted");
+    // A second replay changes nothing (one order).
+    const again = await call("POST", "/kiosk/orders", {
+      link: k.link,
+      tablet: k.tablet,
+      body,
+    });
+    assert.equal(
+      again.body.checkout.orderNumber,
+      replay.body.checkout.orderNumber,
+    );
   });
 
   await test("K-settings. settings view and saves: managers only; versions; station terminal and till", async () => {
