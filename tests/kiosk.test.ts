@@ -21,6 +21,8 @@ import {
   type KioskCheckoutView,
 } from "../shared/kiosk";
 import { cardOffText } from "../src/features/public/KioskSettings";
+import { kioskReportTiles } from "../src/features/public/KioskReport";
+import { moneyFormatter } from "../src/features/menu/format";
 import {
   afterCancel,
   cancelsOnReset,
@@ -947,5 +949,48 @@ describe("device helpers (feature-detected, §2.11)", () => {
     expect(reload).toHaveBeenCalledTimes(1);
     stop();
     vi.useRealTimers();
+  });
+});
+
+describe("Finanzas › Kiosco (039 §6.3, KIOSK-OPS-4, KIOSK-UX-19)", () => {
+  it("shows the charges refunded at the provider, count and amount, after the resolved ones", () => {
+    const tiles = kioskReportTiles(
+      {
+        orders: 9,
+        paidAtKiosk: 7,
+        paidAtCounter: 2,
+        review: { open: 1, resolved: 3, refunded: 2, refundedAmount: 18550 },
+        suggestions: { lines: 4, amount: 18000 },
+      },
+      "es",
+      moneyFormatter("es", "MXN"),
+    );
+    expect(tiles).toEqual([
+      ["Pedidos del kiosco", "9"],
+      ["Pagados en el kiosco", "7"],
+      ["Pagados en caja", "2"],
+      ["Cobros por resolver", "1"],
+      ["Cobros resueltos", "3"],
+      ["Reembolsados en el proveedor", "2"],
+      ["Importe reembolsado", "$185.50"],
+      ["Líneas sugeridas aceptadas", "4"],
+      ["Importe de sugerencias", "$180.00"],
+    ]);
+    expect(
+      kioskReportTiles(
+        {
+          orders: 0,
+          paidAtKiosk: 0,
+          paidAtCounter: 0,
+          review: { open: 0, resolved: 0, refunded: 0, refundedAmount: 0 },
+          suggestions: { lines: 0, amount: 0 },
+        },
+        "en",
+        moneyFormatter("en", "MXN"),
+      ).slice(5, 7),
+    ).toEqual([
+      ["Refunded at the provider", "0"],
+      ["Amount refunded", "MX$0.00"],
+    ]);
   });
 });

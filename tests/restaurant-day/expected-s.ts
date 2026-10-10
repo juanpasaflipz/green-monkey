@@ -223,6 +223,8 @@ export const EXPECTED_S = {
     paidAtCounter: "1",
     reviewOpen: "0",
     reviewResolved: "2",
+    refunded: "0",
+    refundedAmount: "$0.00",
     suggestionLines: "1",
     suggestionAmount: "$45.00",
   },

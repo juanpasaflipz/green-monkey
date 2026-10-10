@@ -10,7 +10,7 @@ import { api } from "../../api";
 import { errorNotice, strings, type Key } from "../../i18n";
 import { moneyFormatter } from "../menu/format";
 
-type Report = {
+export type KioskReportData = {
   orders: number;
   paidAtKiosk: number;
   paidAtCounter: number;
@@ -22,6 +22,30 @@ type Report = {
   };
   suggestions: { lines: number; amount: number };
 };
+
+/**
+ * The report's tiles in order, as [label, value]. Charges approved without an order show as open,
+ * resolved and, of those, refunded at the provider with the amount that went back to guests
+ * (039 §6.3, KIOSK-OPS-4).
+ */
+export function kioskReportTiles(
+  r: KioskReportData,
+  locale: Locale,
+  money: (cents: number) => string,
+): Array<[string, string]> {
+  const t = (k: Key) => strings[locale][k];
+  return [
+    [t("kioskReportOrders"), String(r.orders)],
+    [t("kioskReportPaidKiosk"), String(r.paidAtKiosk)],
+    [t("kioskReportPaidCounter"), String(r.paidAtCounter)],
+    [t("kioskReportReview"), String(r.review.open)],
+    [t("kioskReportResolved"), String(r.review.resolved)],
+    [t("kioskReportRefunded"), String(r.review.refunded)],
+    [t("kioskReportRefundedAmount"), money(r.review.refundedAmount)],
+    [t("kioskReportSuggestions"), String(r.suggestions.lines)],
+    [t("kioskReportSuggestionsAmount"), money(r.suggestions.amount)],
+  ];
+}
 
 export function KioskReport({
   session,
@@ -36,25 +60,19 @@ export function KioskReport({
 }) {
   const t = (k: Key) => strings[locale][k];
   const money = moneyFormatter(locale, session.restaurant.currency);
-  const [r, setR] = useState<Report | null>(null);
+  const [r, setR] = useState<KioskReportData | null>(null);
   const [error, setError] = useState("");
   useEffect(() => {
     if (!online) return;
     let live = true;
     setError("");
-    api<Report>(`/kiosk/report?from=${range.from}&to=${range.to}`)
+    api<KioskReportData>(`/kiosk/report?from=${range.from}&to=${range.to}`)
       .then((x) => live && setR(x))
       .catch((e) => live && setError(errorNotice(e, locale)));
     return () => {
       live = false;
     };
   }, [range.from, range.to, online]);
-  const tile = (label: string, value: string) => (
-    <div className="loyalty-tile" key={label}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
   return (
     <section className="loyalty-report" aria-labelledby="kiosk-report-title">
       <h2 id="kiosk-report-title">{t("kioskReportTitle")}</h2>
@@ -63,15 +81,15 @@ export function KioskReport({
           {error}
         </p>
       )}
+      {!r && !error && online && <p role="status">{t("loading")}</p>}
       {r && (
         <div className="loyalty-tiles">
-          {tile(t("kioskReportOrders"), String(r.orders))}
-          {tile(t("kioskReportPaidKiosk"), String(r.paidAtKiosk))}
-          {tile(t("kioskReportPaidCounter"), String(r.paidAtCounter))}
-          {tile(t("kioskReportReview"), String(r.review.open))}
-          {tile(t("kioskReportResolved"), String(r.review.resolved))}
-          {tile(t("kioskReportSuggestions"), String(r.suggestions.lines))}
-          {tile(t("kioskReportSuggestionsAmount"), money(r.suggestions.amount))}
+          {kioskReportTiles(r, locale, money).map(([label, value]) => (
+            <div className="loyalty-tile" key={label}>
+              <span>{label}</span>
+              <strong>{value}</strong>
+            </div>
+          ))}
         </div>
       )}
     </section>

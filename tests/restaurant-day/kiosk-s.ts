@@ -994,7 +994,7 @@ async function finance(owner: Device) {
     has: page.getByRole("heading", { name: "Kiosco", exact: true }),
   });
   const tiles: Array<[string, string]> = [];
-  await expect(report.locator(".loyalty-tile")).toHaveCount(7);
+  await expect(report.locator(".loyalty-tile")).toHaveCount(9);
   for (const tile of await report.locator(".loyalty-tile").all())
     tiles.push([
       (await tile.locator("span").innerText()).trim(),
@@ -1007,6 +1007,8 @@ async function finance(owner: Device) {
     ["Pagados en caja", k.paidAtCounter],
     ["Cobros por resolver", k.reviewOpen],
     ["Cobros resueltos", k.reviewResolved],
+    ["Reembolsados en el proveedor", k.refunded],
+    ["Importe reembolsado", k.refundedAmount],
     ["Líneas sugeridas aceptadas", k.suggestionLines],
     ["Importe de sugerencias", k.suggestionAmount],
   ]);

@@ -231,6 +231,9 @@ export function oracleS() {
       paidAtCounter: String(recorded.length),
       reviewOpen: "0",
       reviewResolved: String(reviews.length),
+      // No S review is refunded at the provider (S3 approves, S4 accepts with a cash rest).
+      refunded: "0",
+      refundedAmount: mxn(0),
       suggestionLines: String(orders.filter((x) => x.o.suggestion).length),
       suggestionAmount: mxn(
         sum(
