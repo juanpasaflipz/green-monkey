@@ -432,7 +432,7 @@ if (state.branch === "P") {
 
   await check(
     "DP5",
-    "Restaurant P's provider credentials are sealed and nowhere else: no credential in an audit detail, job payload, operation result, attempt event, account row or sealed box, nor in the web, worker or fake logs",
+    "Restaurant P's provider credentials are sealed and nowhere else: no credential in an audit detail, job payload, operation result, attempt event, account row or sealed box, nor in the web, worker or fake logs; no notification URL in a table",
     async () => {
       const c = PAYMENTS_P.credentials;
       const secrets = [
@@ -473,6 +473,22 @@ if (state.branch === "P") {
             `${file} holds a credential`,
           );
       }
+      // Nor any notification URL (the token is shown once and stored only as its hash; the
+      // browser test scans the logs for the tokens themselves, P2V-GATE-5).
+      const like = "%/api/payments/webhooks/%";
+      const [urls] = await meta(
+        (tx) =>
+          tx`select
+            (select count(*)::int from audit where tenant_id=${P} and detail::text like ${like}) as audit,
+            (select count(*)::int from jobs where tenant_id=${P} and payload::text like ${like}) as jobs,
+            (select count(*)::int from operations where tenant_id=${P} and result::text like ${like}) as operations,
+            (select count(*)::int from payment_attempt_events where tenant_id=${P} and detail::text like ${like}) as events`,
+      );
+      assert.deepEqual(
+        urls,
+        { audit: 0, jobs: 0, operations: 0, events: 0 },
+        "a notification URL reached a table",
+      );
       // Both accounts are active with their sealed credentials (the upload boxes were wiped).
       const [accounts] = await meta(
         (tx) =>
