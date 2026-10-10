@@ -83,7 +83,8 @@ replacing ordering codes (`POST /api/ordering/links`, `/links/tables`,
 (`POST /api/ordering/settings`, managers) and a manager's pay-first exception
 ("Aceptar sin cobrar (excepción)", `POST /api/ordering/holds/:id/accept`
 without a payment) need the step-up; deactivating a code, rejecting (also as
-abuse), pausing and a plain accept never ask. The client asks "Confirma con tu PIN"
+abuse), pausing, a plain accept and the kiosk hold's claim before «Cobrar y enviar a
+cocina» (`POST /api/ordering/holds/:id/claim`) never ask. The client asks "Confirma con tu PIN"
 and retries the identical request (same `operationId`). Google-entered sessions
 on a personal device are exempt; PIN sessions are not, on any device. A pending
 prompt belongs to the session whose command asked for it:

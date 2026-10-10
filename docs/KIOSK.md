@@ -68,7 +68,13 @@ and never paid (a decline, a walk-away, a review refunded at the provider: «Cob
 abandonado») is pay-first whatever the policy: no «Aceptar y enviar a cocina»; «Cobrar y enviar a
 cocina», «Rechazar» and a manager's «Aceptar sin cobrar (excepción)» (recent PIN, recorded as a
 policy override) stay. The server enforces it: a plain accept answers `public_payment_required`
-(`inboxActions` in shared/public-ordering.ts; kiosk DB K29). The inbox's `kiosk` block is null for a
+(`inboxActions` in shared/public-ordering.ts; kiosk DB K29). Opening «Cobrar y enviar a cocina» on
+such a hold first claims it for the counter (`POST /api/ordering/holds/:id/claim`, KV-FIXES-1: locks
+2 → 2b, refused while an attempt is live or once the hold expired, sets `payment_choice='counter'`),
+so the kiosk's 120 s reset and «Cancelar pedido» can no longer cancel a hold the cashier is charging
+(`kiosk_hold_at_counter`) and the kiosk can no longer start a card on it. A payment-carrying accept
+of a kiosk hold gets the paid accept's grace (`PAID_ACCEPT_GRACE_SECONDS`, KV-FIXES-3). The inbox's
+`kiosk` block is null for a
 pre-039 kiosk link's hold (no checkout), a counter hold as before. While a charge is live the inbox
 card reads "Pagando en el kiosco…" with no accept or reject (`kiosk_charge_in_progress`, critic R12;
 the diner's cancel is refused too); a manager may tap "Cancelar cobro" on that card. A charge
