@@ -549,7 +549,9 @@
   gap: 8px;
   margin-bottom: 16px;
 }
-.diner .kiosk-key {
+/* KIOSK-UX-07: scoped to the keypad, not .diner, so the keys keep their size in any dialog
+   (and still win over .kiosk .button's 18 px). */
+.kiosk-keypad .kiosk-key {
   min-height: 64px;
   font-size: 28px;
 }
@@ -572,6 +574,50 @@
 .diner.kiosk-reach {
   padding-top: 33vh;
   padding-top: calc(33vh / var(--kiosk-zoom, 1));
+}
+/* KIOSK-UX-07: the kiosk's dialogs render inside main.diner.kiosk (ModalRoot), so they take its
+   zoom: their viewport lengths are divided by it like the page's. The close button is 48 px. In
+   «Modo alcance» they sit at the bottom, below the top third. */
+.diner dialog {
+  width: min(520px, calc(100vw / var(--kiosk-zoom, 1) - 32px));
+  max-height: calc(90dvh / var(--kiosk-zoom, 1));
+}
+.diner dialog.wide {
+  width: min(800px, calc(100vw / var(--kiosk-zoom, 1) - 32px));
+}
+.kiosk .modal-head .button.ghost {
+  min-width: 48px;
+  width: 48px;
+  height: 48px;
+  min-height: 48px;
+}
+.diner.kiosk-reach dialog[open] {
+  margin: auto auto 16px;
+  max-height: calc(67dvh / var(--kiosk-zoom, 1) - 16px);
+}
+/* The kiosk in landscape: the club keypad in two rows in a wider dialog, so the keys and
+   «Buscar» fit without scrolling, with large text and in the lower two thirds of «Modo alcance». */
+@media (orientation: landscape) {
+  .diner.kiosk dialog:has(.kiosk-keypad) {
+    width: min(800px, calc(100vw / var(--kiosk-zoom, 1) - 32px));
+  }
+  .diner.kiosk .kiosk-keypad {
+    grid-template-columns: repeat(6, minmax(64px, 1fr));
+  }
+}
+/* «Modo alcance» on ¡Pagado!: a smaller code, QRs and gaps keep «Nuevo pedido» on screen in both
+   orientations, large text too (the content starts a third of the way down). */
+.diner.kiosk-reach .kiosk-paid,
+.diner.kiosk-reach .kiosk-paid-main,
+.diner.kiosk-reach .kiosk-paid-end {
+  gap: 8px;
+}
+.diner.kiosk-reach .kiosk-paid .kiosk-code {
+  font-size: 88px;
+}
+.diner.kiosk-reach .kiosk-paid .kiosk-qr svg {
+  width: 128px;
+  height: 128px;
 }
 @media (prefers-reduced-motion: reduce) {
   .kiosk * {
@@ -605,6 +651,11 @@
     max-height: calc(100dvh / var(--kiosk-zoom, 1) - 32px);
     overflow-y: auto;
     padding-bottom: 0;
+  }
+  /* «Modo alcance»: the stuck cart and its steppers stay below the top third (KIOSK-UX-07). */
+  .diner.kiosk-reach .diner-cart {
+    top: calc(33vh / var(--kiosk-zoom, 1));
+    max-height: calc(67dvh / var(--kiosk-zoom, 1) - 96px);
   }
   .diner-cart .diner-cart-footer {
     position: sticky;

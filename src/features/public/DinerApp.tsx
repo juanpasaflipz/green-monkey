@@ -34,7 +34,7 @@ import { DinerStatus } from "./DinerStatus";
 import { DinerNotice } from "./DinerNotice";
 import { KioskDone } from "./KioskDone";
 import { PrivacyDialog } from "./PrivacyDialog";
-import { Button } from "../../components/ui";
+import { Button, ModalRoot } from "../../components/ui";
 import { PLATFORM_PRIVACY_PATH } from "./dinerRoute";
 import {
   KIOSK_LIMITS,
@@ -175,6 +175,8 @@ export function DinerApp({
   const [offline, setOffline] = useState(false);
   const [idleWarn, setIdleWarn] = useState(false);
   const [announce, setAnnounce] = useState("");
+  // KIOSK-UX-07: the kiosk's dialogs render inside its main (large text, reach mode, 64 px keys).
+  const [modalRoot, setModalRoot] = useState<HTMLElement | null>(null);
   const [privacy, setPrivacy] = useState(false);
   // The code stopped working on a submit: the page keeps the menu and the
   // cart and says so next to "Ver mis pedidos" (UX-1).
@@ -701,249 +703,256 @@ export function DinerApp({
   );
 
   return (
-    <main
-      className={
-        "diner" +
-        (kiosk ? " kiosk" : "") +
-        (a11y.large ? " kiosk-large" : "") +
-        (a11y.reach ? " kiosk-reach" : "")
-      }
-      lang={locale}
-    >
-      {view !== "menu" && header}
-      <p className="sr-only" aria-live="polite">
-        {announce}
-      </p>
-      {view === "status" && current ? (
-        <DinerStatus
-          focusHeading={focusStatus}
-          token={token}
-          locale={locale}
-          menu={menu}
-          statusKey={current}
-          holds={holds}
-          onSelect={setCurrent}
-          onForget={(k) => {
-            const next = holds.filter((h) => h.key !== k);
-            writeStored(token, next);
-            setHolds(next);
-            setCurrent(next[0]?.key ?? null);
-            if (!next.length) setView("menu");
-          }}
-          onNewOrder={toMenu}
-          onRestore={(k) => restore(holds.find((h) => h.key === k))}
-        />
-      ) : kiosk && welcome && view === "menu" ? (
-        <KioskWelcome
-          restaurant={menu.restaurant.name}
-          locale={locale}
-          loyalty={!!kioskState?.loyalty}
-          onStart={() => {
-            enterFullscreen();
-            setWelcome(false);
-          }}
-          onLanguage={() => setLocale(locale === "es" ? "en" : "es")}
-          onAccessibility={() => setA11yOpen(true)}
-          onMember={() => setMemberOpen(true)}
-          onSetup={() => setSetup(true)}
-        />
-      ) : view === "checkout" && kioskState ? (
-        <KioskCheckout
-          token={token}
-          locale={locale}
-          currency={menu.restaurant.currency}
-          kiosk={kioskState}
-          body={{
-            lines: draft.lines,
-            name: draft.name.trim(),
-            note: draft.note.trim(),
-            expectedTotal: cart.total,
-            ...(memberToken ? { memberToken } : {}),
-          }}
-          announce={setAnnounce}
-          onStep={setCheckoutStep}
-          onDone={resetKiosk}
-          onBack={() => setView("menu")}
-          onRefused={(message, code) => {
-            setView("menu");
-            setError(message);
-            if (
-              CATALOG_ERRORS.has(code) ||
-              code === "public_price_changed" ||
-              code === "unavailable"
-            )
-              refreshCatalog();
-          }}
-        />
-      ) : view === "kiosk-done" && done ? (
-        <KioskDone
-          hold={done}
-          locale={locale}
-          currency={menu.restaurant.currency}
-          onReset={resetKiosk}
-        />
-      ) : (
-        <div className="diner-layout">
-          {/* The header sits in the menu column, so the side cart starts at
+    <ModalRoot.Provider value={kiosk ? modalRoot : null}>
+      <main
+        ref={setModalRoot}
+        className={
+          "diner" +
+          (kiosk ? " kiosk" : "") +
+          (a11y.large ? " kiosk-large" : "") +
+          (a11y.reach ? " kiosk-reach" : "")
+        }
+        lang={locale}
+      >
+        {view !== "menu" && header}
+        <p className="sr-only" aria-live="polite">
+          {announce}
+        </p>
+        {view === "status" && current ? (
+          <DinerStatus
+            focusHeading={focusStatus}
+            token={token}
+            locale={locale}
+            menu={menu}
+            statusKey={current}
+            holds={holds}
+            onSelect={setCurrent}
+            onForget={(k) => {
+              const next = holds.filter((h) => h.key !== k);
+              writeStored(token, next);
+              setHolds(next);
+              setCurrent(next[0]?.key ?? null);
+              if (!next.length) setView("menu");
+            }}
+            onNewOrder={toMenu}
+            onRestore={(k) => restore(holds.find((h) => h.key === k))}
+          />
+        ) : kiosk && welcome && view === "menu" ? (
+          <KioskWelcome
+            restaurant={menu.restaurant.name}
+            locale={locale}
+            loyalty={!!kioskState?.loyalty}
+            onStart={() => {
+              enterFullscreen();
+              setWelcome(false);
+            }}
+            onLanguage={() => setLocale(locale === "es" ? "en" : "es")}
+            onAccessibility={() => setA11yOpen(true)}
+            onMember={() => setMemberOpen(true)}
+            onSetup={() => setSetup(true)}
+          />
+        ) : view === "checkout" && kioskState ? (
+          <KioskCheckout
+            token={token}
+            locale={locale}
+            currency={menu.restaurant.currency}
+            kiosk={kioskState}
+            body={{
+              lines: draft.lines,
+              name: draft.name.trim(),
+              note: draft.note.trim(),
+              expectedTotal: cart.total,
+              ...(memberToken ? { memberToken } : {}),
+            }}
+            announce={setAnnounce}
+            onStep={setCheckoutStep}
+            onDone={resetKiosk}
+            onBack={() => setView("menu")}
+            onRefused={(message, code) => {
+              setView("menu");
+              setError(message);
+              if (
+                CATALOG_ERRORS.has(code) ||
+                code === "public_price_changed" ||
+                code === "unavailable"
+              )
+                refreshCatalog();
+            }}
+          />
+        ) : view === "kiosk-done" && done ? (
+          <KioskDone
+            hold={done}
+            locale={locale}
+            currency={menu.restaurant.currency}
+            onReset={resetKiosk}
+          />
+        ) : (
+          <div className="diner-layout">
+            {/* The header sits in the menu column, so the side cart starts at
               the top of the page and fits the viewport (UX-4). */}
-          <div className="diner-main">
-            {header}
-            <DinerMenu
+            <div className="diner-main">
+              {header}
+              <DinerMenu
+                menu={menu}
+                ordering={ordering ?? menu.ordering}
+                locale={locale}
+                kiosk={kiosk}
+                onPick={(p) =>
+                  kiosk ? pickKiosk(p) : pickerNeeded(p) ? setPicker(p) : add(p)
+                }
+              />
+            </div>
+            <DinerCart
               menu={menu}
               ordering={ordering ?? menu.ordering}
               locale={locale}
+              draft={draft}
+              cart={cart}
+              busy={busy}
+              error={error}
+              unknown={!!unknown}
               kiosk={kiosk}
-              onPick={(p) =>
-                kiosk ? pickKiosk(p) : pickerNeeded(p) ? setPicker(p) : add(p)
+              invalid={submitInvalid}
+              onShowOrders={submitInvalid ? showOrders : undefined}
+              onPrivacy={() => setPrivacy(true)}
+              onQuantity={setQuantity}
+              onName={(name) => edit((d) => ({ ...d, name }))}
+              onNote={(note) => edit((d) => ({ ...d, note }))}
+              onSend={submit}
+              onRetry={() => unknown && void send(unknown)}
+              onEditAnyway={() => {
+                key.current = null;
+                setUnknown(null);
+                setError("");
+              }}
+              extra={
+                <>
+                  {kiosk && member && (
+                    <p className="kiosk-member-chip" role="status">
+                      {t("kioskMemberChip", { phone: member.maskedPhone })}
+                    </p>
+                  )}
+                  {kiosk &&
+                  kioskState?.suggestions &&
+                  draft.lines.length > 0 ? (
+                    <SuggestionStrip
+                      title={
+                        kioskState.suggestions.cart.length
+                          ? t("kioskAnythingElse")
+                          : t("kioskPopularNow")
+                      }
+                      products={cartSuggestions}
+                      locale={locale}
+                      currency={menu.restaurant.currency}
+                      onAdd={(p) =>
+                        pickerNeeded(p)
+                          ? setPicker(p)
+                          : add(p, [], "suggestion")
+                      }
+                    />
+                  ) : null}
+                </>
               }
             />
           </div>
-          <DinerCart
-            menu={menu}
-            ordering={ordering ?? menu.ordering}
-            locale={locale}
-            draft={draft}
-            cart={cart}
-            busy={busy}
-            error={error}
-            unknown={!!unknown}
-            kiosk={kiosk}
-            invalid={submitInvalid}
-            onShowOrders={submitInvalid ? showOrders : undefined}
-            onPrivacy={() => setPrivacy(true)}
-            onQuantity={setQuantity}
-            onName={(name) => edit((d) => ({ ...d, name }))}
-            onNote={(note) => edit((d) => ({ ...d, note }))}
-            onSend={submit}
-            onRetry={() => unknown && void send(unknown)}
-            onEditAnyway={() => {
-              key.current = null;
-              setUnknown(null);
-              setError("");
-            }}
-            extra={
-              <>
-                {kiosk && member && (
-                  <p className="kiosk-member-chip" role="status">
-                    {t("kioskMemberChip", { phone: member.maskedPhone })}
-                  </p>
-                )}
-                {kiosk && kioskState?.suggestions && draft.lines.length > 0 ? (
-                  <SuggestionStrip
-                    title={
-                      kioskState.suggestions.cart.length
-                        ? t("kioskAnythingElse")
-                        : t("kioskPopularNow")
-                    }
-                    products={cartSuggestions}
-                    locale={locale}
-                    currency={menu.restaurant.currency}
-                    onAdd={(p) =>
-                      pickerNeeded(p) ? setPicker(p) : add(p, [], "suggestion")
-                    }
-                  />
-                ) : null}
-              </>
-            }
-          />
-        </div>
-      )}
-      <footer className="diner-footer">
-        {/* PRIVACY-2/UX-5: a kiosk never navigates away from /kiosk#token;
-            a phone opens the notice in a new tab and keeps its order. */}
-        {kiosk ? (
-          <button
-            type="button"
-            className="diner-link"
-            onClick={() => setPrivacy(true)}
-          >
-            {strings[locale].accountGuestPlatformPrivacy}
-          </button>
-        ) : (
-          <a
-            href={PLATFORM_PRIVACY_PATH}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {strings[locale].accountGuestPlatformPrivacy}
-          </a>
         )}
-      </footer>
-      {privacy && (
-        <PrivacyDialog
-          locale={locale}
-          restaurant={menu.restaurant.name}
-          privacyNoticeUrl={menu.restaurant.privacyNoticeUrl}
-          onClose={() => setPrivacy(false)}
-        />
-      )}
-      {picker && (
-        <ModifierPicker
-          product={picker}
-          locale={locale}
-          currency={menu.restaurant.currency}
-          canOpen={false}
-          onConfirm={(selection) => add(picker, selection.options)}
-          onClose={() => setPicker(null)}
-        />
-      )}
-      {sheet && (
-        <KioskProductSheet
-          product={sheet}
-          catalog={catalog}
-          suggestions={kioskState?.suggestions.byProduct[sheet.id] ?? []}
-          inCart={inCart}
-          locale={locale}
-          currency={menu.restaurant.currency}
-          onAdd={(p, origin) => add(p, [], origin)}
-          onPick={(p) => {
-            setSheet(null);
-            setPicker(p);
-          }}
-          onClose={() => setSheet(null)}
-        />
-      )}
-      {setup && (
-        <KioskSetup
-          token={token}
-          locale={locale}
-          bound={bound}
-          onPaired={() => void loadKioskState(true)}
-          onClose={() => setSetup(false)}
-        />
-      )}
-      {memberOpen && (
-        <KioskMember
-          token={token}
-          locale={locale}
-          onFound={(token, found) =>
-            setMember({ token, maskedPhone: found.maskedPhone })
-          }
-          onClose={() => setMemberOpen(false)}
-        />
-      )}
-      {a11yOpen && (
-        <KioskAccessibility
-          locale={locale}
-          value={a11y}
-          onChange={setA11y}
-          onClose={() => setA11yOpen(false)}
-        />
-      )}
-      {idleWarn && (
-        <IdleWarning
-          locale={locale}
-          seconds={
-            (KIOSK_TIMING.resetAfterMs - KIOSK_TIMING.warnAfterMs) / 1000
-          }
-          onContinue={() => setIdleWarn(false)}
-        />
-      )}
-      {offline && (
-        <div className="diner-offline" role="alert">
-          <p>{t("publicKioskOffline")}</p>
-        </div>
-      )}
-    </main>
+        <footer className="diner-footer">
+          {/* PRIVACY-2/UX-5: a kiosk never navigates away from /kiosk#token;
+            a phone opens the notice in a new tab and keeps its order. */}
+          {kiosk ? (
+            <button
+              type="button"
+              className="diner-link"
+              onClick={() => setPrivacy(true)}
+            >
+              {strings[locale].accountGuestPlatformPrivacy}
+            </button>
+          ) : (
+            <a
+              href={PLATFORM_PRIVACY_PATH}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {strings[locale].accountGuestPlatformPrivacy}
+            </a>
+          )}
+        </footer>
+        {privacy && (
+          <PrivacyDialog
+            locale={locale}
+            restaurant={menu.restaurant.name}
+            privacyNoticeUrl={menu.restaurant.privacyNoticeUrl}
+            onClose={() => setPrivacy(false)}
+          />
+        )}
+        {picker && (
+          <ModifierPicker
+            product={picker}
+            locale={locale}
+            currency={menu.restaurant.currency}
+            canOpen={false}
+            onConfirm={(selection) => add(picker, selection.options)}
+            onClose={() => setPicker(null)}
+          />
+        )}
+        {sheet && (
+          <KioskProductSheet
+            product={sheet}
+            catalog={catalog}
+            suggestions={kioskState?.suggestions.byProduct[sheet.id] ?? []}
+            inCart={inCart}
+            locale={locale}
+            currency={menu.restaurant.currency}
+            onAdd={(p, origin) => add(p, [], origin)}
+            onPick={(p) => {
+              setSheet(null);
+              setPicker(p);
+            }}
+            onClose={() => setSheet(null)}
+          />
+        )}
+        {setup && (
+          <KioskSetup
+            token={token}
+            locale={locale}
+            bound={bound}
+            onPaired={() => void loadKioskState(true)}
+            onClose={() => setSetup(false)}
+          />
+        )}
+        {memberOpen && (
+          <KioskMember
+            token={token}
+            locale={locale}
+            onFound={(token, found) =>
+              setMember({ token, maskedPhone: found.maskedPhone })
+            }
+            onClose={() => setMemberOpen(false)}
+          />
+        )}
+        {a11yOpen && (
+          <KioskAccessibility
+            locale={locale}
+            value={a11y}
+            onChange={setA11y}
+            onClose={() => setA11yOpen(false)}
+          />
+        )}
+        {idleWarn && (
+          <IdleWarning
+            locale={locale}
+            seconds={
+              (KIOSK_TIMING.resetAfterMs - KIOSK_TIMING.warnAfterMs) / 1000
+            }
+            onContinue={() => setIdleWarn(false)}
+          />
+        )}
+        {offline && (
+          <div className="diner-offline" role="alert">
+            <p>{t("publicKioskOffline")}</p>
+          </div>
+        )}
+      </main>
+    </ModalRoot.Provider>
   );
 }
