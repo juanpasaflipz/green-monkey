@@ -1063,7 +1063,18 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
         : e.code;
     await ctx.tenant(async (tx) => {
       const now = await lockAttempt(tx, attemptId);
-      if (now?.state !== "sending") return;
+      if (now?.state !== "sending") {
+        // The push went dead while this call was in flight (P2V-JOBS-1): its hook already made
+        // the attempt unknown and queued the recovery; the provider's answer is kept as evidence.
+        if (now)
+          await workerEvent(tx, tenantId, attemptId, "push_answer_late", {
+            code,
+            providerCode: e.providerCode,
+            httpStatus: e.status,
+            before: now.state,
+          });
+        return;
+      }
       await tx`update payment_attempts set state=${unknown ? "unknown" : "declined"},
           error_code=${code},decided_at=${unknown ? null : new Date()},version=version+1
         where id=${attemptId}`;
@@ -1092,6 +1103,29 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
   }
   await ctx.tenant(async (tx) => {
     const now = await lockAttempt(tx, attemptId);
+    if (
+      now?.state === "unknown" &&
+      !now.provider_reference &&
+      now.error_code === "payments_push_failed"
+    ) {
+      // The push went dead while this create was in flight (a staff cancel or a lease expiry ran
+      // pushDead, P2V-JOBS-1): the answer to our own create names the request (Clip's
+      // pinpad_request_id, MP's order for this attempt's key). Adopt it as a recovered reference
+      // (unknown → pending, a worker transition) instead of dropping it: for Clip the id is the
+      // only way to read or withdraw the request afterwards.
+      await adoptReference(
+        tx,
+        tenantId,
+        attemptId,
+        {
+          reference,
+          externalReference: attemptId,
+          deviceId: a.provider_device_id,
+        },
+        "push",
+      );
+      return;
+    }
     if (now?.state !== "sending") return;
     await tx`update payment_attempts set state='pending',provider_reference=${reference},
         version=version+1 where id=${attemptId}`;

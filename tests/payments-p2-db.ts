@@ -2788,6 +2788,75 @@ try {
     assert.equal(await drive(view.id, ["cancelled"]), "cancelled");
   });
 
+  await test("staff cancel of a push whose slow Clip create is still in flight (P2V-JOBS-1): the hook makes the attempt unknown and the recovery's early delete by serial finds nothing (no evidence); when Clip's answer arrives the push adopts the request id (pending, never dropped), and the cashier's cancel withdraws it", async () => {
+    const creates = () =>
+      fake.requests.filter(
+        (r) => r.method === "POST" && r.path === "/clip/payment",
+      ).length;
+    const createsBefore = creates() + 1;
+    const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const release = fake.holdClipCreate();
+    const view = await start(cashier, o.id, terminals.clip, o.total);
+    // The worker's push sends the create; Clip is slow to answer.
+    await due(A);
+    const inFlight = workerRunner.drainTenant(A);
+    for (let i = 0; i < 300 && creates() < createsBefore; i++) await sleep(10);
+
+    assert.equal(await stateOf(view.id), "sending");
+    // Support cancels the push in Operaciones; the next lease-expiry pass writes it dead.
+    const [job] = await asOwner(
+      A,
+      (tx) =>
+        tx`select id from jobs where kind='payments_push' and dedupe_key=${view.id}`,
+    );
+    await write(manager, (tx) => cancelJob(tx, manager, job.id));
+    const next = createJobRunner(worker, {
+      handlers: workerHandlers,
+      concurrency: 4,
+      sweepMs: 3_600_000,
+    });
+    await next.drainTenant(A);
+    while (next.running() > 0) await sleep(10);
+    assert.deepEqual(
+      [
+        (await attemptRow(view.id)).state,
+        (await attemptRow(view.id)).error_code,
+      ],
+      ["unknown", "payments_push_failed"],
+    );
+    // Its recovery runs while the create is still in flight: nothing on the reader yet, and a
+    // delete this early is no evidence (P2V-FIXES-2), so «No se cobró» stays refused.
+    await due(A);
+    await next.drainTenant(A);
+    while (next.running() > 0) await sleep(10);
+    await next.stop(2000);
+    assert.equal((await attemptRow(view.id)).provider_status, "serial_early");
+    // Clip's answer arrives: the push adopts the request id.
+    release();
+    await inFlight;
+    while (workerRunner.running() > 0) await sleep(10);
+    const row = await attemptRow(view.id);
+    const charge = fake.chargeFor(view.id)!;
+    assert.deepEqual(
+      [row.state, row.provider_reference],
+      ["pending", charge.id],
+    );
+    assert.ok(
+      (await eventsOf(view.id)).some(
+        (e) =>
+          e.kind === "reference_recovered" &&
+          e.detail.source === "push" &&
+          e.detail.reference === charge.id,
+      ),
+    );
+    assert.equal(creates(), createsBefore, "Clip is never sent again");
+    await write(cashier, (tx) =>
+      requestCancel(tx, cashier, view.id, { operationId: randomUUID() }),
+    );
+    assert.equal(await drive(view.id, ["cancelled"]), "cancelled");
+    assert.equal(charge.status, "canceled");
+  });
+
   await test("MP recovery (P2-MONEY-2, P2-MONEY-4, P2-PROVIDERS-2, P2-CONCURRENCY-5, P2-PROVIDERS-7): a refused re-POST is unknown, never declined, and the identical re-POST adopts the order MP made; a cashier's cancel learns the order id first; a push that died before MP saw it creates the order on recovery; a notification naming the attempt adopts a lost order; already_queued_order_for_terminal on a first send is «queue busy»", async () => {
     const createsFor = (attemptId: string) =>
       fake.requests.filter(

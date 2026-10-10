@@ -22,6 +22,8 @@
  *   fake.lateApproval(ref, ms, o?)                                 approve after ms
  *   fake.atTerminalUncancellable(ref)   MP status at_terminal with cancels refused; Clip DELETE 400
  *   fake.rateLimitReads(n)              the next n reads answer 429
+ *   fake.holdClipCreate()               the next Clip create stays in flight until the returned
+ *                                       release() (a slow create: nothing exists at Clip before)
  *   fake.failClip(...statuses)          the next Clip reads and withdrawals answer these statuses
  *                                       (503, 429, 404 …), one each: a Clip API outage
  *   fake.nextReplay(behaviour)          MP: the next re-POST of a known idempotency key answers
@@ -150,6 +152,8 @@ export async function startPaymentsFake(
   const requests: { method: string; path: string; idempotencyKey?: string }[] =
     [];
   let readLimit = 0;
+  /** A Clip create held in flight until the test releases it (holdClipCreate). */
+  let createGate: Promise<void> | null = null;
   /** Statuses the next Clip reads and withdrawals answer, one each (a Clip API outage). */
   const clipFaults: number[] = [];
   const timers = new Set<NodeJS.Timeout>();
@@ -511,6 +515,12 @@ export async function startPaymentsFake(
       if (req.method === "GET" && path === "/devices/status")
         return send(res, 200, clip.readers);
       if (req.method === "POST" && path === "/payment") {
+        if (createGate) {
+          // Still on its way: nothing exists at Clip until the test releases it.
+          const gate = createGate;
+          createGate = null;
+          await gate;
+        }
         if (key)
           violations.push(
             "clip create carried an idempotency key Clip does not document",
@@ -747,6 +757,15 @@ export async function startPaymentsFake(
     },
     rateLimitReads(n: number) {
       readLimit = n;
+    },
+    /**
+     * The next Clip create stays in flight (no answer, nothing created at Clip) until the
+     * returned function is called; then it is processed as usual.
+     */
+    holdClipCreate() {
+      let release!: () => void;
+      createGate = new Promise<void>((r) => (release = r));
+      return release;
     },
     /** The next Clip reads and withdrawals (not creates) answer these statuses, one each. */
     failClip(...statuses: number[]) {
