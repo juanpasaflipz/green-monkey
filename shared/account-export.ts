@@ -97,6 +97,14 @@ export const EXPORT_TABLE_LABELS: Readonly<
     "Órdenes de socios del club",
     "Loyalty club member orders",
   ],
+  // Kiosk (039, critic R38). kiosk_devices' secret and pairing-code hashes are excluded by the
+  // column denylist (hash).
+  kiosk_settings: ["Configuración del kiosco", "Kiosk settings"],
+  kiosk_stations: ["Estaciones de kiosco", "Kiosk stations"],
+  kiosk_devices: ["Tabletas de kiosco", "Kiosk tablets"],
+  kiosk_checkouts: ["Cobros del kiosco", "Kiosk checkouts"],
+  menu_media: ["Fotos del menú", "Menu photos"],
+  menu_suggestions: ["Sugerencias del menú", "Menu suggestions"],
   loyalty_settings: [
     "Configuración del club de lealtad",
     "Loyalty club settings",
