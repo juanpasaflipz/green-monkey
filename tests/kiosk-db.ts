@@ -1033,6 +1033,15 @@ try {
     fake.approve(fake.chargeFor(a.id)!.id, { ...TEST_CARD });
     // The worker reads approved and queues payments_settle; the kiosk syncs twice at the same time.
     await workerUntil(a.id, "approved");
+    // Approved, not yet settled: still charging, never "paid, no order", so the kiosk keeps
+    // polling until the settle creates the order (KIOSK-MONEY-2, KIOSK-UX-09).
+    const approved = await checkout(main, o.key);
+    assert.equal(approved.status, 200);
+    const av = approved.body as KioskCheckoutView;
+    assert.equal(av.payment.state, "approved");
+    assert.equal(av.holdState, "pending");
+    assert.equal(av.paid, false);
+    assert.equal(av.paidNoOrder, false);
     await noRetries("K9 settle race", () =>
       Promise.all([
         webRunner.drainTenant(A),

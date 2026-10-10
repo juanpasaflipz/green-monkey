@@ -374,7 +374,9 @@ async function checkoutView(
       amount: (a?.amount as number | undefined) ?? null,
     },
     paid: false,
-    paidNoOrder: a?.state === "review" || a?.state === "approved",
+    // Only a review is "paid, no order". 'approved' is the short step before payments_settle or
+    // the next sync creates the order, so the kiosk keeps polling through it (KIOSK-MONEY-2).
+    paidNoOrder: a?.state === "review",
     folio: null,
     selfInvoiceCode: null,
     loyalty: null,

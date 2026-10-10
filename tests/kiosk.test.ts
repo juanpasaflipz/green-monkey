@@ -198,7 +198,9 @@ describe("the checkout's next step while charging", () => {
       amount: 24500,
     },
     paid: false,
-    paidNoOrder: false,
+    // As server/kiosk-diner.ts checkoutView sends it: only a review is "paid, no order"
+    // (KIOSK-MONEY-2, KIOSK-UX-09).
+    paidNoOrder: o.state === "review",
     folio: null,
     selfInvoiceCode: null,
     loyalty: null,
@@ -212,6 +214,10 @@ describe("the checkout's next step while charging", () => {
     expect(
       stepFor(view({ paidNoOrder: true, state: "review" }), "charging"),
     ).toBe("paidNoOrder");
+    expect(view({ state: "review" }).paidNoOrder).toBe(true);
+    expect(stepFor(view({ state: "review" }), "charging")).toBe("paidNoOrder");
+    // Approved is the short step before the settle: keep polling.
+    expect(view({ state: "approved" }).paidNoOrder).toBe(false);
     expect(stepFor(view({ state: "declined" }), "charging")).toBe("declined");
     expect(stepFor(view({ state: "cancelled" }), "charging")).toBe("declined");
     expect(stepFor(view({ state: "expired" }), "still")).toBe("askCounter");
