@@ -340,6 +340,31 @@
   font-size: 14px;
   text-align: left;
 }
+.diner-product-description.open {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+/* KIOSK-UX-18: the card and its «Leer más» toggle (a sibling: no control inside a button). */
+.diner-product-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.diner-product-card > .diner-product {
+  flex: 1;
+}
+.diner-product-more {
+  align-self: flex-start;
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font-size: 14px;
+  text-decoration: underline;
+  cursor: pointer;
+}
 .kiosk .diner-product-name {
   font-size: 22px;
 }

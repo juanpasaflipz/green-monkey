@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef, useState } from "react";
 import type { Locale, Product } from "../../../shared/domain";
 import type {
   OrderingState,
@@ -66,44 +67,103 @@ export function DinerMenu({
         <section className="diner-category" key={g.key}>
           <h2>{g.name}</h2>
           <div className="diner-products">
-            {g.products.map((p) => {
-              const can = orderable(p);
-              const price = can ? money(p.price) : t.publicSoldOut;
-              return (
-                <button
-                  type="button"
-                  key={p.id}
-                  className="diner-product"
-                  disabled={!can}
-                  aria-label={`${p.name[locale]}, ${price}`}
-                  onClick={() => onPick(p)}
-                >
-                  {(p.image || (kiosk && photos)) && (
-                    <ProductPhoto
-                      product={p}
-                      locale={locale}
-                      variant={kiosk ? "card" : "thumb"}
-                      decorative
-                    />
-                  )}
-                  <span className="diner-product-name">{p.name[locale]}</span>
-                  {!kiosk && (p.description?.[locale] || p.description?.es) && (
-                    <span className="diner-product-description">
-                      {p.description?.[locale] || p.description?.es}
-                    </span>
-                  )}
-                  <span className="diner-product-meta">
-                    <strong>{price}</strong>
-                    {p.kind === "combo" && (
-                      <span className="badge">{t.publicCombo}</span>
-                    )}
-                  </span>
-                </button>
-              );
-            })}
+            {g.products.map((p) => (
+              <DinerProduct
+                key={p.id}
+                product={p}
+                locale={locale}
+                price={orderable(p) ? money(p.price) : t.publicSoldOut}
+                kiosk={kiosk}
+                photos={photos}
+                onPick={onPick}
+              />
+            ))}
           </div>
         </section>
       ))}
     </section>
+  );
+}
+
+/**
+ * One product of the menu. Its accessible name is "name, price" and its description is the
+ * accessible description (aria-describedby), so a screen reader hears it in full; on the QR menu a
+ * description clamped to two lines gets «Leer más», which shows it whole (KIOSK-UX-18).
+ */
+export function DinerProduct({
+  product: p,
+  locale,
+  price,
+  kiosk,
+  photos,
+  onPick,
+}: {
+  product: Product;
+  locale: Locale;
+  price: string;
+  kiosk: boolean;
+  photos: boolean;
+  onPick: (p: Product) => void;
+}) {
+  const t = strings[locale];
+  const can = orderable(p);
+  const description = kiosk ? "" : p.description?.[locale] || p.description?.es || "";
+  const descId = `diner-desc-${p.id}`;
+  const ref = useRef<HTMLSpanElement>(null);
+  const [clamped, setClamped] = useState(false);
+  const [open, setOpen] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && !open) setClamped(el.scrollHeight > el.clientHeight + 1);
+  }, [description, open]);
+  return (
+    <div className="diner-product-card">
+      <button
+        type="button"
+        className="diner-product"
+        disabled={!can}
+        aria-label={`${p.name[locale]}, ${price}`}
+        aria-describedby={description ? descId : undefined}
+        onClick={() => onPick(p)}
+      >
+        {(p.image || (kiosk && photos)) && (
+          <ProductPhoto
+            product={p}
+            locale={locale}
+            variant={kiosk ? "card" : "thumb"}
+            decorative
+          />
+        )}
+        <span className="diner-product-name">{p.name[locale]}</span>
+        {description && (
+          <span
+            id={descId}
+            ref={ref}
+            className={
+              open
+                ? "diner-product-description open"
+                : "diner-product-description"
+            }
+          >
+            {description}
+          </span>
+        )}
+        <span className="diner-product-meta">
+          <strong>{price}</strong>
+          {p.kind === "combo" && <span className="badge">{t.publicCombo}</span>}
+        </span>
+      </button>
+      {description && (clamped || open) && (
+        <button
+          type="button"
+          className="diner-product-more"
+          aria-expanded={open}
+          aria-controls={descId}
+          onClick={() => setOpen(!open)}
+        >
+          {open ? t.publicDescriptionLess : t.publicDescriptionMore}
+        </button>
+      )}
+    </div>
   );
 }
