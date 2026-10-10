@@ -44,8 +44,8 @@ export function uploadRoute(app: express.Express, sql: postgres.Sql) {
         permit(s, managers);
         const release = admitUpload(s.tenantId);
         if (!release) throw new DomainError("media_busy", 429);
-        res.once("finish", release);
-        res.once("close", release);
+        res.on("finish", release);
+        res.on("close", release);
         next();
       } catch (e) {
         res.set("Cache-Control", "no-store");

@@ -2346,9 +2346,14 @@ try {
     slow.write(Buffer.alloc(1000));
     await until(1);
     // A second upload of A is refused without its body being parsed: not an image, yet media_busy.
-    for (const r of await Promise.all(
-      [1, 2, 3].map(() => post("owner", ids.taco, Buffer.from("not an image"))),
-    )) {
+    const busy = await noRetries("K17c media_busy burst", () =>
+      Promise.all(
+        [1, 2, 3].map(() =>
+          post("owner", ids.taco, Buffer.from("not an image")),
+        ),
+      ),
+    );
+    for (const r of busy) {
       assert.equal(r.status, 429, JSON.stringify(r.body));
       assert.equal(r.body.error, "media_busy");
     }

@@ -514,20 +514,27 @@ export async function claimHold(
 ): Promise<{ hold: { id: string; label: string; state: "pending" } }> {
   permit(s, operators);
   const p = claimInput.parse(raw);
-  return once(tx, s, p.operationId, "public.hold.claim", { holdId }, async () => {
-    const h = await lockHold(tx, holdId);
-    if (h.channel !== "kiosk") throw new DomainError("invalid_input");
-    await assertNoKioskCharge(tx, h);
-    await tx`update kiosk_checkouts set payment_choice='counter',updated_at=now()
+  return once(
+    tx,
+    s,
+    p.operationId,
+    "public.hold.claim",
+    { holdId },
+    async () => {
+      const h = await lockHold(tx, holdId);
+      if (h.channel !== "kiosk") throw new DomainError("invalid_input");
+      await assertNoKioskCharge(tx, h);
+      await tx`update kiosk_checkouts set payment_choice='counter',updated_at=now()
       where hold_id=${h.id} and payment_choice is distinct from 'counter'`;
-    return {
-      hold: {
-        id: h.id,
-        label: holdLabel(h.channel, h.number),
-        state: "pending" as const,
-      },
-    };
-  });
+      return {
+        hold: {
+          id: h.id,
+          label: holdLabel(h.channel, h.number),
+          state: "pending" as const,
+        },
+      };
+    },
+  );
 }
 
 type AcceptBody = Pick<
