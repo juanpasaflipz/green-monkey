@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import type { Locale, Product, Session } from "../../../shared/domain";
 import type {
+  KioskCardOff,
   KioskPaymentMode,
   KioskSettingsView,
   KioskStationView,
@@ -239,6 +240,51 @@ export function KioskSettings({
   );
 }
 
+/**
+ * The station row's card warning (KIOSK-UX-10; pure, tests/kiosk.test.ts): why the kiosk offers
+ * only «Pagar en caja», from the server's cardOff (kioskState's conditions and /capabilities).
+ */
+export function cardOffText(
+  locale: Locale,
+  off: KioskCardOff | null,
+  till: string,
+): string | null {
+  if (!off) return null;
+  const s = strings[locale];
+  let why: string;
+  switch (off.reason) {
+    case "disabled":
+      why = s.kioskCardOffDisabled;
+      break;
+    case "unbound":
+      why = s.kioskCardOffUnbound;
+      break;
+    case "no_till":
+      why = s.kioskCardOffNoTill;
+      break;
+    case "till_closed":
+      why = fill(s.kioskCardOffTillClosed, { till: till || "—" });
+      break;
+    case "mode":
+      why = s.kioskCardOffMode;
+      break;
+    case "no_terminal":
+      why = s.kioskCardOffNoTerminal;
+      break;
+    case "provider":
+      why = fill(
+        off.detail === "worker_not_configured"
+          ? s.kioskCardOffProviderOff
+          : off.detail === "verifying"
+            ? s.kioskCardOffProviderVerifying
+            : s.kioskCardOffProviderNotConnected,
+        { provider: off.provider === "clip" ? "Clip" : "Mercado Pago" },
+      );
+      break;
+  }
+  return fill(s.kioskCardOff, { why });
+}
+
 function StationRow({
   station,
   view,
@@ -269,9 +315,15 @@ function StationRow({
       hourCycle: "h23",
     });
   const seen = d?.lastSeenAt ? Date.now() - Date.parse(d.lastSeenAt) : null;
+  const cardOff = cardOffText(
+    locale,
+    station.cardOff,
+    view.tills.find((x) => x.id === station.registerDeviceId)?.name ?? "",
+  );
   return (
     <div className="kiosk-station" aria-label={station.label}>
       <h4>{station.label || "—"}</h4>
+      {cardOff && <p className="warning">{cardOff}</p>}
       <label className="field">
         <span>{t("kioskStationTerminal")}</span>
         <select
@@ -299,7 +351,7 @@ function StationRow({
           <option value="">{t("kioskStationNoTill")}</option>
           {view.tills.map((x) => (
             <option key={x.id} value={x.id}>
-              {x.name}
+              {x.name} · {t(x.open ? "kioskTillOpen" : "kioskTillClosed")}
             </option>
           ))}
         </select>

@@ -15,6 +15,7 @@ import { bumpMenuRevision } from "./menu.js";
 import { loyaltyKioskConfig } from "./loyalty/kiosk.js";
 import { kioskSelfCheckoutEnabled } from "./kiosk-config.js";
 import { kioskSettingsRow, pairingCodeHash } from "./kiosk-diner.js";
+import { providerCapabilities } from "./payments/providers.js";
 import {
   DomainError,
   id,
@@ -26,6 +27,7 @@ import {
   kioskRevokeDeviceInput,
   kioskSettingsInput,
   kioskStationInput,
+  stationCardOff,
   suggestionsInput,
   type KioskSettingsView,
   type KioskStationView,
@@ -42,6 +44,9 @@ export async function kioskSettingsView(
     await tx`select s.id,s.version,s.terminal_id,s.register_device_id,
       l.id as link_id,coalesce(l.label,'') as label,
       exists(select 1 from cash_sessions c where c.device_id=s.register_device_id and c.closed_at is null) as till_open,
+      (select json_build_object('usable',t.active and t.archived_at is null and t.kind <> 'manual',
+          'provider',case t.kind when 'mercadopago_point' then 'mercadopago' when 'clip_pinpad' then 'clip' end)
+        from payment_terminals t where t.id=s.terminal_id) as terminal,
       (select json_build_object('id',d.id,'paired',d.paired_at is not null,'pairing_expires_at',d.pairing_expires_at,
           'last_seen_at',d.last_seen_at,'build',d.build,'viewport',d.viewport)
         from kiosk_devices d where d.station_id=s.id and d.revoked_at is null) as device
@@ -56,6 +61,9 @@ export async function kioskSettingsView(
     from devices d where d.active order by d.name,d.id`;
   const [cart] =
     await tx`select product_ids,version from menu_suggestions where scope='cart'`;
+  // KIOSK-UX-10: why a station takes no card, from kioskState's conditions and /capabilities.
+  const providers = await providerCapabilities(tx);
+  const enabled = kioskSelfCheckoutEnabled();
   return {
     settings: {
       paymentMode: settings.payment_mode,
@@ -72,6 +80,16 @@ export async function kioskSettingsView(
       terminalId: r.terminal_id,
       registerDeviceId: r.register_device_id,
       tillOpen: r.till_open,
+      cardOff: stationCardOff({
+        enabled,
+        paymentMode: settings.payment_mode,
+        paired: r.device?.paired === true,
+        till: !r.register_device_id ? "none" : r.till_open ? "open" : "closed",
+        terminal: r.terminal
+          ? { usable: !!r.terminal.usable, provider: r.terminal.provider }
+          : null,
+        providers,
+      }),
       device: r.device
         ? {
             id: r.device.id,
@@ -95,7 +113,7 @@ export async function kioskSettingsView(
       version: (cart?.version as number | undefined) ?? 0,
     },
     loyaltyAvailable: !!(await loyaltyKioskConfig(tx)),
-    selfCheckoutEnabled: kioskSelfCheckoutEnabled(),
+    selfCheckoutEnabled: enabled,
   };
 }
 

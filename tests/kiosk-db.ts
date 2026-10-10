@@ -1394,6 +1394,12 @@ try {
     assert.equal(st.body.selfCheckout, false);
     const o2 = await order(main, [line(ids.taco)], 4500);
     assert.equal(o2.counterOnly, "disabled");
+    // KIOSK-UX-10: Configuración's station row says why.
+    const off = await write(manager, (tx) => kioskSettingsView(tx, manager));
+    assert.deepEqual(
+      off.stations.find((x) => x.id === main.stationId)!.cardOff,
+      { reason: "disabled" },
+    );
     assert.equal(
       (await charge(main, o2.key)).body.error,
       "kiosk_card_unavailable",
@@ -1427,6 +1433,14 @@ try {
     await pair(k);
     const closed = await order(k, [line(ids.taco)], 4500);
     assert.equal(closed.counterOnly, "till_closed");
+    // KIOSK-UX-10: the same reason on Configuración's station row.
+    const closedView = await write(manager, (tx) =>
+      kioskSettingsView(tx, manager),
+    );
+    assert.deepEqual(
+      closedView.stations.find((x) => x.id === k.stationId)!.cardOff,
+      { reason: "till_closed" },
+    );
     assert.equal(
       (await charge(k, closed.key)).body.error,
       "kiosk_card_unavailable",
@@ -1454,6 +1468,7 @@ try {
     assert.equal(st.registerDeviceId, ids.till);
     assert.equal(st.tillOpen, true);
     assert.equal(st.device!.state, "paired");
+    assert.equal(st.cardOff, null, "a station that takes cards has no warning");
     await rejects(
       write(cashier, (tx) => kioskSettingsView(tx, cashier)),
       "forbidden",

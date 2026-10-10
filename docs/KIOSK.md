@@ -103,6 +103,14 @@ Owners and managers; saves ask for a recent PIN (unpairing does not).
 | Per station | Terminal (integrated readers only), Caja que recibe los cobros, Vincular tableta, Desvincular, last heartbeat and build | — |
 | Sugerencias del carrito | up to 6 products | none ("Lo más pedido a esta hora" then) |
 
+Each station row says why the kiosk takes no card (KIOSK-UX-10, critic R14), with
+`kioskState`'s conditions in its order: the server switch, no paired tablet, no till or the till
+closed ("la caja Caja mostrador está cerrada"), «Solo en caja», no active integrated terminal
+(inactive, archived or manual: the select then shows «Sin terminal»), then the terminal's provider
+as /capabilities reports it ("Clip no está conectado", "Mercado Pago no está activo en este
+servidor" while `PAYMENTS_PROVIDERS` leaves it out). The till select shows each till as abierta or
+cerrada.
+
 Per product (Menú e inventario): Foto, Descripción (es/en, 300 characters), "Sugerir con este
 producto" (up to 4).
 

@@ -16,9 +16,11 @@ import {
   maskTypedPhone,
   payButtons,
   pickSuggestions,
+  stationCardOff,
   suggestionsInput,
   type KioskCheckoutView,
 } from "../shared/kiosk";
+import { cardOffText } from "../src/features/public/KioskSettings";
 import {
   afterCancel,
   cancelsOnReset,
@@ -377,6 +379,104 @@ describe("«Soy del club» only while the member token still travels (KIOSK-UX-0
     expect(memberLookupOpen("checkout", null)).toBe(false);
     expect(memberLookupOpen("kiosk-done", null)).toBe(false);
     expect(memberLookupOpen("status", null)).toBe(false);
+  });
+});
+
+describe("why a station takes no card, on Configuración's row (KIOSK-UX-10, critic R14)", () => {
+  const ready = {
+    enabled: true,
+    paymentMode: "card_and_counter" as const,
+    paired: true,
+    till: "open" as const,
+    terminal: { usable: true, provider: "clip" as const },
+    providers: {
+      mercadopago: { enabled: false, reason: "worker_not_configured" },
+      clip: { enabled: true },
+    },
+  };
+  it("kioskState's order: switch, tablet, till, mode, terminal, then the terminal's provider", () => {
+    expect(stationCardOff(ready)).toBe(null);
+    expect(stationCardOff({ ...ready, enabled: false, paired: false })).toEqual(
+      { reason: "disabled" },
+    );
+    expect(stationCardOff({ ...ready, paired: false, till: "none" })).toEqual({
+      reason: "unbound",
+    });
+    expect(stationCardOff({ ...ready, till: "none" })).toEqual({
+      reason: "no_till",
+    });
+    expect(
+      stationCardOff({ ...ready, till: "closed", paymentMode: "counter" }),
+    ).toEqual({ reason: "till_closed" });
+    expect(stationCardOff({ ...ready, paymentMode: "counter" })).toEqual({
+      reason: "mode",
+    });
+    expect(stationCardOff({ ...ready, terminal: null })).toEqual({
+      reason: "no_terminal",
+    });
+    // Inactive, archived or manual: the select shows «Sin terminal», the row says why.
+    expect(
+      stationCardOff({
+        ...ready,
+        terminal: { usable: false, provider: "clip" },
+      }),
+    ).toEqual({ reason: "no_terminal" });
+    expect(
+      stationCardOff({
+        ...ready,
+        terminal: { usable: true, provider: "mercadopago" },
+      }),
+    ).toEqual({
+      reason: "provider",
+      provider: "mercadopago",
+      detail: "worker_not_configured",
+    });
+    expect(
+      stationCardOff({
+        ...ready,
+        providers: { ...ready.providers, clip: { enabled: false } },
+      }),
+    ).toEqual({
+      reason: "provider",
+      provider: "clip",
+      detail: "not_connected",
+    });
+  });
+  it("the row's text names the cause", () => {
+    expect(cardOffText("es", null, "")).toBe(null);
+    expect(cardOffText("es", { reason: "till_closed" }, "Caja mostrador")).toBe(
+      "El kiosco no cobra con tarjeta: la caja Caja mostrador está cerrada.",
+    );
+    expect(
+      cardOffText(
+        "es",
+        { reason: "provider", provider: "clip", detail: "not_connected" },
+        "",
+      ),
+    ).toBe("El kiosco no cobra con tarjeta: Clip no está conectado.");
+    expect(
+      cardOffText(
+        "es",
+        {
+          reason: "provider",
+          provider: "mercadopago",
+          detail: "worker_not_configured",
+        },
+        "",
+      ),
+    ).toBe(
+      "El kiosco no cobra con tarjeta: Mercado Pago no está activo en este servidor.",
+    );
+    for (const reason of [
+      "disabled",
+      "unbound",
+      "no_till",
+      "mode",
+      "no_terminal",
+    ] as const)
+      expect(cardOffText("en", { reason }, ""), reason).toMatch(
+        /^The kiosk doesn't take cards: .+\.$/,
+      );
   });
 });
 

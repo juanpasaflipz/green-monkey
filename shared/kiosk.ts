@@ -319,6 +319,59 @@ export type KioskSubmitResult = {
   member: boolean;
 };
 
+/**
+ * Why a kiosk station cannot take the card (KIOSK-UX-10; critic R14: "card: false plus a settings
+ * warning"). The kiosk's own counterOnly reasons (kioskState), with the terminal's provider split
+ * out as /capabilities reports it (worker_not_configured, not_connected, verifying, a failure code).
+ */
+export type KioskCardOff =
+  | {
+      reason:
+        | "disabled"
+        | "unbound"
+        | "no_till"
+        | "till_closed"
+        | "mode"
+        | "no_terminal";
+    }
+  | { reason: "provider"; provider: "mercadopago" | "clip"; detail: string };
+
+/**
+ * The station row's card warning (pure; tests/kiosk.test.ts), in kioskState's order: the server
+ * switch, the paired tablet, the receiving till, the payment mode, then the terminal (active, not
+ * archived, integrated) and its provider (served by the worker, account active).
+ */
+export function stationCardOff(s: {
+  enabled: boolean;
+  paymentMode: KioskPaymentMode;
+  paired: boolean;
+  till: "none" | "open" | "closed";
+  terminal: null | {
+    usable: boolean;
+    provider: "mercadopago" | "clip" | null;
+  };
+  providers: Record<
+    "mercadopago" | "clip",
+    { enabled: boolean; reason?: string }
+  >;
+}): KioskCardOff | null {
+  if (!s.enabled) return { reason: "disabled" };
+  if (!s.paired) return { reason: "unbound" };
+  if (s.till === "none") return { reason: "no_till" };
+  if (s.till === "closed") return { reason: "till_closed" };
+  if (s.paymentMode === "counter") return { reason: "mode" };
+  if (!s.terminal?.usable || !s.terminal.provider)
+    return { reason: "no_terminal" };
+  const cap = s.providers[s.terminal.provider];
+  if (!cap.enabled)
+    return {
+      reason: "provider",
+      provider: s.terminal.provider,
+      detail: cap.reason ?? "not_connected",
+    };
+  return null;
+}
+
 export type KioskStationView = {
   id: string;
   version: number;
@@ -327,6 +380,8 @@ export type KioskStationView = {
   terminalId: string | null;
   registerDeviceId: string | null;
   tillOpen: boolean;
+  /** Why this station's kiosk offers only «Pagar en caja» (KIOSK-UX-10); null: it takes cards. */
+  cardOff: KioskCardOff | null;
   device: null | {
     id: string;
     state: "pending" | "paired";
