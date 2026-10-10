@@ -8,14 +8,19 @@ import { strings, type Key } from "../../i18n";
 import { usePoll } from "../../serviceHooks";
 import { errorNotice } from "../../i18n";
 import { STATE_KEYS, canRetrySettle } from "./attempt-text";
-import { saveActiveCharges } from "./charge-state";
-import { readsTerminalCharges } from "./options";
+import {
+  cachedLiveOrders,
+  loadLiveCharge,
+  saveActiveCharges,
+} from "./charge-state";
+import { pollsActiveCharges, usePaymentOptions } from "./options";
 import { ResolveDialog } from "./ResolveDialog";
 
 /**
  * Payments (037, P2; spec §5.1, critic R28): "Cobros en terminal en curso" in Venta and Órdenes.
  * Lists the restaurant's live and review charges (GET /payments/terminal/active, every 10 s while
- * online and visible), each with its order, terminal, amount, state and age, and opens the
+ * online and visible, and only while integrated charging is available or a charge is known:
+ * pollsActiveCharges, P2V-GATE-8), each with its order, terminal, amount, state and age, and opens the
  * resolve dialog (Volver a consultar for anyone; the R13 retry for anyone when a review fits;
  * the manager outcomes with step-up). A charge still waiting at the terminal can be cancelled from
  * here by any operator, from any device (spec §2.2; P2-UX-2). The last list is remembered so an
@@ -43,15 +48,26 @@ export function ActiveCharges({
   const [resolving, setResolving] = useState<AttemptView | null>(null);
   const [cancelling, setCancelling] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [checked, setChecked] = useState(false);
+  const options = usePaymentOptions(session, online);
   const poll = usePoll(
     async () => {
       const list = await api<AttemptView[]>("/payments/terminal/active");
       saveActiveCharges(session.tenantId, list);
       setRows(list);
+      setChecked(true);
     },
     {
       intervalMs: 10_000,
-      enabled: online && readsTerminalCharges(session.role),
+      enabled: pollsActiveCharges({
+        role: session.role,
+        online,
+        checked,
+        integratedAvailable: options.integratedAvailable,
+        shown: rows.length,
+        remembered: cachedLiveOrders(session.tenantId).length,
+        ownLive: loadLiveCharge(session.tenantId, session.deviceId) !== null,
+      }),
     },
     [session.id, session.role, online],
   );

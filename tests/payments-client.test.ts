@@ -45,6 +45,7 @@ import {
   type TenderReportRow,
 } from "../shared/reports";
 import {
+  pollsActiveCharges,
   readsPaymentOptions,
   readsTerminalCharges,
 } from "../src/features/payments/options";
@@ -849,5 +850,43 @@ describe("integrated charges (P2): what the waiting panel says and offers", () =
         "Sin conexión: el cobro sigue en la terminal; se confirmará al reconectar.",
       actions: [],
     });
+  });
+});
+
+describe("«Cobros en terminal en curso» polling (P2V-GATE-8)", () => {
+  const base = {
+    role: "cashier",
+    online: true,
+    checked: true,
+    integratedAvailable: false,
+    shown: 0,
+    remembered: 0,
+    ownLive: false,
+  };
+  it("stops after its first look while integrated charging is off and no charge is known; polls while a provider can charge or a charge is known", () => {
+    expect(pollsActiveCharges(base), "providers off, nothing known").toBe(
+      false,
+    );
+    expect(pollsActiveCharges({ ...base, checked: false }), "first look").toBe(
+      true,
+    );
+    expect(pollsActiveCharges({ ...base, integratedAvailable: true })).toBe(
+      true,
+    );
+    expect(pollsActiveCharges({ ...base, shown: 1 })).toBe(true);
+    expect(pollsActiveCharges({ ...base, remembered: 1 })).toBe(true);
+    expect(pollsActiveCharges({ ...base, ownLive: true })).toBe(true);
+    // Never offline, never on a kitchen display (a 403 there, LD-81 addendum).
+    expect(
+      pollsActiveCharges({ ...base, integratedAvailable: true, online: false }),
+    ).toBe(false);
+    expect(
+      pollsActiveCharges({
+        ...base,
+        checked: false,
+        integratedAvailable: true,
+        role: "kitchen",
+      }),
+    ).toBe(false);
   });
 });
