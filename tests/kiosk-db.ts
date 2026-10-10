@@ -1233,6 +1233,15 @@ try {
     const o3 = await order(main, [line(ids.agua, 2)], 600);
     await charge(main, o3.key);
     const a3 = await attemptOf(o3.key);
+    // KIOSK-SECURITY-2: a cashier's (or waiter's) cancel of a kiosk hold's charge is refused
+    // (kiosk §2.2, §4.5); the kiosk's own cancel is not staff's (K11 above, as the till opener).
+    await rejects(
+      write(cashier, (tx) =>
+        requestCancel(tx, cashier, a3.id, { operationId: randomUUID() }),
+      ),
+      "forbidden",
+    );
+    assert.equal((await attemptOf(o3.key)).state, "created");
     const v = await write(manager, (tx) =>
       requestCancel(tx, manager, a3.id, { operationId: randomUUID() }),
     );

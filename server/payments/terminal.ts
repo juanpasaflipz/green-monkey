@@ -467,6 +467,12 @@ export async function requestCancel(
   s: Session,
   attemptId: string,
   raw: unknown,
+  /**
+   * "kiosk": the kiosk's own cancel on its charging screen (kioskCancelCharge, device-checked,
+   * as the receiving till's opener). Staff cancelling a kiosk hold's charge («Cancelar cobro en
+   * curso») need a manager (kiosk §2.2, §4.5; KIOSK-SECURITY-2); any operator cancels the rest.
+   */
+  by: "staff" | "kiosk" = "staff",
 ): Promise<AttemptView> {
   permit(s, operators);
   id.parse(attemptId);
@@ -479,6 +485,7 @@ export async function requestCancel(
     { attemptId },
     async () => {
       const a = await lockAttempt(tx, attemptId);
+      if (a.target === "kiosk_hold" && by === "staff") permit(s, managers);
       if (
         a.state === "approved" ||
         a.state === "settled" ||

@@ -188,9 +188,13 @@ export async function kioskCancelCharge(
   const actor = await kioskActor(tx, station, device.id).catch((e: unknown) => {
     throw dinerChargeError(e);
   });
-  const view = await requestCancel(tx, actor, c.attempt_id, {
-    operationId: p.operationId,
-  }).catch((e: unknown) => {
+  const view = await requestCancel(
+    tx,
+    actor,
+    c.attempt_id,
+    { operationId: p.operationId },
+    "kiosk",
+  ).catch((e: unknown) => {
     // Approved meanwhile: nothing to cancel; the kiosk shows the payment.
     if (e instanceof DomainError && e.code === "payments_not_cancellable")
       return null;
