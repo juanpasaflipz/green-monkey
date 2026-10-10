@@ -32,6 +32,11 @@ import {
   photosOffNotice,
 } from "../src/features/menu/ProductPhotoField";
 import { createElement } from "react";
+import { DinerProduct } from "../src/features/public/DinerMenu";
+import {
+  ProductPhoto,
+  ProductPhotoView,
+} from "../src/features/public/kiosk/KioskProduct";
 import { renderToStaticMarkup } from "react-dom/server";
 import { kioskReportTiles } from "../src/features/public/KioskReport";
 import { moneyFormatter } from "../src/features/menu/format";
@@ -1128,5 +1133,79 @@ describe("the heartbeat reports the bundle's build (KIOSK-UX-13)", () => {
   it("Configuración shows a commit id short", () => {
     expect(shortBuild("4f2e092a1b2c3d4e5f60718293a4b5c6d7e8f901")).toBe("4f2e092");
     expect(shortBuild("1.2.0-1760000000000")).toBe("1.2.0-1760000000000");
+  });
+});
+
+describe("a kiosk or QR menu photo that fails to load falls back to the initial tile (KIOSK-UX-17)", () => {
+  const product = {
+    id: id(),
+    name: { es: "torta ficticia", en: "fictional torta" },
+    image: { id: "8f6f3b0e-2f5c-4c1e-9a7d-0b1c2d3e4f50", w: 1200, h: 900 },
+  } as never;
+  const view = (failed: boolean) =>
+    renderToStaticMarkup(
+      createElement(ProductPhotoView, {
+        product,
+        locale: "es",
+        variant: "card",
+        decorative: true,
+        failed,
+        onError: () => {},
+      }),
+    );
+  it("loading or loaded: the photo; failed: the neutral tile with the initial, no img", () => {
+    expect(view(false)).toContain("<img");
+    expect(view(false)).toContain("8f6f3b0e-2f5c-4c1e-9a7d-0b1c2d3e4f50");
+    const failed = view(true);
+    expect(failed).not.toContain("<img");
+    expect(failed).toContain("kiosk-photo-empty");
+    expect(failed).toContain(">T<");
+  });
+  it("ProductPhoto starts on the photo (no failure yet)", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProductPhoto, { product, locale: "es", variant: "thumb" }),
+    );
+    expect(html).toContain("<img");
+  });
+});
+
+describe("the QR menu's product description reaches screen readers (KIOSK-UX-18)", () => {
+  const product = {
+    id: "p-1",
+    name: { es: "Hamburguesa ficticia", en: "Fictional burger" },
+    description: {
+      es: "Pan brioche, carne de res, queso y salsa de la casa. Contiene cacahuate y lácteos.",
+      en: "",
+    },
+    image: null,
+    kind: "simple",
+    price: 12000,
+    available: true,
+    archived: false,
+    groups: [],
+  } as never;
+  const render = (kiosk: boolean) =>
+    renderToStaticMarkup(
+      createElement(DinerProduct, {
+        product,
+        locale: "es",
+        price: "$120.00",
+        kiosk,
+        photos: false,
+        onPick: () => {},
+      }),
+    );
+  it("the button's name is name and price; its description is the whole text, by aria-describedby", () => {
+    const html = render(false);
+    expect(html).toContain('aria-label="Hamburguesa ficticia, $120.00"');
+    expect(html).toContain('aria-describedby="diner-desc-p-1"');
+    expect(html).toMatch(
+      /<span id="diner-desc-p-1"[^>]*>Pan brioche, carne de res, queso y salsa de la casa\. Contiene cacahuate y lácteos\.<\/span>/,
+    );
+  });
+  it("the kiosk grid shows no description (its sheet does) and describes nothing", () => {
+    const html = render(true);
+    expect(html).not.toContain("aria-describedby");
+    expect(html).not.toContain("Contiene cacahuate");
   });
 });

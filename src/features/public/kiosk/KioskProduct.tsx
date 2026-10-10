@@ -2,6 +2,7 @@
 // tile), the description, "Combínalo con…" and "Agregar · $". Suggestions only offer products the
 // server listed as sellable that are not already in the cart; one with required choices opens
 // its sheet, others add with one tap.
+import { useState } from "react";
 import type { Locale, Product } from "../../../../shared/domain";
 import { orderable, pickerNeeded } from "../../../../shared/menu";
 import { mediaUrl } from "../../../../shared/media";
@@ -10,19 +11,44 @@ import { strings } from "../../../i18n";
 import { Button, Modal } from "../../../components/ui";
 import { fill, moneyFormatter } from "../../menu/format";
 
-/** The photo, or the product's initial on a neutral tile (never a broken image). */
-export function ProductPhoto({
-  product,
-  locale,
-  variant,
-  decorative = false,
-}: {
+/**
+ * The photo, or the product's initial on a neutral tile (never a broken image): also when the
+ * photo fails to load (a /media 503 during a store outage, a 404 for a stale id), as the POS
+ * grid's ProductArt does (KIOSK-UX-17).
+ */
+export function ProductPhoto(props: {
   product: Product;
   locale: Locale;
   variant: "thumb" | "card" | "hero";
   decorative?: boolean;
 }) {
-  if (!product.image)
+  const [failed, setFailed] = useState<string | null>(null);
+  return (
+    <ProductPhotoView
+      {...props}
+      failed={!!props.product.image && failed === props.product.image.id}
+      onError={(id) => setFailed(id)}
+    />
+  );
+}
+
+/** ProductPhoto's markup for a known load state (pure, tests/kiosk.test.ts). */
+export function ProductPhotoView({
+  product,
+  locale,
+  variant,
+  decorative = false,
+  failed,
+  onError,
+}: {
+  product: Product;
+  locale: Locale;
+  variant: "thumb" | "card" | "hero";
+  decorative?: boolean;
+  failed: boolean;
+  onError: (imageId: string) => void;
+}) {
+  if (!product.image || failed)
     return (
       <span className="kiosk-photo kiosk-photo-empty" aria-hidden="true">
         {product.name[locale].trim().charAt(0).toUpperCase()}
@@ -46,6 +72,7 @@ export function ProductPhoto({
       loading="lazy"
       decoding="async"
       alt={decorative ? "" : product.name[locale]}
+      onError={() => onError(image.id)}
     />
   );
 }
