@@ -358,9 +358,9 @@ would make the drift check fail.
 ## Photos, descriptions and suggestions (kiosk 039)
 
 - **Foto**: Subir / Cambiar / Quitar in the product editor (owners and managers). The browser
-  re-encodes three WebP variants (160, 480, 1200 px) and the server validates and rebuilds each
-  container without metadata (LD-88; [KIOSK.md](KIOSK.md) §7). The product stores
-  `image: {id, w, h}`; only the photo commands set it (a product save keeps it), and every change
+  re-encodes three WebP variants (160, 480, 1200 px), or JPEG on Safari, iPad and iPhone, and the
+  server validates and rebuilds each container without metadata (LD-88, LD-91; [KIOSK.md](KIOSK.md)
+  §7). The product stores `image: {id, w, h}` (plus `type: "image/jpeg"` for a JPEG); only the photo commands set it (a product save keeps it), and every change
   bumps the menu revision. The QR menu shows a thumbnail, the kiosk a card and a hero; receipts,
   comandas and reports never show photos.
 - **Importar fotos** (Productos toolbar, owners and managers): the old system's photos from a

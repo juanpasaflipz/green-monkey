@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | Owner login, employee PIN, permissions | Both auth systems | Unify memberships, sessions, device-bound PIN access | 1–2, required |
 | Restaurants/organizations, branding | POS Lite tenants/org/branding; Luma restaurant selector | One tenant model; explicit org aggregation | 1, 4–5, required |
-| Catalog/categories/search/photos | Both menus; POS Lite uploads/R2 | New shared catalog and selling UI; product photos and bilingual descriptions since kiosk 039 (browser re-encode to WebP, container validated on the server, private R2 bucket served from the app's origin, [KIOSK](KIOSK.md) §7) | 2, required; R2 when images enabled |
+| Catalog/categories/search/photos | Both menus; POS Lite uploads/R2 | New shared catalog and selling UI; product photos and bilingual descriptions since kiosk 039 (browser re-encode to WebP, or JPEG on WebKit, container validated on the server, private R2 bucket served from the app's origin, [KIOSK](KIOSK.md) §7) | 2, required; R2 when images enabled |
 | Modifiers, combos, open amount | Both modifiers; POS Lite combos/open amount | Server validation and shared price calculation | 2, required |
 | Promotions, scheduled offers, discounts/courtesies | Luma promotions; POS Lite discounts/approvals | One promotion/discount engine and audit | 2, required |
 | Tables, waiter attribution, service rounds | Luma tables/waiter orders; POS Lite order edits | Rewrite table workspace and round dispatch | 2, required |

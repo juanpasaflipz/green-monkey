@@ -35,8 +35,8 @@ export function ProductArt({
       {show && (
         <img
           className="product-photo"
-          src={mediaUrl(image.id, "thumb")}
-          srcSet={`${mediaUrl(image.id, "thumb")} 160w, ${mediaUrl(image.id, "card")} 480w`}
+          src={mediaUrl(image, "thumb")}
+          srcSet={`${mediaUrl(image, "thumb")} 160w, ${mediaUrl(image, "card")} 480w`}
           sizes="(max-width: 720px) 50vw, 240px"
           width={Math.min(160, image.w)}
           height={Math.max(

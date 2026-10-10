@@ -65,12 +65,14 @@ import { enrollMember } from "../server/loyalty/members.js";
 import type { LoyaltySettingsView } from "../shared/loyalty.js";
 import { runRetention } from "../server/ops/retention.js";
 import {
+  MEDIA_ROUTE,
   mediaRoute,
   recordMediaImport,
   removeProductImage,
   uploadProductImage,
 } from "../server/media.js";
-import { uploadBody } from "./fixtures/webp.js";
+import { riff, uploadBody, vp8l } from "./fixtures/webp.js";
+import { jpeg, jpegUploadBody } from "./fixtures/jpeg.js";
 import { kioskReport } from "../server/kiosk-report.js";
 import { sellingCatalog } from "../server/menu-read.js";
 import { LINK_HEADER, STATUS_HEADER } from "../shared/public-ordering.js";
@@ -288,7 +290,7 @@ app.set("trust proxy", "loopback");
 app.use(express.json({ limit: "256kb" }));
 app.use(cookieParser());
 app.use("/api/public", publicOrdering(sql));
-app.get("/media/:assetId/:variant.webp", mediaRoute(sql));
+app.get(MEDIA_ROUTE, mediaRoute(sql));
 app.use(
   (
     error: unknown,
@@ -2754,6 +2756,121 @@ try {
     );
     assert.equal(attempts.n, 0, "no attempt was recorded");
     assert.deepEqual({ ...(await checkoutRow()) }, { ...before });
+  });
+
+  await test("K28. photos as JPEG (KIOSK-UX-11, LD-91): WebKit's canvas JPEG variants are stored as image/jpeg without metadata, served as image/jpeg at .jpg only, carried in the diner catalog with their type, and purged by type", async () => {
+    const r = await uploadProductImage(
+      sql,
+      owner,
+      { operationId: randomUUID(), productId: ids.agua },
+      jpegUploadBody(800, 600, { metadata: true }),
+    );
+    assert.deepEqual(r.image, {
+      id: r.image!.id,
+      w: 800,
+      h: 600,
+      type: "image/jpeg",
+    });
+    const m = await one(
+      A,
+      (tx) =>
+        tx`select state,variants from menu_media where id=${r.image!.id}`,
+    );
+    assert.equal(m.state, "ready");
+    for (const v of ["thumb", "card", "hero"])
+      assert.equal(m.variants[v].type, "image/jpeg", v);
+    const { readdir } = await import("node:fs/promises");
+    assert.deepEqual(
+      (await readdir(join(mediaRoot, "m", A, r.image!.id))).sort(),
+      ["card.jpg", "hero.jpg", "thumb.jpg"],
+    );
+    const agua = (await call("GET", "/menu", { link: main.link })).body.catalog.find(
+      (p: any) => p.id === ids.agua,
+    );
+    assert.deepEqual(agua.image, r.image);
+    const res = await fetch(`${origin}/media/${r.image!.id}/hero.jpg`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("content-type"), "image/jpeg");
+    assert.equal(res.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(res.headers.get("etag"), `"${m.variants.hero.sha256}"`);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    assert.equal(bytes.length, m.variants.hero.bytes);
+    assert.deepEqual([...bytes.subarray(0, 2)], [0xff, 0xd8]);
+    for (const s of ["GPS", "Exif", "JFIF", "fictional"])
+      assert.ok(!bytes.includes(Buffer.from(s)), `no ${s} in what is served`);
+    // The extension must match the stored type: a JPEG asset has no .webp, a WebP one no .jpg.
+    assert.equal(
+      (await fetch(`${origin}/media/${r.image!.id}/hero.webp`)).status,
+      404,
+    );
+    assert.equal(
+      (await fetch(`${origin}/media/${r.image!.id}/hero.png`)).status,
+      404,
+    );
+    const w = await uploadProductImage(
+      sql,
+      owner,
+      { operationId: randomUUID(), productId: ids.papas },
+      uploadBody(400, 300),
+    );
+    assert.equal(w.image!.type, undefined);
+    assert.equal(
+      (await fetch(`${origin}/media/${w.image!.id}/card.jpg`)).status,
+      404,
+    );
+    const webp = await fetch(`${origin}/media/${w.image!.id}/card.webp`);
+    assert.equal(webp.status, 200);
+    assert.equal(webp.headers.get("content-type"), "image/webp");
+    // A mixed body (a JPEG, then WebP) is refused.
+    await rejects(
+      uploadProductImage(
+        sql,
+        owner,
+        { operationId: randomUUID(), productId: ids.agua },
+        Buffer.concat([
+          Buffer.from(jpeg(160, 120)),
+          Buffer.from(riff([vp8l(400, 300)])),
+          Buffer.from(riff([vp8l(400, 300)])),
+        ]),
+      ),
+      "media_invalid",
+    );
+    // Removal, then the purge deletes the .jpg objects.
+    for (const [productId, image] of [
+      [ids.agua, r.image!],
+      [ids.papas, w.image!],
+    ] as const) {
+      const doc = await one(
+        A,
+        (tx) =>
+          tx`select (data->>'version')::int as v from catalog where id=${productId}`,
+      );
+      await write(manager, (tx) =>
+        removeProductImage(tx, manager, productId, {
+          operationId: randomUUID(),
+          expectedVersion: doc.v,
+        }),
+      );
+      await admin.begin(async (tx) => {
+        await tx`alter table menu_media disable trigger menu_media_transition`;
+        await tx`update menu_media set deleted_at=now()-interval '8 days' where id=${image.id}`;
+        await tx`alter table menu_media enable trigger menu_media_transition`;
+      });
+    }
+    await admin`update jobs set next_at=now() where tenant_id=${A} and kind='media_purge'`;
+    await webRunner.drainTenant(A);
+    while (webRunner.running() > 0) await sleep(10);
+    for (const image of [r.image!, w.image!]) {
+      assert.equal(
+        (await one(A, (tx) => tx`select state from menu_media where id=${image.id}`))
+          .state,
+        "purged",
+      );
+      assert.deepEqual(
+        await readdir(join(mediaRoot, "m", A, image.id)).catch(() => []),
+        [],
+      );
+    }
   });
 
   assert.deepEqual(dead, [], "no job went dead");

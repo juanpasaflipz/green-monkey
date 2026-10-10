@@ -7,6 +7,7 @@ import { createHash, createHmac } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { mediaStoreConfig, type MediaStoreConfig } from "./kiosk-config.js";
+import { MEDIA_TYPES, type MediaType } from "../shared/media.js";
 
 export type MediaStore = {
   put(key: string, body: Buffer, contentType: string): Promise<void>;
@@ -15,10 +16,18 @@ export type MediaStore = {
   delete(key: string): Promise<void>;
 };
 
-/** m/<tenantId>/<assetId>/<variant>.webp (§2.9): ids are server-generated uuids. */
-export const KEY = /^m\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/(thumb|card|hero)\.webp$/;
-export const objectKey = (tenantId: string, assetId: string, variant: string) =>
-  `m/${tenantId}/${assetId}/${variant}.webp`;
+/**
+ * m/<tenantId>/<assetId>/<variant>.webp|jpg (§2.9; JPEG from WebKit browsers, KIOSK-UX-11): ids
+ * are server-generated uuids.
+ */
+export const KEY =
+  /^m\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/(thumb|card|hero)\.(webp|jpg)$/;
+export const objectKey = (
+  tenantId: string,
+  assetId: string,
+  variant: string,
+  type: MediaType,
+) => `m/${tenantId}/${assetId}/${variant}.${MEDIA_TYPES[type]}`;
 function checkKey(key: string) {
   if (!KEY.test(key)) throw Error("media_key_invalid");
 }

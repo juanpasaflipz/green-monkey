@@ -2,8 +2,9 @@
 // photo commands, the same-origin media route and the purge jobs. Web process only.
 //
 // LD-88 (no native image library): the browser re-encodes the photo into three WebP variants on a
-// canvas; processUpload, the single seam a server re-encoder could replace later, validates each
-// container and rebuilds it without metadata. The server validates the container, not the
+// canvas, or three JPEG variants where it cannot encode WebP (every WebKit browser; LD-91,
+// KIOSK-UX-11); processUpload, the single seam a server re-encoder could replace later, validates
+// each container and rebuilds it without metadata. The server validates the container, not the
 // pixels; uploads are staff-only (owners and managers).
 //
 // Lock order (ARCHITECTURE row 63): tx A 1 → 2 → menu_media insert; object writes outside any
@@ -27,9 +28,13 @@ import {
   type Session,
 } from "../shared/domain.js";
 import { cleanWebp, splitRiffs, WebpError } from "../shared/webp.js";
+import { cleanJpeg, JpegError, splitJpegs } from "../shared/jpeg.js";
 import {
   MEDIA_LIMITS,
+  MEDIA_TYPES,
   MEDIA_VARIANTS,
+  sniffType,
+  type MediaType,
   type MediaVariant,
 } from "../shared/media.js";
 import { z } from "zod";
@@ -45,24 +50,28 @@ export type ProcessedVariant = {
 export type Processed = {
   width: number;
   height: number;
+  /** The three variants' one type (the body's first bytes decide it). */
+  type: MediaType;
   variants: ProcessedVariant[];
 };
 
 /**
- * The upload pipeline (LD-88): thumb ‖ card ‖ hero, each a WebP file, validated and rebuilt
- * without EXIF, XMP or ICC data. The variants must be one picture at the three widths (never
- * enlarged): hero at most 1200 px, card min(480, hero), thumb min(160, hero), heights in the
- * hero's proportion (±1 px).
+ * The upload pipeline (LD-88, LD-91): thumb ‖ card ‖ hero, all WebP or all JPEG, each validated
+ * and rebuilt without metadata (WebP: EXIF, XMP, ICC; JPEG: every APPn and COM). The variants
+ * must be one picture at the three widths (never enlarged): hero at most 1200 px, card
+ * min(480, hero), thumb min(160, hero), heights in the hero's proportion (±1 px).
  */
 export function processUpload(body: Buffer): Processed {
   if (body.length > MEDIA_LIMITS.maxUploadBytes)
     throw new DomainError("media_too_large", 413);
+  const all = new Uint8Array(body.buffer, body.byteOffset, body.length);
+  // JPEG when the body starts with SOI; anything else goes the WebP way (which names a non-WebP
+  // media_type_unsupported, as before).
+  const type: MediaType =
+    sniffType(all) === "image/jpeg" ? "image/jpeg" : "image/webp";
   let files: Uint8Array[];
   try {
-    files = splitRiffs(
-      new Uint8Array(body.buffer, body.byteOffset, body.length),
-      3,
-    );
+    files = type === "image/jpeg" ? splitJpegs(all, 3) : splitRiffs(all, 3);
   } catch (e) {
     throw mediaError(e);
   }
@@ -71,7 +80,8 @@ export function processUpload(body: Buffer): Processed {
     if (f.length > v.maxBytes) throw new DomainError("media_too_large", 413);
     let c;
     try {
-      c = cleanWebp(f, { maxSide: Math.max(v.width, 4 * v.width) });
+      const caps = { maxSide: Math.max(v.width, 4 * v.width) };
+      c = type === "image/jpeg" ? cleanJpeg(f, caps) : cleanWebp(f, caps);
     } catch (e) {
       throw mediaError(e);
     }
@@ -96,10 +106,10 @@ export function processUpload(body: Buffer): Processed {
   // A strip narrower than 1:4 is not a menu photo (and keeps decoded sizes bounded).
   if (hero.h > 4 * hero.w || hero.w > 4 * hero.h)
     throw new DomainError("media_invalid", 400);
-  return { width: hero.w, height: hero.h, variants: out };
+  return { width: hero.w, height: hero.h, type, variants: out };
 }
 function mediaError(e: unknown): DomainError {
-  if (e instanceof WebpError)
+  if (e instanceof WebpError || e instanceof JpegError)
     return new DomainError(
       e.code,
       e.code === "media_type_unsupported"
@@ -125,10 +135,11 @@ type ImageResult = {
   image: Product["image"];
 };
 
+type VariantMeta = { sha256: string; type?: MediaType };
 /** id → {tenant, variants}: the media route's cache (10 minutes, 2000 entries). */
 const lru = new Map<
   string,
-  { at: number; tenantId: string; variants: Record<string, { sha256: string }> }
+  { at: number; tenantId: string; variants: Record<string, VariantMeta> }
 >();
 const LRU_MAX = 2000,
   LRU_MS = 10 * 60_000;
@@ -198,9 +209,9 @@ export async function uploadProductImage(
     try {
       for (const v of processed.variants)
         await store.put(
-          objectKey(s.tenantId, assetId, v.name),
+          objectKey(s.tenantId, assetId, v.name, processed.type),
           v.bytes,
-          "image/webp",
+          processed.type,
         );
     } catch (e) {
       log.error("media_store_failed", {
@@ -229,15 +240,25 @@ export async function uploadProductImage(
           const variants = Object.fromEntries(
             processed.variants.map((v) => [
               v.name,
-              { w: v.w, h: v.h, bytes: v.bytes.length, sha256: v.sha256 },
+              {
+                w: v.w,
+                h: v.h,
+                bytes: v.bytes.length,
+                sha256: v.sha256,
+                type: processed.type,
+              },
             ]),
           );
           await tx`update menu_media set state='ready',width=${processed.width},height=${processed.height},
             variants=${tx.json(variants)} where id=${assetId}`;
-          const image = {
+          const image: Product["image"] = {
             id: assetId,
             w: processed.width,
             h: processed.height,
+            // The URL's extension follows it (mediaUrl); absent = WebP.
+            ...(processed.type === "image/jpeg"
+              ? { type: "image/jpeg" as const }
+              : {}),
           };
           const data: Product = {
             ...old.data,
@@ -363,9 +384,14 @@ export async function removeProductImage(
   );
 }
 
+/** The media route's path; `file` is <variant>.webp or <variant>.jpg (mediaUrl). */
+export const MEDIA_ROUTE = "/media/:assetId/:file";
+const FILE = /^(thumb|card|hero)\.(webp|jpg)$/;
+
 /**
- * GET /media/:assetId/:variant.webp (outside /api, before the SPA fallback): exactly the ready
- * asset whose id the URL carries, through the menu_media_lookup policy (no tenant in the URL).
+ * GET /media/:assetId/<variant>.webp|jpg (outside /api, before the SPA fallback): exactly the
+ * ready asset whose id the URL carries, through the menu_media_lookup policy (no tenant in the
+ * URL), served as the type it was stored as; the extension must match it (KIOSK-UX-11).
  * Immutable (a new upload is a new id), nosniff, sandboxed, same-origin only.
  */
 export function mediaRoute(sql: postgres.Sql): express.RequestHandler {
@@ -375,12 +401,9 @@ export function mediaRoute(sql: postgres.Sql): express.RequestHandler {
     try {
       if (!menuPhotosEnabled()) return notFound("media_disabled");
       const assetId = String(req.params.assetId ?? "");
-      const variant = String(req.params.variant ?? "");
-      if (
-        !UUID.test(assetId) ||
-        !MEDIA_VARIANTS.some((v) => v.name === variant)
-      )
-        return notFound("media_not_found");
+      const file = FILE.exec(String(req.params.file ?? ""));
+      if (!UUID.test(assetId) || !file) return notFound("media_not_found");
+      const [, variant, ext] = file;
       let hit = lru.get(assetId);
       if (!hit || Date.now() - hit.at > LRU_MS) {
         const row = (await sql.begin(async (raw) => {
@@ -390,7 +413,7 @@ export function mediaRoute(sql: postgres.Sql): express.RequestHandler {
             await tx`select tenant_id,variants from menu_media where id=${assetId} and state='ready'`;
           return r;
         })) as
-          | { tenant_id: string; variants: Record<string, { sha256: string }> }
+          | { tenant_id: string; variants: Record<string, VariantMeta> }
           | undefined;
         if (!row) {
           lru.delete(assetId);
@@ -405,9 +428,12 @@ export function mediaRoute(sql: postgres.Sql): express.RequestHandler {
         lru.set(assetId, hit);
       }
       const meta = hit.variants[variant];
-      if (!meta) return notFound("media_not_found");
+      // Assets stored before KIOSK-UX-11 carry no type: WebP.
+      const type: MediaType = meta?.type ?? "image/webp";
+      if (!meta || MEDIA_TYPES[type] !== ext)
+        return notFound("media_not_found");
       const headers = {
-        "Content-Type": "image/webp",
+        "Content-Type": type,
         "Cache-Control": "public, max-age=31536000, immutable",
         ETag: `"${meta.sha256}"`,
         "X-Content-Type-Options": "nosniff",
@@ -420,7 +446,9 @@ export function mediaRoute(sql: postgres.Sql): express.RequestHandler {
       if (!store) return res.status(503).json({ error: "media_unavailable" });
       let bytes: Buffer | null;
       try {
-        bytes = await store.get(objectKey(hit.tenantId, assetId, variant));
+        bytes = await store.get(
+          objectKey(hit.tenantId, assetId, variant, type),
+        );
       } catch (e) {
         log.error("media_store_failed", {
           op: "get",
@@ -440,11 +468,13 @@ export function mediaRoute(sql: postgres.Sql): express.RequestHandler {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Every object the asset may have: a half-done upload has no recorded type, so both types. */
 async function deleteObjects(tenantId: string, assetId: string) {
   const store = mediaStore();
   if (!store) throw Error("media_store_unconfigured");
   for (const v of MEDIA_VARIANTS)
-    await store.delete(objectKey(tenantId, assetId, v.name));
+    for (const type of Object.keys(MEDIA_TYPES) as MediaType[])
+      await store.delete(objectKey(tenantId, assetId, v.name, type));
 }
 
 /** Web jobs (critic R36): the purge 7 days after removal, and the sweep of a half-done upload. */

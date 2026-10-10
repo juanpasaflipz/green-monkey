@@ -120,17 +120,37 @@ paid order offers loyalty's join QR. The checkout's member reference is blanked 
 
 ## 7. Menu photos
 
-**Pipeline (LD-88: no native image library).** The browser checks the original by its bytes (JPG,
-PNG or WebP; HEIC refused; 10 MB; 40 megapixels from the header, before decoding), re-encodes three
-WebP variants on a canvas (160, 480, 1200 px wide, never enlarged, quality 0.8) and uploads them as
-one body. `processUpload` (the single seam a server re-encoder can replace) splits the RIFF files,
-validates each container and rebuilds it from only VP8/VP8L, or VP8X (flags rewritten to alpha only)
-+ ALPH + VP8; EXIF, XMP and ICC chunks are dropped; animation, unknown chunks, bad sizes and
-trailing bytes are refused; the three variants must be one picture at the three widths.
+**Pipeline (LD-88: no native image library; LD-91).** The browser checks the original by its bytes
+(JPG, PNG or WebP; HEIC refused; 10 MB; 40 megapixels from the header, before decoding), re-encodes
+three variants on a canvas (160, 480, 1200 px wide, never enlarged, quality 0.8) and uploads them as
+one body. The variants are WebP where the browser can encode it, else JPEG: no WebKit browser
+(desktop Safari, every iPadOS and iOS browser, Chrome and Edge on iPad included) can encode WebP on
+a canvas, and the first variant decides, so one upload is all WebP or all JPEG (a transparent PNG
+gets a white background in JPEG). `processUpload` (the single seam a server re-encoder can
+replace) picks the format from the body's first bytes and splits the files.
+- WebP (`shared/webp.ts`): each RIFF container is validated and rebuilt from only VP8/VP8L, or VP8X
+  (flags rewritten to alpha only) + ALPH + VP8; EXIF, XMP and ICC chunks are dropped; animation,
+  unknown chunks, bad sizes and trailing bytes are refused.
+- JPEG (`shared/jpeg.ts`, KIOSK-UX-11): the marker structure (ITU-T T.81 Annex B) is walked with a
+  bounds check on every length; it needs SOI … EOI, one 8-bit SOF0/SOF1/SOF2 frame (grayscale or
+  YCbCr), DQT, DHT and SOS, with the tables each scan uses defined before it. The file is rebuilt
+  from SOI, DQT, SOF, DHT, DRI, SOS + the entropy-coded data (stuffed 0xFF00 and in-order RSTn kept
+  as they are) and EOI; every APPn (JFIF, EXIF, XMP, ICC, Photoshop, Adobe) and COM is dropped.
+  Truncated input, trailing bytes, a second frame or a glued second image, arithmetic coding
+  (SOF9–SOF15, DAC), lossless or hierarchical frames, DNL, more than 32 scans and unknown markers
+  are refused, as are the two colour cases where dropping APPn would change the picture (an Adobe
+  segment with an RGB transform, component ids 'R','G','B'). No JFIF APP0 is written back: JFIF is
+  optional in T.81, and libjpeg-turbo (Chromium, Firefox) and ImageIO (Safari) read a 3-component
+  frame without it as YCbCr. Checked on 2026-10-10 with real canvas JPEGs: WebKit's (JFIF, EXIF,
+  Photoshop APP13, DRI) and Chromium's (JFIF, ICC) decode to the same pixels in WebKit and
+  Chromium after the rebuild as before it.
+- The three variants must be one picture at the three widths, each under the same caps for both
+  formats (4× the variant's width per side, the variant's byte cap, hero at most 1200 px, at most
+  1:4).
 
 **Security note: the server validates the container, not the pixels; uploads are staff-only**
-(owners and managers, 30 per tenant per 10 minutes, one at a time per process). Browsers that
-cannot encode WebP on a canvas (Safari on some iPads) get "Súbela desde Chrome o Edge".
+(owners and managers, 30 per tenant per 10 minutes, one at a time per process). A browser that
+can encode neither WebP nor JPEG on a canvas gets «Este navegador no pudo preparar la foto».
 
 **Store.** `MEDIA_STORE=r2` (a private Cloudflare R2 bucket, S3 API signed with a small SigV4 signer
 tested against the AWS test suite) or `fs` (`MEDIA_FS_ROOT`, development and CI only; refused in
@@ -139,10 +159,13 @@ before the owner provides the R2 media bucket): photos are unavailable. An uploa
 `media_store_not_configured` («Este servidor todavía no tiene dónde guardar fotos»), `/capabilities`
 reports `menuPhotos` off with that reason, and the kiosk, the QR menu and the POS show text tiles.
 `MEDIA_FS_ROOT` alone never selects the local driver, so a Railway service never writes photos to
-its ephemeral disk (tests/config.test.ts, tests/media.test.ts). Keys `m/<tenant>/<asset>/<thumb|card|hero>.webp`; ids are server-generated.
+its ephemeral disk (tests/config.test.ts, tests/media.test.ts). Keys `m/<tenant>/<asset>/<thumb|card|hero>.webp|jpg`; ids are server-generated.
+The asset's type is stored per variant in `menu_media.variants` (`type`; absent = WebP) and as the
+object's content type; a JPEG product image carries `type: "image/jpeg"` so `mediaUrl` builds `.jpg`.
 
-**Serving.** `GET /media/<asset>/<variant>.webp`, same origin (no CSP change), no session: the
-`menu_media_lookup` policy resolves exactly the ready asset. `Cache-Control: public,
+**Serving.** `GET /media/<asset>/<variant>.webp|jpg`, same origin (no CSP change), no session: the
+`menu_media_lookup` policy resolves exactly the ready asset, served with the `Content-Type` it was
+stored as; the extension must match that type (404 otherwise). `Cache-Control: public,
 max-age=31536000, immutable`, ETag = the variant's sha256, `nosniff`, `default-src 'none'; sandbox`,
 `Cross-Origin-Resource-Policy: same-origin`. "Quitar foto" answers 404 at once (other replicas
 within the 10-minute cache). Web jobs: `media_purge` deletes the objects 7 days after removal;
@@ -187,7 +210,7 @@ English name equals the item's name ignoring accents, case, punctuation and spac
 several matches or a product an earlier item already took stay «— No importar —» until the owner
 picks one. The status column reads Lista, Sin producto, Falta el archivo, Ya tiene foto (skipped
 unless «Reemplazar las fotos que ya existen») or Producto repetido. **Importar N fotos** sends each
-photo through the normal upload (the browser's check and WebP re-encode, the server's validation),
+photo through the normal upload (the browser's check and WebP/JPEG re-encode, the server's validation),
 one at a time; past the 30 uploads per 10 minutes it waits and resumes by itself. Each upload's
 operation id is derived from the product, its version and the file's bytes, so a retried request
 or a second tab never stores a second copy, and a re-run skips the products that already got their

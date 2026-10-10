@@ -103,8 +103,11 @@ export type Product = {
   fiscal?: unknown;
   /** payments (037, LD-72): base price per platform; absent = the POS price. Staff catalog only. */
   platformPrices?: Partial<Record<PricePlatform, number>>;
-  /** kiosk (039): the product photo (a menu_media asset, set only by the photo commands). */
-  image?: { id: string; w: number; h: number } | null;
+  /**
+   * kiosk (039): the product photo (a menu_media asset, set only by the photo commands); `type`
+   * only for a JPEG upload (absent = WebP, KIOSK-UX-11).
+   */
+  image?: { id: string; w: number; h: number; type?: "image/jpeg" } | null;
   /** kiosk (039): plain-text description, Spanish and optional English (300 characters each). */
   description?: { es: string; en: string };
 };

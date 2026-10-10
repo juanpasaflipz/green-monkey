@@ -1,7 +1,8 @@
-// Menu photos (039; specs/kiosk-w4.md §2.9; LD-88). The browser checks the original file (type,
-// 10 MB, 40 megapixels from the header, never decoding first), re-encodes three WebP variants on a
-// canvas and uploads them concatenated; the server validates and rebuilds each container
-// (shared/webp.ts). Pure.
+// Menu photos (039; specs/kiosk-w4.md §2.9; LD-88, LD-91). The browser checks the original file
+// (type, 10 MB, 40 megapixels from the header, never decoding first), re-encodes three variants on
+// a canvas (WebP, or JPEG where the browser cannot encode WebP: every WebKit browser) and uploads
+// them concatenated; the server validates and rebuilds each container (shared/webp.ts,
+// shared/jpeg.ts). Pure.
 import { riffLength } from "./webp.js";
 
 export const MEDIA_LIMITS = {
@@ -9,7 +10,7 @@ export const MEDIA_LIMITS = {
   maxBytes: 10 * 1024 * 1024,
   maxPixels: 40_000_000,
   types: ["image/jpeg", "image/png", "image/webp"] as const,
-  /** WebP quality of the browser's re-encode (sharp's documented default is 80, §2.9). */
+  /** WebP or JPEG quality of the browser's re-encode (sharp's documented default is 80, §2.9). */
   quality: 0.8,
   /** Uploads per tenant per 10 minutes (R8). */
   uploadsPerWindow: 30,
@@ -30,9 +31,26 @@ export type MediaVariant = (typeof MEDIA_VARIANTS)[number]["name"];
 export const isVariant = (v: string): v is MediaVariant =>
   MEDIA_VARIANTS.some((x) => x.name === v);
 
-export type ProductImage = { id: string; w: number; h: number };
-export const mediaUrl = (assetId: string, variant: MediaVariant) =>
-  `/media/${assetId}/${variant}.webp`;
+/**
+ * The stored types and their URL extensions: WebP, or JPEG from a browser that cannot encode WebP
+ * on a canvas (KIOSK-UX-11). One asset's three variants share one type.
+ */
+export const MEDIA_TYPES = {
+  "image/webp": "webp",
+  "image/jpeg": "jpg",
+} as const;
+export type MediaType = keyof typeof MEDIA_TYPES;
+/** A product's photo; `type` is present only for JPEG (absent = WebP). */
+export type ProductImage = {
+  id: string;
+  w: number;
+  h: number;
+  type?: "image/jpeg";
+};
+export const mediaUrl = (
+  image: { id: string; type?: MediaType },
+  variant: MediaVariant,
+) => `/media/${image.id}/${variant}.${MEDIA_TYPES[image.type ?? "image/webp"]}`;
 
 /** The variant size for an original (withoutEnlargement: never wider than the original). */
 export function variantSize(

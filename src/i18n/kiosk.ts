@@ -388,9 +388,9 @@ export default defineArea({
       "Las fotos del menú están apagadas en este servidor.",
       "Menu photos are turned off on this server.",
     ],
-    media_webp_unsupported: [
-      "Este navegador no puede preparar la foto. Súbela desde Chrome o Edge.",
-      "This browser can't prepare the photo. Upload it from Chrome or Edge.",
+    media_encode_unsupported: [
+      "Este navegador no pudo preparar la foto. Intenta de nuevo o usa otro navegador.",
+      "This browser couldn't prepare the photo. Try again or use another browser.",
     ],
     media_rate_limited: [
       "Subiste muchas fotos seguidas. Espera unos minutos.",

@@ -4,11 +4,13 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { cleanWebp, riffLength, splitRiffs, WebpError } from "../shared/webp";
+import { cleanJpeg, JpegError, splitJpegs } from "../shared/jpeg";
 import {
   checkOriginal,
   declaredSize,
   sniffType,
   MEDIA_LIMITS,
+  mediaUrl,
 } from "../shared/media";
 import { processUpload, uploadProductImage } from "../server/media";
 import { mediaStore, signV4 } from "../server/media-store";
@@ -23,12 +25,27 @@ import {
   vp8x,
   webpWithMetadata,
 } from "./fixtures/webp";
+import {
+  bytes,
+  DHT_AC,
+  DHT_DC,
+  DQT,
+  DRI,
+  EOI,
+  jpeg,
+  jpegUploadBody,
+  scanData,
+  segment,
+  sof,
+  SOI,
+  SOS,
+} from "./fixtures/jpeg";
 
 const code = (fn: () => unknown) => {
   try {
     fn();
   } catch (e) {
-    return (e as WebpError | DomainError).code;
+    return (e as WebpError | JpegError | DomainError).code;
   }
   return null;
 };
@@ -192,6 +209,268 @@ describe("processUpload (the pipeline's single seam)", () => {
     expect(
       code(() => processUpload(Buffer.alloc(MEDIA_LIMITS.maxUploadBytes + 1))),
     ).toBe("media_too_large");
+  });
+});
+
+describe("JPEG container (KIOSK-UX-11, LD-91: WebKit browsers upload canvas JPEGs)", () => {
+  const clean = (b: Uint8Array, maxSide = 1200) => cleanJpeg(b, { maxSide });
+  const same = (a: Uint8Array, b: Uint8Array) =>
+    Buffer.from(a).equals(Buffer.from(b));
+
+  it("a valid file round-trips byte for byte (stuffed 0xFF and RSTn kept), and the rebuild is stable", () => {
+    const plain = jpeg(40, 24);
+    expect(has(plain, "\xff\x00")).toBe(true);
+    expect(has(plain, "\xff\xd0")).toBe(true);
+    const c = clean(plain);
+    expect([c.width, c.height]).toEqual([40, 24]);
+    expect(same(c.bytes, plain)).toBe(true);
+    expect(same(clean(c.bytes).bytes, c.bytes)).toBe(true);
+  });
+
+  it("EXIF (APP1 with GPS), JFIF, ICC, XMP and COM are dropped; only the image segments stay", () => {
+    const dirty = jpeg(400, 300, { metadata: true });
+    for (const s of [
+      "Exif",
+      "GPS",
+      "JFIF",
+      "ICC_PROFILE",
+      "xmpmeta",
+      "fictional",
+    ])
+      expect(has(dirty, s)).toBe(true);
+    const c = clean(dirty);
+    expect([c.width, c.height]).toEqual([400, 300]);
+    for (const s of [
+      "Exif",
+      "GPS",
+      "JFIF",
+      "ICC_PROFILE",
+      "xmpmeta",
+      "fictional",
+    ])
+      expect(has(c.bytes, s)).toBe(false);
+    // Exactly the file without its metadata segments.
+    expect(same(c.bytes, jpeg(400, 300))).toBe(true);
+    // 0xFF fill bytes before a marker are dropped too.
+    const filled = bytes(
+      SOI,
+      [0xff, 0xff],
+      DQT,
+      sof(8, 8),
+      DHT_DC,
+      DHT_AC,
+      DRI,
+      SOS,
+      scanData(8, 8),
+      [0xff],
+      EOI,
+    );
+    expect(same(clean(filled).bytes, jpeg(8, 8))).toBe(true);
+  });
+
+  it("refuses truncated input: no EOI, a cut segment, a cut scan, a cut marker", () => {
+    const good = jpeg(40, 24);
+    for (const cut of [2, 3, 5, 30, good.length - 2, good.length - 6])
+      expect(code(() => clean(good.subarray(0, good.length - cut)))).toBe(
+        "media_invalid",
+      );
+    // A segment length that runs past the end.
+    const long = Uint8Array.from(good);
+    long[4] = 0xff;
+    expect(code(() => clean(long))).toBe("media_invalid");
+    // Trailing bytes after EOI.
+    expect(code(() => clean(bytes([...good], [0])))).toBe("media_invalid");
+  });
+
+  it("refuses oversized dimensions (the variant's cap, as for WebP)", () => {
+    expect(code(() => clean(jpeg(5000, 300), 4800))).toBe("media_too_large");
+    expect(code(() => clean(jpeg(300, 5000), 4800))).toBe("media_too_large");
+    expect(clean(jpeg(4800, 8), 4800).width).toBe(4800);
+  });
+
+  it("refuses anything that is not a JPEG", () => {
+    const png = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13,
+    ]);
+    expect(code(() => clean(png))).toBe("media_type_unsupported");
+    expect(code(() => clean(TINY_WEBP))).toBe("media_type_unsupported");
+    expect(code(() => clean(new Uint8Array([1, 2, 3])))).toBe(
+      "media_type_unsupported",
+    );
+    expect(code(() => clean(new Uint8Array([0xff])))).toBe(
+      "media_type_unsupported",
+    );
+  });
+
+  it("refuses a second image, arithmetic coding, lossless/hierarchical frames, unknown markers and missing tables", () => {
+    const tail = [DHT_DC, DHT_AC, DRI, SOS, scanData(8, 8), EOI];
+    const ok = (...head: number[][]) => bytes(SOI, ...head, ...tail);
+    expect(clean(ok(DQT, sof(8, 8))).width).toBe(8);
+    // Two frames in one file; two files glued together.
+    expect(code(() => clean(ok(DQT, sof(8, 8), sof(8, 8))))).toBe(
+      "media_invalid",
+    );
+    expect(code(() => clean(bytes([...jpeg(8, 8)], [...jpeg(8, 8)])))).toBe(
+      "media_invalid",
+    );
+    // SOF3 (lossless), SOF5 (hierarchical), SOF9 and SOF10 (arithmetic), and DAC.
+    for (const m of [0xc3, 0xc5, 0xc9, 0xca, 0xcb, 0xcd])
+      expect(code(() => clean(ok(DQT, sof(8, 8, m))))).toBe("media_invalid");
+    expect(
+      code(() => clean(ok(DQT, segment(0xcc, [0x00, 0x10]), sof(8, 8)))),
+    ).toBe("media_invalid");
+    // DNL (height 0), 12-bit samples, a reserved marker, a TEM, a stray RST.
+    expect(code(() => clean(ok(DQT, sof(8, 0))))).toBe("media_invalid");
+    expect(code(() => clean(ok(DQT, sof(8, 8, 0xc1, 12))))).toBe(
+      "media_invalid",
+    );
+    expect(code(() => clean(ok(DQT, segment(0xf7, [1, 2]), sof(8, 8))))).toBe(
+      "media_invalid",
+    );
+    expect(code(() => clean(ok(DQT, [0xff, 0x01], sof(8, 8))))).toBe(
+      "media_invalid",
+    );
+    expect(code(() => clean(ok(DQT, [0xff, 0xd0], sof(8, 8))))).toBe(
+      "media_invalid",
+    );
+    // No DQT, no DHT, no frame, no scan.
+    expect(code(() => clean(ok(sof(8, 8))))).toBe("media_invalid");
+    expect(
+      code(() =>
+        clean(bytes(SOI, DQT, sof(8, 8), DRI, SOS, scanData(8, 8), EOI)),
+      ),
+    ).toBe("media_invalid");
+    expect(
+      code(() =>
+        clean(bytes(SOI, DQT, DHT_DC, DHT_AC, SOS, scanData(8, 8), EOI)),
+      ),
+    ).toBe("media_invalid");
+    expect(
+      code(() => clean(bytes(SOI, DQT, sof(8, 8), DHT_DC, DHT_AC, EOI))),
+    ).toBe("media_invalid");
+    // RSTn out of order, or with no restart interval.
+    const wrong = scanData(16, 8);
+    wrong[4] = 0xd3;
+    expect(
+      code(() =>
+        clean(
+          bytes(SOI, DQT, sof(16, 8), DHT_DC, DHT_AC, DRI, SOS, wrong, EOI),
+        ),
+      ),
+    ).toBe("media_invalid");
+    expect(
+      code(() =>
+        clean(
+          bytes(
+            SOI,
+            DQT,
+            sof(16, 8),
+            DHT_DC,
+            DHT_AC,
+            SOS,
+            scanData(16, 8),
+            EOI,
+          ),
+        ),
+      ),
+    ).toBe("media_invalid");
+  });
+
+  it("refuses the colour cases a dropped APPn would change: an Adobe RGB transform, 'R','G','B' ids", () => {
+    const rgbFrame = (ids: number[]) =>
+      segment(0xc0, [8, 0, 8, 0, 8, 3, ...ids.flatMap((i) => [i, 0x11, 0])]);
+    const scan3 = (ids: number[]) =>
+      segment(0xda, [3, ...ids.flatMap((i) => [i, 0x00]), 0, 63, 0]);
+    const three = (ids: number[], adobe?: number) =>
+      bytes(
+        SOI,
+        ...(adobe === undefined
+          ? []
+          : [
+              segment(0xee, [
+                0x41,
+                0x64,
+                0x6f,
+                0x62,
+                0x65,
+                0,
+                100,
+                0,
+                0,
+                0,
+                0,
+                adobe,
+              ]),
+            ]),
+        DQT,
+        rgbFrame(ids),
+        DHT_DC,
+        DHT_AC,
+        scan3(ids),
+        [0x00],
+        EOI,
+      );
+    expect(clean(three([1, 2, 3])).width).toBe(8);
+    expect(clean(three([1, 2, 3], 1)).bytes.length).toBeLessThan(
+      three([1, 2, 3], 1).length,
+    );
+    expect(code(() => clean(three([1, 2, 3], 0)))).toBe("media_invalid");
+    expect(code(() => clean(three([0x52, 0x47, 0x42])))).toBe("media_invalid");
+  });
+
+  it("splits a body of three concatenated files and refuses a short, a long or a mixed one", () => {
+    const body = jpegUploadBody(400, 300, { metadata: true });
+    expect(splitJpegs(body, 3).map((f) => clean(f, 4800).width)).toEqual([
+      160, 400, 400,
+    ]);
+    expect(code(() => splitJpegs(body.subarray(0, body.length - 3), 3))).toBe(
+      "media_invalid",
+    );
+    expect(
+      code(() => splitJpegs(Buffer.concat([body, Buffer.from(jpeg(8, 8))]), 3)),
+    ).toBe("media_invalid");
+    expect(
+      code(() =>
+        splitJpegs(
+          Buffer.concat([
+            Buffer.from(jpeg(160, 120)),
+            Buffer.from(jpeg(480, 360)),
+            Buffer.from(riff([vp8l(1200, 900)])),
+          ]),
+          3,
+        ),
+      ),
+    ).toBe("media_invalid");
+  });
+
+  it("processUpload: three JPEG variants become a JPEG asset without metadata; a mixed body is refused", () => {
+    const p = processUpload(jpegUploadBody(1600, 1200, { metadata: true }));
+    expect(p.type).toBe("image/jpeg");
+    expect([p.width, p.height]).toEqual([1200, 900]);
+    expect(p.variants.map((v) => [v.name, v.w, v.h])).toEqual([
+      ["thumb", 160, 120],
+      ["card", 480, 360],
+      ["hero", 1200, 900],
+    ]);
+    for (const v of p.variants) {
+      for (const s of ["GPS", "Exif", "JFIF"])
+        expect(has(v.bytes, s)).toBe(false);
+      expect(v.sha256).toMatch(/^[0-9a-f]{64}$/);
+    }
+    expect(processUpload(uploadBody(400, 300)).type).toBe("image/webp");
+    const mixed = Buffer.concat([
+      Buffer.from(jpeg(160, 120)),
+      Buffer.from(riff([vp8l(480, 360)])),
+      Buffer.from(riff([vp8l(1200, 900)])),
+    ]);
+    expect(code(() => processUpload(mixed))).toBe("media_invalid");
+    expect(code(() => processUpload(jpegUploadBody(1000, 100)))).toBe(
+      "media_invalid",
+    );
+    expect(mediaUrl({ id: "a", type: "image/jpeg" }, "card")).toBe(
+      "/media/a/card.jpg",
+    );
+    expect(mediaUrl({ id: "a" }, "card")).toBe("/media/a/card.webp");
   });
 });
 

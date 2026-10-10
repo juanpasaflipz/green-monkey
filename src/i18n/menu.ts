@@ -103,7 +103,7 @@ export default defineArea({
     menuPhotoStoreDown:
       "No pudimos guardar la foto. Intenta de nuevo en un momento.",
     menuPhotoBrowser:
-      "Este navegador no puede preparar la foto. Súbela desde Chrome o Edge.",
+      "Este navegador no pudo preparar la foto. Intenta de nuevo o usa otro navegador.",
     menuPhotoSaveFirst: "Guarda el producto para agregarle una foto.",
     menuDisplaySettings: "Pantalla",
     menuGridPhotosHint:
@@ -446,7 +446,7 @@ export default defineArea({
     menuPhotoTooLarge: "The photo is larger than 10 MB.",
     menuPhotoStoreDown: "We couldn't save the photo. Try again in a moment.",
     menuPhotoBrowser:
-      "This browser can't prepare the photo. Upload it from Chrome or Edge.",
+      "This browser couldn't prepare the photo. Try again or use another browser.",
     menuPhotoSaveFirst: "Save the product to add a photo.",
     menuDisplaySettings: "Display",
     menuGridPhotosHint:

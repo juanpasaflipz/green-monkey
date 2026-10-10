@@ -625,8 +625,9 @@ outside the repository. **Yours:** take the offline copy of `CREDENTIAL_ENCRYPTI
     cancel, a timeout (3 minutes, then «La terminal sigue procesando…»), a busy terminal; the MP
     device in PDV mode (parity B2).
   - The KDS auto-print of a kiosk order on the GHIA `ghia-web` queue (B1).
-  - A photo upload from the iPad's camera roll: Safari may not encode WebP on a canvas
-    (LD-88); if «Súbela desde Chrome o Edge» shows, upload from the store Mac.
+  - A photo upload from the iPad's camera roll: no WebKit browser encodes WebP on a canvas, so the
+    iPad uploads JPEG variants (LD-91, KIOSK-UX-11); check the photo shows on the QR menu and the
+    kiosk, and that `/media/<asset>/card.jpg` answers `image/jpeg`.
 
 ### 1.17 Contacts, escalation and the go-live decision
 

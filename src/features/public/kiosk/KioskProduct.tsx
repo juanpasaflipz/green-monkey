@@ -28,16 +28,17 @@ export function ProductPhoto({
         {product.name[locale].trim().charAt(0).toUpperCase()}
       </span>
     );
-  const { id, w, h } = product.image;
+  const image = product.image;
+  const { w, h } = image;
   const width = { thumb: 160, card: 480, hero: 1200 }[variant];
   const vw = Math.min(width, w);
   return (
     <img
       className="kiosk-photo"
-      src={mediaUrl(id, variant)}
+      src={mediaUrl(image, variant)}
       srcSet={
         variant === "hero"
-          ? `${mediaUrl(id, "card")} 480w, ${mediaUrl(id, "hero")} 1200w`
+          ? `${mediaUrl(image, "card")} 480w, ${mediaUrl(image, "hero")} 1200w`
           : undefined
       }
       width={vw}
