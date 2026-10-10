@@ -485,20 +485,23 @@ async function holdOf(key: string, tenantId = A) {
 /**
  * Finanzas › Kiosco's paid counts from the tenders (KIOSK-OPS-3), read the other way round from
  * the report: kiosk card tenders through payment_attempts.tender_id, and every other tender.
+ * The admin connection reads every tenant, so each count names this run's restaurant A: the full
+ * DB qualification shares the database with suites that leave kiosk orders in other tenants.
  */
 async function paidByTender(day: string) {
   return (await one(
     A,
     (tx) => tx`select
-      (select count(*)::int from orders o where o.channel='kiosk' and o.business_date=${day}::date
-        and o.total>0) as orders,
+      (select count(*)::int from orders o where o.tenant_id=${A} and o.channel='kiosk'
+        and o.business_date=${day}::date and o.total>0) as orders,
       (select count(distinct t.order_id)::int from payment_attempts a
         join tenders t on t.tenant_id=a.tenant_id and t.id=a.tender_id
         join orders o on o.tenant_id=t.tenant_id and o.id=t.order_id
-        where a.target='kiosk_hold' and o.channel='kiosk' and o.business_date=${day}::date) as kiosk,
+        where a.tenant_id=${A} and a.target='kiosk_hold' and o.channel='kiosk'
+          and o.business_date=${day}::date) as kiosk,
       (select count(distinct t.order_id)::int from tenders t
         join orders o on o.tenant_id=t.tenant_id and o.id=t.order_id
-        where o.channel='kiosk' and o.business_date=${day}::date and not exists(
+        where t.tenant_id=${A} and o.channel='kiosk' and o.business_date=${day}::date and not exists(
           select 1 from payment_attempts a where a.tenant_id=t.tenant_id and a.tender_id=t.id
             and a.target='kiosk_hold')) as counter`,
   )) as { orders: number; kiosk: number; counter: number };
@@ -3422,11 +3425,13 @@ try {
     assert.equal(after.paidAtCounter, counts.counter);
     const both = await one(
       A,
-      (tx) => tx`select count(*)::int as n from orders o where o.channel='kiosk'
-        and o.business_date=${day}::date
+      (tx) => tx`select count(*)::int as n from orders o where o.tenant_id=${A}
+        and o.channel='kiosk' and o.business_date=${day}::date
         and exists(select 1 from tenders t join payment_attempts x on x.tenant_id=t.tenant_id
-          and x.id=t.attempt_id where t.order_id=o.id and x.target='kiosk_hold')
-        and exists(select 1 from tenders t where t.order_id=o.id and t.attempt_id is null)`,
+          and x.id=t.attempt_id where t.tenant_id=o.tenant_id and t.order_id=o.id
+          and x.target='kiosk_hold')
+        and exists(select 1 from tenders t where t.tenant_id=o.tenant_id and t.order_id=o.id
+          and t.attempt_id is null)`,
     );
     assert.ok(both.n >= 1, "a kiosk charge plus a counter rest counts in both");
     await write(manager, (tx) =>
