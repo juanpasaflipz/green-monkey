@@ -12,6 +12,7 @@ import {
   type JobHandler,
   type JobRegistrationOptions,
   type RegisteredHandler,
+  WORKER_DEAD_HOOK_KINDS,
 } from "../jobs.js";
 
 const registry = new Map<string, RegisteredHandler>();
@@ -26,6 +27,11 @@ export function registerWorkerJobHandler(
     throw Error(`worker job handler already registered: ${kind}`);
   if (webHandlers().has(kind))
     throw Error(`job kind registered in both web and worker: ${kind}`);
+  // The web's staff cancel decides by this list whether the dead write needs the hook.
+  if (WORKER_DEAD_HOOK_KINDS.has(kind) !== Boolean(entry.onDead))
+    throw Error(
+      `worker job kind ${kind}: an onDead hook and WORKER_DEAD_HOOK_KINDS (server/jobs.ts) must agree`,
+    );
   registry.set(kind, entry);
 }
 

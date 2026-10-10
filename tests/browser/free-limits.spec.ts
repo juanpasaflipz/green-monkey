@@ -19,7 +19,7 @@ test("Free register selection preserves access and permits one selling browser",
   const u = new URL(process.env.DATABASE_URL!);
   if (
     u.hostname !== "127.0.0.1" ||
-    !/^\/green_monkey(_[a-z]+)?_dev$/.test(u.pathname) ||
+    !/^\/green_monkey(_[a-z][a-z0-9]*)?_dev$/.test(u.pathname) ||
     new URL(baseURL!).hostname !== "127.0.0.1"
   )
     throw Error("Local dev fixture only");

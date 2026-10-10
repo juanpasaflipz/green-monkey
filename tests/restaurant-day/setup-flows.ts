@@ -1,6 +1,6 @@
 /**
- * Restaurant setup through the UI (specs/acceptance.md A1-A9, B1-B5, and
- * branch L's L1-L2): owner signup with legal acceptance, support grant, fiscal
+ * Restaurant setup through the UI (specs/acceptance.md A1-A9, B1-B5,
+ * branch L's L1-L2 and branch P's P1-P2): owner signup with legal acceptance, support grant, fiscal
  * profile, staff, money controls, menu, devices and sign-in. No UUID is typed
  * and no demo data used.
  */
@@ -16,6 +16,7 @@ import {
   RESTAURANT_L,
   URL_NAMESPACE,
 } from "./scenario.js";
+import { RESTAURANT_P } from "./scenario-p.js";
 import {
   allowing,
   checkpoint,
@@ -32,7 +33,8 @@ import { activateCfdi } from "./cfdi-k.js";
 type Restaurant =
   | typeof RESTAURANT_A
   | typeof RESTAURANT_B
-  | typeof RESTAURANT_L;
+  | typeof RESTAURANT_L
+  | typeof RESTAURANT_P;
 
 /** RFC 4122 UUIDv5 (§3.7: Google subjects). */
 export function uuidv5(name: string, namespace = URL_NAMESPACE) {
@@ -1381,5 +1383,50 @@ export async function setupL(dev: Devices, state: RunState, save: () => void) {
     caja.page.getByRole("heading", { name: "Vender", level: 1 }),
   ).toBeVisible();
   run.step = "L2.4";
+  await openDrawer(caja, r.openingCash);
+}
+
+/**
+ * Branch P (payments spec §12.4, lead decision LD-80): Restaurant P, created like L (signup,
+ * support grant, fiscal profile, staff, menu, a paired register), with Ximena signed in at an
+ * open drawer. The owner connects the providers and sets up the terminals and platforms in the
+ * next test (tests/restaurant-day/payments-p.ts).
+ */
+export async function setupP(dev: Devices, state: RunState, save: () => void) {
+  const r = RESTAURANT_P;
+  const owner = await dev("ownerP");
+  run.step = "P1.1";
+  await googleOwner(owner, r, state.baseUrl);
+  await signup(owner, r, state.cutoffP);
+  run.step = "P1.2";
+  state.tenantP = await readTenantId(owner);
+  save();
+  run.step = "P1.3";
+  await grantPro(state.tenantP, r, state.businessDateP, state.runId);
+  await proGranted(owner, state.runId, state.businessDateP);
+  run.step = "P1.4";
+  await fiscalProfile(owner, r, "P1-fiscal");
+  run.step = "P2.1";
+  await staff(owner, r);
+  run.step = "P2.2";
+  await menuNav(owner.page, "Menú");
+  await categoriesAndProducts(owner, r);
+  run.step = "P2.3";
+  const caja = await dev("cajaP");
+  {
+    const { code, dialog } = await pairingCode(owner, "Caja");
+    await pair(caja, code, r.name, "Caja");
+    await expect(
+      dialog.getByRole("status").filter({ hasText: "Vinculado: Caja" }),
+    ).toBeVisible();
+    await dialog.getByRole("button", { name: "Cerrar", exact: true }).click();
+  }
+  await rosterChecks(caja, r);
+  const ximena = r.staff.find((p) => p.key === "ximena")!;
+  await signIn(caja, ximena.name, ximena.pin);
+  await expect(
+    caja.page.getByRole("heading", { name: "Vender", level: 1 }),
+  ).toBeVisible();
+  run.step = "P2.4";
   await openDrawer(caja, r.openingCash);
 }

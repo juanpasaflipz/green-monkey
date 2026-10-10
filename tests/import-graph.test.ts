@@ -69,6 +69,12 @@ describe("process boundaries", () => {
     expect(worker.has("server/config.ts")).toBe(true);
     expect(worker.has("server/jobs/runner.ts")).toBe(true);
     expect(worker.has("server/jobs/worker-registry.ts")).toBe(true);
+    // The lanes (P2-CONCURRENCY-3, P2V-JOBS-3): the worker builds its runners through
+    // createWorkerRunners, never one createJobRunner whose global limit cfdi backlogs could fill.
+    expect(worker.has("server/jobs/worker-lanes.ts")).toBe(true);
+    const workerSource = readFileSync("server/worker.ts", "utf8");
+    expect(workerSource).toMatch(/\bcreateWorkerRunners\(/);
+    expect(workerSource).not.toMatch(/\bcreateJobRunner\b/);
     expect(worker.has("server/index.ts")).toBe(false);
     expect(
       [...worker].filter((f) => f.startsWith("server/jobs/handlers/")),
@@ -99,22 +105,37 @@ describe("process boundaries", () => {
     const hooks = directImports(resolve("server/loyalty/hooks.ts")).map((f) =>
       relative(process.cwd(), f),
     );
-    expect(hooks.sort()).toEqual(["server/db.ts", "server/jobs.ts", "shared/domain.ts"]);
+    expect(hooks.sort()).toEqual([
+      "server/db.ts",
+      "server/jobs.ts",
+      "shared/domain.ts",
+    ]);
     // db.ts and domain.ts are type-only imports (erased): at runtime the hooks reach jobs.ts only.
     const text = readFileSync("server/loyalty/hooks.ts", "utf8");
     expect(text).toMatch(/import type \{ Tx \} from "\.\.\/db\.js";/);
-    expect(text).toMatch(/import type \{ Session \} from "\.\.\/\.\.\/shared\/domain\.js";/);
-    for (const caller of ["server/checks.ts", "server/refunds.ts", "server/discounts.ts"]) {
-      const imports = directImports(resolve(caller)).map((f) => relative(process.cwd(), f));
-      expect(imports.filter((f) => f.startsWith("server/loyalty/")), caller).toEqual([
-        "server/loyalty/hooks.ts",
-      ]);
+    expect(text).toMatch(
+      /import type \{ Session \} from "\.\.\/\.\.\/shared\/domain\.js";/,
+    );
+    for (const caller of [
+      "server/checks.ts",
+      "server/refunds.ts",
+      "server/discounts.ts",
+    ]) {
+      const imports = directImports(resolve(caller)).map((f) =>
+        relative(process.cwd(), f),
+      );
+      expect(
+        imports.filter((f) => f.startsWith("server/loyalty/")),
+        caller,
+      ).toEqual(["server/loyalty/hooks.ts"]);
     }
     const web = reachable("server/index.ts");
     expect(web.has("server/routes/loyalty.ts")).toBe(true);
     expect(web.has("server/jobs/handlers/loyalty.ts")).toBe(true);
     const worker = reachable("server/worker.ts");
-    expect([...worker].filter((f) => f.startsWith("server/loyalty/"))).toEqual([]);
+    expect([...worker].filter((f) => f.startsWith("server/loyalty/"))).toEqual(
+      [],
+    );
     expect(worker.has("server/jobs/handlers/loyalty.ts")).toBe(false);
   });
 
@@ -204,6 +225,52 @@ describe("process boundaries", () => {
     expect(row).toMatch(
       /add `auth\.ts`, `access\.ts` and `owner-accounts\.ts` to the worker's forbidden list/,
     );
+  });
+
+  it("payments (037 P2, spec §4.0): the web never reaches the payments worker modules or the vault; the worker never reaches the web's settle; the provider adapters import only http.ts from server/", () => {
+    const web = reachable("server/index.ts");
+    expect(
+      [...web].filter((f) => f.startsWith("server/payments/worker/")),
+    ).toEqual([]);
+    for (const forbidden of [
+      "server/vault/vault.ts",
+      "server/vault/rekey.ts",
+      "server/cfdi/vault.ts",
+    ])
+      expect(web.has(forbidden), forbidden).toBe(false);
+    // The web seals with the public key only, and settles in its own job.
+    expect(web.has("server/vault/seal-upload.ts")).toBe(true);
+    expect(web.has("server/payments/terminal.ts")).toBe(true);
+    expect(web.has("server/jobs/handlers/payments.ts")).toBe(true);
+    const worker = reachable("server/worker.ts");
+    expect(worker.has("server/payments/worker/register.ts")).toBe(true);
+    expect(worker.has("server/payments/worker/boot.ts")).toBe(true);
+    for (const forbidden of [
+      "server/payments/terminal.ts",
+      "server/payments/settings.ts",
+      "server/payments/providers.ts",
+      "server/payments/webhooks.ts",
+      "server/routes/payments.ts",
+    ])
+      expect(worker.has(forbidden), forbidden).toBe(false);
+    for (const adapter of [
+      "server/payments/worker/mercadopago.ts",
+      "server/payments/worker/clip.ts",
+    ]) {
+      const fromServer = directImports(resolve(adapter))
+        .map((t) => relative(process.cwd(), t))
+        .filter((t) => t.startsWith("server/"));
+      expect(
+        fromServer.filter(
+          (t) =>
+            t !== "server/payments/worker/http.ts" &&
+            t !== "server/payments/worker/mercadopago.ts",
+        ),
+        adapter,
+      ).toEqual([]);
+    }
+    const http = directImports(resolve("server/payments/worker/http.ts"));
+    expect(http).toEqual([]);
   });
 
   it("the instrument preload loads configuration before anything else", () => {

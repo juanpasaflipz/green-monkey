@@ -22,8 +22,10 @@ import {
   setDeviceTerminalInput,
   type PaymentOptions,
   type PaymentSettingsView,
+  type Provider,
   type TerminalKind,
 } from "../../shared/payments.js";
+import { integratedProviders, terminalStatus } from "./providers.js";
 
 /** LO-3 area key, class 934 (critic R3): every payments configuration write. */
 async function lockPaymentsConfig(tx: Tx, s: Session) {
@@ -43,13 +45,26 @@ export async function paymentOptions(
 ): Promise<PaymentOptions> {
   permit(s, operators);
   const manager = managers.includes(s.role);
-  const [terminals, platforms, priced, defaults] = await Promise.all([
-    tx`select id,name,kind,fee_bp from payment_terminals
+  const [terminals, platforms, priced, defaults, devices, integrated] =
+    await Promise.all([
+      tx`select id,name,kind,fee_bp,provider_device_id from payment_terminals
       where active and archived_at is null order by lower(name),id`,
-    tx`select platform,enabled,commission_bp from payment_platforms`,
-    tx`select distinct platform from payment_platform_prices where price is not null`,
-    tx`select terminal_id from payment_device_terminals where device_id=${s.deviceId}`,
-  ]);
+      tx`select platform,enabled,commission_bp from payment_platforms`,
+      tx`select distinct platform from payment_platform_prices where price is not null`,
+      tx`select terminal_id from payment_device_terminals where device_id=${s.deviceId}`,
+      tx`select provider,device_id,status,seen_at from payment_provider_devices`,
+      integratedProviders(tx),
+    ]);
+  // P2: an integrated terminal charges through its provider when the worker serves the provider
+  // and the restaurant's account is active; it can always take a manual record.
+  const live = (kind: TerminalKind) => {
+    const provider = KIND_PROVIDER[kind] as Provider | null;
+    return Boolean(
+      provider &&
+      integrated.served.includes(provider) &&
+      integrated.accounts.get(provider)?.state === "active",
+    );
+  };
   // LD-75 (PAYMENTS-SECURITY-1 / UX-9): no row means disabled; the owner opts in per platform.
   const enabled = PLATFORMS.flatMap((platform) => {
     const row = platforms.find((p) => p.platform === platform);
@@ -69,15 +84,24 @@ export async function paymentOptions(
       name: t.name,
       kind: t.kind,
       ...(manager ? { feeBp: t.fee_bp ?? null } : {}),
-      // Integrated charging arrives with phase P2 (worker and provider adapters); an integrated
-      // terminal can always take a manual record meanwhile.
-      integrated: false,
+      integrated: live(t.kind),
+      ...(KIND_PROVIDER[t.kind as TerminalKind]
+        ? {
+            status: terminalStatus(
+              devices.find(
+                (d) =>
+                  d.provider === KIND_PROVIDER[t.kind as TerminalKind] &&
+                  d.device_id === t.provider_device_id,
+              ) as { status: string | null; seen_at: Date } | undefined,
+            ),
+          }
+        : {}),
     })),
     platforms: enabled,
     defaultTerminalId: terminals.some((t) => t.id === defaultId)
       ? defaultId
       : null,
-    integratedAvailable: false,
+    integratedAvailable: terminals.some((t) => live(t.kind)),
   };
 }
 
@@ -177,7 +201,7 @@ export async function saveTerminal(tx: Tx, s: Session, raw: unknown) {
         feeBp: p.feeBp,
       });
     } else {
-      const [row] = await tx`select kind,provider_device_id,archived_at,version
+      const [row] = await tx`select kind,provider_device_id,active,archived_at,version
         from payment_terminals where id=${terminalId} for update`;
       if (!row) throw new DomainError("payments_terminal_not_found", 404);
       if (row.archived_at)
@@ -189,6 +213,13 @@ export async function saveTerminal(tx: Tx, s: Session, raw: unknown) {
         throw new DomainError("invalid_input");
       if (p.expectedVersion !== undefined && row.version !== p.expectedVersion)
         throw new DomainError("payments_settings_changed", 409);
+      // «Activa» off is refused like an archive while the terminal may be showing a charge
+      // (LD-82): the start holds this row FOR SHARE, so a deactivation sees its attempt.
+      if (row.active && !p.active) {
+        const [live] = await tx`select id from payment_attempts
+          where terminal_id=${terminalId} and state in ('created','sending','pending','unknown') limit 1`;
+        if (live) throw new DomainError("payments_terminal_busy", 409);
+      }
       await tx`update payment_terminals set name=${name},fee_bp=${p.feeBp},active=${p.active},
           version=version+1,updated_at=now(),updated_by=${s.employeeId}
         where id=${terminalId}`;

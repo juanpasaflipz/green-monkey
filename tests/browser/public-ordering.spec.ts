@@ -1145,9 +1145,7 @@ test("pay-first refusal after a terminal charge: the cashier is told to record t
       .getByRole("button", { name: "Cobrar y enviar a cocina", exact: true })
       .click();
     const dialog = page.getByRole("dialog");
-    await dialog
-      .getByRole("button", { name: "Terminal externa", exact: true })
-      .click();
+    await dialog.getByRole("button", { name: "Tarjeta", exact: true }).click();
     await dialog.getByLabel("Referencia de aprobación").fill("APR-123456");
     await dialog
       .getByLabel("Confirmo que la terminal aprobó este pago")

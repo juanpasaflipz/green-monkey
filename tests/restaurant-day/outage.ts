@@ -145,7 +145,7 @@ async function offlineSale(
   } else {
     const terminal = dialog
       .getByRole("group", { name: "Método de pago" })
-      .getByRole("button", { name: "Terminal externa", exact: true });
+      .getByRole("button", { name: "Tarjeta", exact: true });
     await expect(terminal).toBeEnabled();
     await tap(caja, terminal);
     await expect(

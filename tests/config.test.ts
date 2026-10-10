@@ -729,3 +729,62 @@ describe("process configuration", () => {
     }
   });
 });
+
+describe("payments worker configuration (spec §4.6, §12.1)", () => {
+  const ring = signingKeys("pay-1", 9);
+  const worker = (extra: Record<string, string>) =>
+    loadConfig({ PROCESS_KIND: "worker", ...extra }, "worker");
+  it("PAYMENTS_PROVIDERS needs CREDENTIAL_ENCRYPTION_KEY (a valid keyring) and accepts only mercadopago and clip", () => {
+    expect(() => worker({ PAYMENTS_PROVIDERS: "mercadopago" })).toThrow(
+      "missing_credential_encryption_key",
+    );
+    expect(() =>
+      worker({ PAYMENTS_PROVIDERS: "clip", CREDENTIAL_ENCRYPTION_KEY: "nope" }),
+    ).toThrow("invalid_credential_encryption_key");
+    expect(() =>
+      worker({ PAYMENTS_PROVIDERS: "stripe", CREDENTIAL_ENCRYPTION_KEY: ring }),
+    ).toThrow("invalid_payments_providers");
+    expect(() =>
+      worker({
+        PAYMENTS_PROVIDERS: "mercadopago, clip",
+        CREDENTIAL_ENCRYPTION_KEY: ring,
+      }),
+    ).not.toThrow();
+    expect(() => worker({ PAYMENTS_PROVIDERS: "" })).not.toThrow();
+  });
+  it("a deployed worker with providers needs its jobs login; API bases are the provider hosts there, a loopback fake only in development and test", () => {
+    expect(() =>
+      loadConfig(
+        {
+          ...deployedWorker,
+          WORKER_DATABASE_URL: workerDatabaseUrl,
+          PAYMENTS_PROVIDERS: "clip",
+          CREDENTIAL_ENCRYPTION_KEY: ring,
+          MERCADOPAGO_API_URL: "http://127.0.0.1:4999",
+        },
+        "worker",
+      ),
+    ).toThrow("payments_api_url_not_allowed");
+    expect(() =>
+      loadConfig(
+        {
+          ...deployedWorker,
+          PAYMENTS_PROVIDERS: "clip",
+          CREDENTIAL_ENCRYPTION_KEY: ring,
+          CLIP_API_URL: "https://api.payclip.io/f2f/pinpad/v1/",
+        },
+        "worker",
+      ),
+    ).not.toThrow();
+    expect(() =>
+      worker({
+        PAYMENTS_PROVIDERS: "clip",
+        CREDENTIAL_ENCRYPTION_KEY: ring,
+        CLIP_API_URL: "http://127.0.0.1:4999/clip",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      worker({ MERCADOPAGO_API_URL: "https://evil.example.com" }),
+    ).toThrow("payments_api_url_not_allowed");
+  });
+});

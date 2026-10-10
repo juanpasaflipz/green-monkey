@@ -11,3 +11,11 @@
 # - a made-up test key for the in-memory Facturapi fake (tests/fakes/facturapi-fake.ts) that
 #   never existed at Facturapi or Stripe (stripe-access-token pattern).
 df8d424ef57f91567374d5b00784167c32e6e695:tests/cfdi-facturapi-fake.test.ts:stripe-access-token:677
+
+# payments P2 (track/payments-p2), fixed or not secrets, still present in the branch history:
+# - an HMAC test value in the Mercado Pago adapter suite, replaced by an obviously fictional one;
+# - the vault's HKDF info labels (a constant label, not key material) where the CFDI vault was
+#   generalized (generic-api-key entropy heuristic on the "secretInfo" property).
+3b291bc76e7925e0cbf04865cb037c90c07dd7b3:tests/payments-mercadopago.test.ts:generic-api-key:421
+bc676126043bd1a8471da931c96228b29ca8113d:server/cfdi/vault.ts:generic-api-key:44
+bc676126043bd1a8471da931c96228b29ca8113d:server/vault/vault.ts:generic-api-key:201

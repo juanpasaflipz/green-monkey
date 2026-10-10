@@ -34,6 +34,7 @@ import {
 import type { DrawerView } from "./cash/DrawerCloseDialog";
 import { DrawerReviewDialog } from "./cash/DrawerReviewDialog";
 import { PaymentSettings } from "./payments/PaymentSettings";
+import { ActiveCharges } from "./payments/ActiveCharges";
 import { MoneyControlsSettings } from "./cash/MoneyControlsSettings";
 import type { CashHistoryRow } from "./CashHistory";
 import { TodayDashboard } from "./reports/TodayDashboard";
@@ -216,6 +217,7 @@ export function Operations({
               session={session}
               locale={locale}
               online={online}
+              navigate={navigate}
             />
           )}
           {["owner", "manager"].includes(session.role) && (
@@ -250,13 +252,22 @@ export function Operations({
       ) : (
         <>
           {view === "orders" && (
-            <Orders
-              session={session}
-              locale={locale}
-              navigate={navigate}
-              refreshKey={refreshKey}
-              online={online}
-            />
+            <>
+              {/* payments (037, P2, critic R28): the charges still on a terminal. */}
+              <ActiveCharges
+                session={session}
+                locale={locale}
+                online={online}
+                money={m}
+              />
+              <Orders
+                session={session}
+                locale={locale}
+                navigate={navigate}
+                refreshKey={refreshKey}
+                online={online}
+              />
+            </>
           )}
           {view === "tables" && (
             <Tables

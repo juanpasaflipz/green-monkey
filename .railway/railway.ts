@@ -128,6 +128,15 @@ export default defineRailway((ctx) => {
       CREDENTIAL_ENCRYPTION_KEY: preserve(),
       CFDI_LIVE_ENABLED: preserve(),
       CFDI_GLOBAL_GRACE_MINUTES: preserve(),
+      // payments (037 P2): integrated charging, worker only (LD-84/LD-85, contract C-10).
+      // Staging serves both providers for the real-device rehearsal (R44a; it needs
+      // CREDENTIAL_ENCRYPTION_KEY above). Production leaves it undeclared, so integrated
+      // charging stays off there and a value set by hand is planned as a deletion (CD stops)
+      // until the rehearsal passes; switching production on is one reviewed change to this
+      // line, then a deploy (RUNBOOK.md "Payments: real-device rehearsal"). The provider API
+      // bases (MERCADOPAGO_API_URL, CLIP_API_URL) are never declared: loopback fakes only,
+      // refused in staging and production.
+      ...(production ? {} : { PAYMENTS_PROVIDERS: "mercadopago,clip" }),
     },
   });
 

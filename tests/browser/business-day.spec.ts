@@ -22,7 +22,7 @@ function fixtureAdmin(baseURL: string | undefined) {
     runtime.hostname !== migration.hostname ||
     runtime.port !== migration.port ||
     runtime.pathname !== migration.pathname ||
-    !/^\/green_monkey(_[a-z]+)?_dev$/.test(runtime.pathname) ||
+    !/^\/green_monkey(_[a-z][a-z0-9]*)?_dev$/.test(runtime.pathname) ||
     !["localhost", "127.0.0.1"].includes(base.hostname)
   )
     throw Error(

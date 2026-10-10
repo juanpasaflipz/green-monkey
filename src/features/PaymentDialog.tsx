@@ -19,8 +19,10 @@ import { Button, Field, Modal } from "../components/ui";
 import { moneyFormatter } from "./Receipt";
 import { currentBusinessDate, orderNumberLabel } from "../labels";
 import {
+  isLiveForOrder,
   platformLabel as platformName,
   referenceFromName,
+  type AttemptView,
   type PaymentOptions,
   type PlatformCode,
   type TenderMethod,
@@ -28,6 +30,16 @@ import {
 import { EMPTY_PAYMENT_OPTIONS } from "./payments/options";
 import { TerminalPicker } from "./payments/TerminalPicker";
 import { PlatformFields } from "./payments/PlatformFields";
+import { TerminalWait } from "./payments/TerminalWait";
+import type { AttemptAction } from "./payments/attempt-text";
+
+/** payments (037, P2): what "Enviar a {terminal}" sends (POST /payments/terminal/charges). */
+export type TerminalChargeValues = {
+  terminalId: string;
+  amount: number;
+  tip: number;
+  items?: string[];
+};
 
 /** Offline (026) fills this slot; it is used only while the device is offline. */
 export type OfflinePaymentSlot = {
@@ -72,6 +84,9 @@ export function PaymentDialog({
   dineIn = false,
   orderName = "",
   onSetDefaultTerminal,
+  attempt = null,
+  onSendToTerminal,
+  onAttemptAction,
 }: {
   due: number;
   current: Order | null;
@@ -101,6 +116,12 @@ export function PaymentDialog({
   orderName?: string;
   /** "Usar siempre en este dispositivo" (online only). */
   onSetDefaultTerminal?: (terminalId: string) => void;
+  /** payments (037, P2): the integrated charge this dialog waits for (or its last outcome). */
+  attempt?: AttemptView | null;
+  /** "Enviar a {terminal}" on an integrated terminal (online only). */
+  onSendToTerminal?: (v: TerminalChargeValues) => void;
+  /** The waiting panel's actions (cancel, switch, recheck, retry, resolve…). */
+  onAttemptAction?: (action: AttemptAction) => void;
 }) {
   const t = (k: Key) => strings[locale][k];
   const currency = session.restaurant.currency;
@@ -131,6 +152,8 @@ export function PaymentDialog({
   if (!terminalPicked && terminalId !== suggestedTerminal())
     setTerminalId(suggestedTerminal());
   const [useAsDefault, setUseAsDefault] = useState(false);
+  // P2 "Cobrar sin integración": the integrated terminal is recorded manually this time.
+  const [manualFallback, setManualFallback] = useState(false);
   const offeredPlatforms = pricePlatform
     ? paymentOptions.platforms.filter((p) => p.platform === pricePlatform)
         .length
@@ -266,6 +289,30 @@ export function PaymentDialog({
     !settling &&
     !blockReason &&
     (pendingPayment || (validation.ok && !waitingForItems));
+  // payments (037, P2): an integrated terminal online sends the amount to the terminal instead
+  // of asking for a received amount, a reference and the confirmation.
+  const selectedTerminal =
+    paymentOptions.terminals.find((x) => x.id === terminalId) ?? null;
+  const integrated =
+    online &&
+    method === "external" &&
+    !!selectedTerminal?.integrated &&
+    !manualFallback &&
+    !!onSendToTerminal;
+  const attemptLive = !!attempt && isLiveForOrder(attempt.state);
+  const canSend =
+    integrated &&
+    !attempt &&
+    !busy &&
+    !settling &&
+    !blockReason &&
+    !pendingPayment &&
+    drawerOpen &&
+    amount !== null &&
+    amount > 0 &&
+    amount <= due &&
+    tip !== null &&
+    !waitingForItems;
   const confirmLabel = online
     ? t("confirmPay")
     : slot
@@ -283,46 +330,95 @@ export function PaymentDialog({
   return (
     <Modal
       title={title}
-      close={() => !busy && onClose()}
+      close={() => {
+        if (busy) return;
+        // P2: the charge stays on the terminal and confirms on its own (Cobros en terminal).
+        if (attemptLive && !window.confirm(t("payStillRunningClose"))) return;
+        onClose();
+      }}
       closeLabel={t("close")}
       footer={
-        <>
-          <div className="row between">
-            <span>{t("thisPayment")}</span>
-            <strong>
-              {/* PAYMENTS-UX-11 / MONEY-10: a platform records the whole balance. */}
-              {method === "platform"
-                ? money(due)
-                : amount !== null
-                  ? money(amount)
-                  : "—"}
-            </strong>
-          </div>
-          <Button
-            variant="primary"
-            className="full"
-            disabled={!canConfirm}
-            onClick={() => {
-              if (
-                online &&
-                useAsDefault &&
-                validation.ok &&
-                validation.values.method === "external" &&
-                validation.values.terminalId &&
-                validation.values.terminalId !==
-                  paymentOptions.defaultTerminalId
-              )
-                onSetDefaultTerminal?.(validation.values.terminalId);
-              onConfirm(
-                validation.ok ? validation.values : null,
-                splitItems ? selected : undefined,
-              );
-            }}
-          >
-            {busy ? t("loading") : confirmLabel}
-            <Check size={20} />
-          </Button>
-        </>
+        attempt ? undefined : integrated ? (
+          <>
+            <div className="row between">
+              <span>{t("thisPayment")}</span>
+              <strong>
+                {amount !== null && tip !== null ? money(amount + tip) : "—"}
+              </strong>
+            </div>
+            <Button
+              variant="primary"
+              className="full"
+              disabled={!canSend}
+              onClick={() => {
+                if (
+                  !canSend ||
+                  !selectedTerminal ||
+                  amount === null ||
+                  tip === null
+                )
+                  return;
+                if (
+                  useAsDefault &&
+                  selectedTerminal.id !== paymentOptions.defaultTerminalId
+                )
+                  onSetDefaultTerminal?.(selectedTerminal.id);
+                onSendToTerminal?.({
+                  terminalId: selectedTerminal.id,
+                  amount,
+                  tip,
+                  ...(splitItems ? { items: selected } : {}),
+                });
+              }}
+            >
+              {busy
+                ? t("loading")
+                : t("paySendToTerminal").replace(
+                    "{terminal}",
+                    selectedTerminal?.name ?? "",
+                  )}
+              <Check size={20} />
+            </Button>
+          </>
+        ) : (
+          <>
+            <div className="row between">
+              <span>{t("thisPayment")}</span>
+              <strong>
+                {/* PAYMENTS-UX-11 / MONEY-10: a platform records the whole balance. */}
+                {method === "platform"
+                  ? money(due)
+                  : amount !== null
+                    ? money(amount)
+                    : "—"}
+              </strong>
+            </div>
+            <Button
+              variant="primary"
+              className="full"
+              disabled={!canConfirm}
+              onClick={() => {
+                if (
+                  online &&
+                  useAsDefault &&
+                  validation.ok &&
+                  validation.values.method === "external" &&
+                  validation.values.terminalId &&
+                  validation.values.terminalId !==
+                    paymentOptions.defaultTerminalId
+                )
+                  onSetDefaultTerminal?.(validation.values.terminalId);
+                onConfirm(
+                  validation.ok ? validation.values : null,
+                  splitItems ? selected : undefined,
+                );
+              }}
+            >
+              {busy ? t("loading") : confirmLabel}
+              <Check size={20} />
+            </Button>
+          </>
+        )
       }
     >
       {/* Two columns on a short tablet (styles.css, FOH-10): what is owed and
@@ -373,6 +469,7 @@ export function PaymentDialog({
             <button
               type="button"
               aria-pressed={method === "cash"}
+              disabled={!!attempt}
               className={method === "cash" ? "selected" : ""}
               onClick={() => setMethod("cash")}
             >
@@ -381,17 +478,17 @@ export function PaymentDialog({
             <button
               type="button"
               aria-pressed={method === "external"}
-              disabled={!externalAllowed}
+              disabled={!externalAllowed || !!attempt}
               className={method === "external" ? "selected" : ""}
               onClick={() => setMethod("external")}
             >
-              {t("external")}
+              {t("payMethodCard")}
             </button>
             {(platformAllowed || method === "platform") && (
               <button
                 type="button"
                 aria-pressed={method === "platform"}
-                disabled={!platformAllowed}
+                disabled={!platformAllowed || !!attempt}
                 className={method === "platform" ? "selected" : ""}
                 onClick={() => setMethod("platform")}
               >
@@ -400,8 +497,9 @@ export function PaymentDialog({
             )}
           </div>
           <div className="row wrap">
+            {/* While a terminal charge is shown, what it charges cannot change here (P2-UX-8). */}
             <Button
-              disabled={busy}
+              disabled={busy || !!attempt}
               onClick={() => {
                 setSplitItems(false);
                 setSelected([]);
@@ -415,7 +513,9 @@ export function PaymentDialog({
             <Button
               // SVC-R8: "Enviar y dividir" sends to the kitchen, so it needs the
               // same open drawer as Confirmar cobro.
-              disabled={busy || !online || pendingPayment || !drawerOpen}
+              disabled={
+                busy || !online || pendingPayment || !drawerOpen || !!attempt
+              }
               onClick={async () => {
                 setLocalError("");
                 try {
@@ -447,7 +547,7 @@ export function PaymentDialog({
                 <label className="option" key={unit.key}>
                   <input
                     type="checkbox"
-                    disabled={busy || unit.due === 0}
+                    disabled={busy || unit.due === 0 || !!attempt}
                     checked={selected.includes(unit.key)}
                     onChange={() => {
                       const next = selected.includes(unit.key)
@@ -483,169 +583,204 @@ export function PaymentDialog({
           )}
         </div>
         <div className="pay-entry">
-          <Field label={t("amount")}>
-            <input
-              inputMode="decimal"
-              value={method === "platform" ? text(due) : amountText}
-              readOnly={splitItems || method === "platform"}
-              aria-invalid={problem?.field === "amount" || undefined}
-              aria-describedby={errorId("amount")}
-              onChange={(e) => {
-                setAmountText(e.target.value);
-                setAmountFollows(false);
+          {attempt ? (
+            <TerminalWait
+              attempt={attempt}
+              locale={locale}
+              money={money}
+              online={online}
+              manager={["owner", "manager"].includes(session.role)}
+              busy={busy}
+              onAction={(action) => {
+                if (action === "manualFallback") {
+                  setManualFallback(true);
+                  setMethod("external");
+                } else if (action === "otherMethod") setMethod("cash");
+                onAttemptAction?.(action);
               }}
             />
-          </Field>
-          {inline("amount")}
-          {method === "platform" ? (
-            <>
-              <p className="muted">
-                {t("payPlatformBalance").replace("{amount}", money(due))}
-              </p>
-              <PlatformFields
-                platforms={offeredPlatforms}
-                platform={platform}
-                onPlatform={setPlatform}
-                label={platformLabel}
-                onLabel={setPlatformLabel}
-                reference={reference}
-                onReference={setReference}
-                confirmed={confirmed}
-                onConfirmed={setConfirmed}
-                locale={locale}
-                disabled={busy}
-                problem={problem}
-                errorIdOf={errorId}
-                values={{
-                  platform: platform
-                    ? platformName(platform, null, locale)
-                    : "",
-                  list: pricePlatform
-                    ? platformName(pricePlatform, null, locale)
-                    : "",
-                }}
-              />
-            </>
           ) : (
             <>
-              <Field label={t("tip")}>
+              <Field label={t("amount")}>
                 <input
                   inputMode="decimal"
-                  value={tipText}
-                  placeholder="0"
-                  aria-invalid={problem?.field === "tip" || undefined}
-                  aria-describedby={[errorId("tip"), `${ids}-tip-hint`]
-                    .filter(Boolean)
-                    .join(" ")}
-                  onChange={(e) => setTipText(e.target.value)}
+                  value={method === "platform" ? text(due) : amountText}
+                  readOnly={splitItems || method === "platform"}
+                  aria-invalid={problem?.field === "amount" || undefined}
+                  aria-describedby={errorId("amount")}
+                  onChange={(e) => {
+                    setAmountText(e.target.value);
+                    setAmountFollows(false);
+                  }}
                 />
               </Field>
-              <div className="row wrap chips">
-                <Button onClick={() => setTipText("")}>
-                  {t("serviceTipNone")}
-                </Button>
-                {([10, 15] as const).map((p) => (
-                  <Button
-                    key={p}
-                    disabled={amount === null}
-                    onClick={() =>
-                      amount !== null &&
-                      setTipText(text(tipFromPercent(amount, p, exponent)))
-                    }
-                  >
-                    {t("serviceTipPercent").replace("{p}", String(p))}
-                  </Button>
-                ))}
-              </div>
-              <p className="muted tiny" id={`${ids}-tip-hint`}>
-                {t("serviceTipVoluntary")}
-              </p>
-              {inline("tip")}
-              {method === "cash" ? (
+              {inline("amount")}
+              {method === "platform" ? (
                 <>
-                  <Field label={t("received")}>
-                    <input
-                      inputMode="decimal"
-                      value={receivedText}
-                      aria-invalid={problem?.field === "received" || undefined}
-                      aria-describedby={errorId("received")}
-                      onChange={(e) => setReceivedInput(e.target.value)}
-                    />
-                  </Field>
-                  {suggestions.length > 0 && (
-                    <div
-                      className="row wrap chips"
-                      role="group"
-                      aria-label={t("serviceQuickCash")}
-                    >
-                      {suggestions.map((value, i) => (
-                        <Button
-                          key={value}
-                          onClick={() => setReceivedInput(text(value))}
-                        >
-                          {i === 0 ? t("serviceExact") : money(value)}
-                        </Button>
-                      ))}
-                    </div>
-                  )}
-                  {inline("received")}
-                  <div className="row between">
-                    <span>{t("change")}</span>
-                    <strong>
-                      {validation.ok && received !== null
-                        ? money(
-                            changeDue(
-                              validation.values.received,
-                              validation.values.amount,
-                              validation.values.tip,
-                            ),
-                          )
-                        : "—"}
-                    </strong>
-                  </div>
+                  <p className="muted">
+                    {t("payPlatformBalance").replace("{amount}", money(due))}
+                  </p>
+                  <PlatformFields
+                    platforms={offeredPlatforms}
+                    platform={platform}
+                    onPlatform={setPlatform}
+                    label={platformLabel}
+                    onLabel={setPlatformLabel}
+                    reference={reference}
+                    onReference={setReference}
+                    confirmed={confirmed}
+                    onConfirmed={setConfirmed}
+                    locale={locale}
+                    disabled={busy}
+                    problem={problem}
+                    errorIdOf={errorId}
+                    values={{
+                      platform: platform
+                        ? platformName(platform, null, locale)
+                        : "",
+                      list: pricePlatform
+                        ? platformName(pricePlatform, null, locale)
+                        : "",
+                    }}
+                  />
                 </>
               ) : (
                 <>
-                  <p className="muted">{t("servicePayExternalNoCash")}</p>
-                  <p className="warning-panel">{t("externalHint")}</p>
-                  <TerminalPicker
-                    terminals={paymentOptions.terminals}
-                    value={terminalId ?? null}
-                    chosen={terminalId !== undefined}
-                    defaultTerminalId={paymentOptions.defaultTerminalId}
-                    onChange={(id) => {
-                      setTerminalId(id);
-                      setTerminalPicked(true);
-                    }}
-                    useAsDefault={useAsDefault}
-                    onUseAsDefault={setUseAsDefault}
-                    canSetDefault={online && !!onSetDefaultTerminal}
-                    locale={locale}
-                    disabled={busy}
-                    describedBy={errorId("terminal")}
-                  />
-                  {inline("terminal")}
-                  <Field label={t("reference")}>
+                  <Field label={t("tip")}>
                     <input
-                      value={reference}
-                      maxLength={120}
-                      autoComplete="off"
-                      aria-invalid={problem?.field === "reference" || undefined}
-                      aria-describedby={errorId("reference")}
-                      onChange={(e) => setReference(e.target.value)}
+                      inputMode="decimal"
+                      value={tipText}
+                      placeholder="0"
+                      aria-invalid={problem?.field === "tip" || undefined}
+                      aria-describedby={[errorId("tip"), `${ids}-tip-hint`]
+                        .filter(Boolean)
+                        .join(" ")}
+                      onChange={(e) => setTipText(e.target.value)}
                     />
                   </Field>
-                  {inline("reference")}
-                  <label className="option">
-                    <input
-                      type="checkbox"
-                      checked={confirmed}
-                      aria-describedby={errorId("confirmed")}
-                      onChange={(e) => setConfirmed(e.target.checked)}
-                    />
-                    {t("confirmExternal")}
-                  </label>
-                  {inline("confirmed")}
+                  <div className="row wrap chips">
+                    <Button onClick={() => setTipText("")}>
+                      {t("serviceTipNone")}
+                    </Button>
+                    {([10, 15] as const).map((p) => (
+                      <Button
+                        key={p}
+                        disabled={amount === null}
+                        onClick={() =>
+                          amount !== null &&
+                          setTipText(text(tipFromPercent(amount, p, exponent)))
+                        }
+                      >
+                        {t("serviceTipPercent").replace("{p}", String(p))}
+                      </Button>
+                    ))}
+                  </div>
+                  <p className="muted tiny" id={`${ids}-tip-hint`}>
+                    {t("serviceTipVoluntary")}
+                  </p>
+                  {inline("tip")}
+                  {method === "cash" ? (
+                    <>
+                      <Field label={t("received")}>
+                        <input
+                          inputMode="decimal"
+                          value={receivedText}
+                          aria-invalid={
+                            problem?.field === "received" || undefined
+                          }
+                          aria-describedby={errorId("received")}
+                          onChange={(e) => setReceivedInput(e.target.value)}
+                        />
+                      </Field>
+                      {suggestions.length > 0 && (
+                        <div
+                          className="row wrap chips"
+                          role="group"
+                          aria-label={t("serviceQuickCash")}
+                        >
+                          {suggestions.map((value, i) => (
+                            <Button
+                              key={value}
+                              onClick={() => setReceivedInput(text(value))}
+                            >
+                              {i === 0 ? t("serviceExact") : money(value)}
+                            </Button>
+                          ))}
+                        </div>
+                      )}
+                      {inline("received")}
+                      <div className="row between">
+                        <span>{t("change")}</span>
+                        <strong>
+                          {validation.ok && received !== null
+                            ? money(
+                                changeDue(
+                                  validation.values.received,
+                                  validation.values.amount,
+                                  validation.values.tip,
+                                ),
+                              )
+                            : "—"}
+                        </strong>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p className="muted">{t("servicePayExternalNoCash")}</p>
+                      {!integrated && (
+                        <p className="warning-panel">
+                          {manualFallback
+                            ? t("payManualFallbackHint")
+                            : t("externalHint")}
+                        </p>
+                      )}
+                      <TerminalPicker
+                        terminals={paymentOptions.terminals}
+                        value={terminalId ?? null}
+                        chosen={terminalId !== undefined}
+                        defaultTerminalId={paymentOptions.defaultTerminalId}
+                        onChange={(id) => {
+                          setTerminalId(id);
+                          setTerminalPicked(true);
+                        }}
+                        useAsDefault={useAsDefault}
+                        onUseAsDefault={setUseAsDefault}
+                        canSetDefault={online && !!onSetDefaultTerminal}
+                        locale={locale}
+                        disabled={busy}
+                        describedBy={errorId("terminal")}
+                        online={online}
+                      />
+                      {inline("terminal")}
+                      {!integrated && (
+                        <>
+                          <Field label={t("reference")}>
+                            <input
+                              value={reference}
+                              maxLength={120}
+                              autoComplete="off"
+                              aria-invalid={
+                                problem?.field === "reference" || undefined
+                              }
+                              aria-describedby={errorId("reference")}
+                              onChange={(e) => setReference(e.target.value)}
+                            />
+                          </Field>
+                          {inline("reference")}
+                          <label className="option">
+                            <input
+                              type="checkbox"
+                              checked={confirmed}
+                              aria-describedby={errorId("confirmed")}
+                              onChange={(e) => setConfirmed(e.target.checked)}
+                            />
+                            {t("confirmExternal")}
+                          </label>
+                          {inline("confirmed")}
+                        </>
+                      )}
+                    </>
+                  )}
                 </>
               )}
             </>

@@ -36,7 +36,7 @@
  * a slot gives up after sweepMs, so one hung handler never stalls a tenant.
  */
 import type postgres from "postgres";
-import { tenant } from "../db.js";
+import { tenant, type Tx } from "../db.js";
 import { log as rootLog, type Logger } from "../logging.js";
 import {
   handlers as registeredHandlers,
@@ -51,7 +51,11 @@ import {
   extendLease,
   failJob,
   jobErrorCode,
+  type ExpiredJob,
 } from "./queue.js";
+
+/** Longest wait between a poke and its discovery (pokes inside the window coalesce). */
+export const POKE_COALESCE_MS = 250;
 
 export type JobAction =
   | { action: "complete" }
@@ -96,6 +100,14 @@ export interface JobRunner {
   noteTenant(tenantId: string, activity?: "write" | "read"): void;
   /** Claims and runs the tenant's runnable jobs; resolves with the number claimed. */
   drainTenant(tenantId: string): Promise<number>;
+  /**
+   * Worker mode: run discovery (and claim what it finds) now instead of at the next sweep.
+   * Coalesced: any number of pokes within POKE_COALESCE_MS cause one discovery, and a poke
+   * that arrives while a discovery runs causes exactly one more after it. A no-op without
+   * `discover` (the web runner drains on its own writes) and while stopping. The worker's
+   * private POST /wake calls it (payments spec §4.7: tap-to-terminal latency).
+   */
+  poke(): void;
   /**
    * Stops claiming and waits for in-flight drains and running handlers, all
    * within `timeoutMs`; then aborts whatever is still running.
@@ -162,6 +174,54 @@ export function createJobRunner(
     reservedByKind.set(kind, (reservedByKind.get(kind) ?? 0) + n);
   };
 
+  const jobLogger = (job: ClaimedJob) =>
+    log.child({ jobId: job.id, kind: job.kind, tenantId: job.tenantId });
+
+  /**
+   * The kind's onDead hook as the dead write's transaction runs it (server/jobs.ts JobDeadHook,
+   * P2-CONCURRENCY-6). What it hands to afterCommit is kept per job and run by `committed` only
+   * for jobs the committed transaction wrote dead; a retried transaction (40P01/40001) or a
+   * rolled-back savepoint runs the hook again from scratch. `threw` tells a hook's own throw
+   * from a failed queue write.
+   */
+  function deadHook(entry: RegisteredHandler) {
+    const onDead = entry.onDead;
+    if (!onDead) return null;
+    const after = new Map<string, (() => void)[]>();
+    const thrown = new WeakSet<object>();
+    return {
+      run: async (tx: Tx, job: ClaimedJob, code: string) => {
+        const effects: (() => void)[] = [];
+        after.set(job.id, effects);
+        try {
+          await onDead({
+            job,
+            code,
+            tx,
+            log: jobLogger(job),
+            afterCommit: (fn) => void effects.push(fn),
+          });
+        } catch (error) {
+          after.delete(job.id);
+          if (error && typeof error === "object") thrown.add(error);
+          throw error;
+        }
+      },
+      committed(job: ClaimedJob) {
+        const effects = after.get(job.id) ?? [];
+        after.delete(job.id);
+        for (const fn of effects)
+          try {
+            fn();
+          } catch (error) {
+            jobLogger(job).error("job_dead_effect_failed", {}, error);
+          }
+      },
+      threw: (error: unknown) =>
+        !!error && typeof error === "object" && thrown.has(error),
+    };
+  }
+
   function execute(job: ClaimedJob, entry: RegisteredHandler) {
     const abort = new AbortController();
     const jobLog = log.child({
@@ -190,6 +250,7 @@ export function createJobRunner(
       leaseTimer.unref();
     };
     armLease(entry.leaseSeconds);
+    const hook = deadHook(entry);
     const promise = (async () => {
       let result:
         { ok: true; outcome: JobOutcome } | { ok: false; error: unknown };
@@ -238,18 +299,31 @@ export function createJobRunner(
         const state = await failJob(sql, job, {
           ...action,
           maxAttempts: entry.maxAttempts,
+          onDead: hook?.run,
         });
         const attrs = { code: action.code, attempts: job.attempts, state };
         if (state === "lost") jobLog.warn("job_lease_lost", { stage: "fail" });
         else if (state === "dead") {
           jobLog.error("job_dead", attrs);
           o.onDead?.(job, action.code);
+          hook?.committed(job);
         } else jobLog.info("job_failed", attrs);
         if (!result.ok && state !== "lost")
           jobLog.warn("job_handler_error", { code: action.code }, result.error);
       } catch (error) {
-        // The lease expires and the job is reclaimed on a later drain.
-        jobLog.error("job_state_write_failed", {}, error);
+        // Nothing was written: the job keeps its lease, then is reclaimed on a later drain or,
+        // on its last claim, written dead with its hook by the lease-expiry pass.
+        if (hook?.threw(error))
+          jobLog.error(
+            "job_dead_hook_failed",
+            {
+              code: action.action === "fail" ? action.code : null,
+              stage: "fail",
+              attempts: job.attempts,
+            },
+            error,
+          );
+        else jobLog.error("job_state_write_failed", {}, error);
       }
     })();
     active.set(job.id, { kind: job.kind, promise, abort });
@@ -284,21 +358,37 @@ export function createJobRunner(
       // statement, not two (PLAT-HR-7). The claim itself still reclaims a lost job
       // that has attempts left.
       const expire = expiryDue(tenantId, kind);
+      const hook = expire ? deadHook(entry) : null;
+      const hookFailures: { jobId: string; error: unknown }[] = [];
       let jobs: ClaimedJob[];
-      let expired: ClaimedJob[];
+      let expired: ExpiredJob[];
       try {
-        ({ jobs, expired } = await tenant(sql, tenantId, async (tx) => ({
-          expired: expire
-            ? await expireLostJobs(tx, kind, entry.maxAttempts)
-            : [],
-          jobs: await claimJobs(
-            tx,
-            [kind],
-            free,
-            entry.leaseSeconds,
-            entry.maxAttempts,
-          ),
-        })));
+        ({ jobs, expired } = await tenant(sql, tenantId, async (tx) => {
+          hookFailures.length = 0; // a retried transaction starts over
+          return {
+            expired: expire
+              ? await expireLostJobs(
+                  tx,
+                  kind,
+                  entry.maxAttempts,
+                  hook
+                    ? {
+                        run: hook.run,
+                        failed: (jobId, error) =>
+                          void hookFailures.push({ jobId, error }),
+                      }
+                    : undefined,
+                )
+              : [],
+            jobs: await claimJobs(
+              tx,
+              [kind],
+              free,
+              entry.leaseSeconds,
+              entry.maxAttempts,
+            ),
+          };
+        }));
       } finally {
         reserve(kind, -free);
       }
@@ -307,15 +397,25 @@ export function createJobRunner(
       claimed += jobs.length;
       if (jobs.length === free) saturated = true;
       for (const job of expired) {
-        log
-          .child({ jobId: job.id, kind: job.kind, tenantId: job.tenantId })
-          .error("job_dead", {
-            code: "lease_expired",
+        const jobLog = jobLogger(job);
+        // A staff cancel the web handed over (CANCEL_REQUESTED) is no incident: no alert.
+        if (job.code === "cancelled")
+          jobLog.info("job_cancelled", { attempts: job.attempts });
+        else {
+          jobLog.error("job_dead", {
+            code: job.code,
             attempts: job.attempts,
             state: "dead",
           });
-        o.onDead?.(job, "lease_expired");
+          o.onDead?.(job, job.code);
+        }
+        hook?.committed(job);
       }
+      // The job stays running and lost: the next expiry pass (sweepMs) tries the dead write again.
+      for (const { jobId, error } of hookFailures)
+        log
+          .child({ jobId, kind, tenantId })
+          .error("job_dead_hook_failed", { stage: "expiry" }, error);
     }
     return { claimed, saturated };
   }
@@ -380,6 +480,8 @@ export function createJobRunner(
   }
 
   let discovering = false;
+  let pokeTimer: NodeJS.Timeout | null = null;
+  let pokeAgain = false;
   function sweep() {
     if (o.discover) {
       if (discovering || stopping) return;
@@ -391,6 +493,10 @@ export function createJobRunner(
         .catch((error) => log.warn("jobs_discover_failed", {}, error))
         .finally(() => {
           discovering = false;
+          if (pokeAgain) {
+            pokeAgain = false;
+            poke();
+          }
         });
       return;
     }
@@ -401,7 +507,21 @@ export function createJobRunner(
     }
   }
 
+  function poke() {
+    if (!o.discover || stopping || pokeTimer) return;
+    pokeTimer = setTimeout(
+      () => {
+        pokeTimer = null;
+        if (discovering) pokeAgain = true;
+        else sweep();
+      },
+      Math.min(debounceMs, POKE_COALESCE_MS),
+    );
+    pokeTimer.unref();
+  }
+
   return {
+    poke,
     start() {
       stopping = false;
       sweepTimer = setInterval(sweep, sweepMs);
@@ -415,6 +535,8 @@ export function createJobRunner(
     async stop(timeoutMs) {
       stopping = true;
       if (sweepTimer) clearInterval(sweepTimer);
+      if (pokeTimer) clearTimeout(pokeTimer);
+      pokeTimer = null;
       for (const timer of scheduled.values()) clearTimeout(timer);
       scheduled.clear();
       // One deadline for both waits: a drain blocked on a hung handler

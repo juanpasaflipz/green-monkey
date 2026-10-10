@@ -1359,9 +1359,7 @@ test("An offline external-terminal sale shows and prints service's local receipt
   await page.getByLabel("Nota de la orden (cocina)").fill("ALERGIA: nuez");
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Cobrar" });
-  await dialog
-    .getByRole("button", { name: "Terminal externa", exact: true })
-    .click();
+  await dialog.getByRole("button", { name: "Tarjeta", exact: true }).click();
   await dialog.getByLabel("Referencia").fill("AUT-B4-77");
   await dialog.getByRole("checkbox").check();
   await dialog
@@ -2329,9 +2327,7 @@ test.describe("offline table service (Beta) turned on", () => {
     await expect(dialog).toContainText(
       "Esta orden se guardó antes de perder la conexión",
     );
-    await dialog
-      .getByRole("button", { name: "Terminal externa", exact: true })
-      .click();
+    await dialog.getByRole("button", { name: "Tarjeta", exact: true }).click();
     const save = dialog.getByRole("button", {
       name: "Guardar cobro con terminal",
       exact: true,

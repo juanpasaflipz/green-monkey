@@ -108,49 +108,81 @@ const FIRST_VERSION = {
 
 /**
  * The loyalty club version of the privacy notice and the DPA (038, critic R40, LD-74): club
- * members' data categories, the processor line and the no-transfer line. Counsel reviews the text
- * before the legal set is published (LD-3). Not a material change: no account had accepted a
- * published version when it shipped (production signup stays paused until the set is published,
- * LD-72/LD-74), so it takes effect on announcement. Were acceptances of a published 2026-10-06 to
- * exist by the release, set requiresAcceptanceSince to this version and effectiveFrom 15 days after
- * announcedAt instead: the club then waits for effectiveFrom (clubLegalCovered).
+ * members' data categories, the processor line and the no-transfer line. It shipped to production
+ * with PR #12 (LD-83) under this id with the club text only, so its text is frozen (pinned in
+ * tests/legal.test.ts) and later text is a later version. Not a material change: no account had
+ * accepted a published version when it shipped (production signup stays paused until the set is
+ * published, LD-72/LD-74), so it took effect on announcement.
  */
 const CLUB_VERSION = {
   version: "2026-10-09",
-  requiresAcceptanceSince: "2026-10-06",
-  previousVersion: "2026-10-06",
-  previousRequiresAcceptanceSince: "2026-10-06",
+  requiresAcceptanceSince: FIRST_VERSION.requiresAcceptanceSince,
+  previousVersion: FIRST_VERSION.version,
+  previousRequiresAcceptanceSince: FIRST_VERSION.requiresAcceptanceSince,
   announcedAt: "2026-10-09",
   effectiveFrom: "2026-10-09",
 } as const;
 
+/**
+ * The integrated card payments version of all three documents (037 P2, P2-SECURITY-2, critic
+ * R40; P2V-GATE-2, LD-85): terms §5 describes integrated charging and the custody of the
+ * restaurant's provider credentials; the DPA adds the card brand/type/last-4 category (§2) and the
+ * transmission to the restaurant's own Mercado Pago or Clip (§11); the privacy notice adds the
+ * encargado line (§6). A new id (the next release date; versions are plain dates) because
+ * 2026-10-09 already shipped with the club text only: a shipped version's text never changes. Counsel reviews the text before the legal set
+ * is published (LD-3). Not a material change: no acceptance of any published version exists in
+ * production yet, so it takes effect on announcement. Were acceptances of a published version to
+ * exist when it deploys, set requiresAcceptanceSince to this version and effectiveFrom 15 days
+ * after announcedAt instead (docs/ACCOUNT_AND_LEGAL.md "How to publish a new version").
+ */
+const PAYMENTS_VERSION = {
+  version: "2026-10-10",
+  requiresAcceptanceSince: FIRST_VERSION.requiresAcceptanceSince,
+  announcedAt: "2026-10-10",
+  effectiveFrom: "2026-10-10",
+} as const;
+
 export const LEGAL_DOCUMENTS: Record<LegalDocumentKey, LegalDocumentMeta> = {
   privacy: {
-    ...CLUB_VERSION,
+    ...PAYMENTS_VERSION,
+    previousVersion: CLUB_VERSION.version,
+    previousRequiresAcceptanceSince: CLUB_VERSION.requiresAcceptanceSince,
     changes: {
       es: [
-        "Socios del club de lealtad de los restaurantes: datos, proveedores y que no se transfieren (§5 y §6).",
+        "Cobros con terminal integrada (Mercado Pago, Clip): datos de tarjeta y credenciales del restaurante (§6).",
       ],
       en: [
-        "Restaurants' loyalty club members: data, providers and no transfers (§5 and §6).",
+        "Integrated terminal payments (Mercado Pago, Clip): card data and the restaurant's credentials (§6).",
       ],
     },
     path: "/legal/privacidad",
     enPath: "/legal/privacy",
   },
   terms: {
-    ...FIRST_VERSION,
+    ...PAYMENTS_VERSION,
+    previousVersion: FIRST_VERSION.version,
+    previousRequiresAcceptanceSince: FIRST_VERSION.requiresAcceptanceSince,
+    changes: {
+      es: [
+        "Cobros con terminal integrada con tu cuenta de Mercado Pago o de Clip (§5).",
+      ],
+      en: [
+        "Integrated terminal payments with your Mercado Pago or Clip account (§5).",
+      ],
+    },
     path: "/legal/terminos",
     enPath: "/legal/terms",
   },
   dpa: {
-    ...CLUB_VERSION,
+    ...PAYMENTS_VERSION,
+    previousVersion: CLUB_VERSION.version,
+    previousRequiresAcceptanceSince: CLUB_VERSION.requiresAcceptanceSince,
     changes: {
       es: [
-        "Socios del club de lealtad: categorías de datos (§2), subencargados (§6) y sin transferencias (§11).",
+        "Cobros con terminal integrada: datos de tarjeta y credenciales (§2) y envío a Mercado Pago o Clip por instrucción del restaurante (§11).",
       ],
       en: [
-        "Loyalty club members: data categories (§2), sub-processors (§6) and no transfers (§11).",
+        "Integrated terminal payments: card data and credentials (§2) and sending to Mercado Pago or Clip on the restaurant's instructions (§11).",
       ],
     },
     path: "/legal/encargo-de-datos",
@@ -160,9 +192,12 @@ export const LEGAL_DOCUMENTS: Record<LegalDocumentKey, LegalDocumentMeta> = {
 
 /** The first privacy notice and DPA version whose text covers the loyalty club (LOYALTY-PRIVACY-4). */
 export const CLUB_LEGAL_VERSION = CLUB_VERSION.version;
+/** The day that version took effect: from it the club's text is in force (clubLegalCovered). */
+export const CLUB_LEGAL_EFFECTIVE_FROM = CLUB_VERSION.effectiveFrom;
 /**
  * Whether the platform documents in force cover the loyalty club: published, and the privacy
- * notice and DPA at CLUB_LEGAL_VERSION or later, in effect. Enabling the club waits for it.
+ * notice and DPA at CLUB_LEGAL_VERSION or later, with the club's version in effect (a later
+ * version, such as the payments one, keeps every club paragraph). Enabling the club waits for it.
  */
 export function clubLegalCovered(
   status: LegalStatus,
@@ -173,8 +208,12 @@ export function clubLegalCovered(
     const m = LEGAL_DOCUMENTS[d];
     const order = compareLegalVersions(m.version, CLUB_LEGAL_VERSION);
     if (order < 0) return false;
-    // A later version replaced the club's one, which was in effect before it was announced.
-    return order > 0 || now >= legalInstant(m.effectiveFrom);
+    // A later version replaced the club's one: the club's text is in force from the club
+    // version's own effect (a later one may still be announced, not yet in effect).
+    return (
+      now >=
+      legalInstant(order > 0 ? CLUB_LEGAL_EFFECTIVE_FROM : m.effectiveFrom)
+    );
   });
 }
 /** Generated change entry when only the responsable's data changed (LEGAL-3). */

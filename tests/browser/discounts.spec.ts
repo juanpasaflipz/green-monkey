@@ -21,7 +21,7 @@ function fixtureAdmin(baseURL: string | undefined) {
     runtime.hostname !== migration.hostname ||
     runtime.port !== migration.port ||
     runtime.pathname !== migration.pathname ||
-    !/^\/green_monkey(_[a-z]+)?_dev$/.test(runtime.pathname) ||
+    !/^\/green_monkey(_[a-z][a-z0-9]*)?_dev$/.test(runtime.pathname) ||
     !["localhost", "127.0.0.1"].includes(base.hostname)
   )
     throw Error("Discount fixtures require the isolated local dev database");
@@ -855,9 +855,7 @@ test("FIT-10: a card payment with a tip needs no cash received; the drawer's ter
   await page.getByRole("button", { name: /Taco de hongos/ }).click();
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog
-    .getByRole("button", { name: "Terminal externa", exact: true })
-    .click();
+  await dialog.getByRole("button", { name: "Tarjeta", exact: true }).click();
   await expect(
     dialog.getByLabel("Efectivo recibido", { exact: true }),
   ).toHaveCount(0);

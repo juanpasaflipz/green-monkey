@@ -821,14 +821,26 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
     ])
       expect(webNames.has(name), `web declares ${name}`).toBe(false);
     expect([...webNames].filter((n) => n.startsWith("FACTURAPI_"))).toEqual([]);
-    // Never declared anywhere (code constant, development-only, operator-only).
+    // Never declared anywhere (code constant, development-only, operator-only; the payments
+    // API bases are loopback fakes only, refused in staging and production, so a stray value
+    // set on a deployed worker shows up as a planned deletion).
     for (const name of [
       "LEGAL_DOCUMENTS",
       "FACTURAPI_BASE_URL",
       "SUPPORT_DATABASE_URL",
       "TRUST_PROXY",
+      "MERCADOPAGO_API_URL",
+      "CLIP_API_URL",
     ])
       expect(names(code).has(name), name).toBe(false);
+    // PAYMENTS_PROVIDERS (P2V-GATE-1, LD-85): the worker's only; staging serves both providers
+    // for the device rehearsal, production leaves it undeclared (integrated charging off until
+    // the rehearsal passes; switching it on is a reviewed change here).
+    expect(code.match(/PAYMENTS_PROVIDERS/g)).toHaveLength(1);
+    expect(worker).toMatch(
+      /\.\.\.\(production \? \{\} : \{ PAYMENTS_PROVIDERS: "mercadopago,clip" \}\)/,
+    );
+    expect(names(web).has("PAYMENTS_PROVIDERS")).toBe(false);
     // DEMO_TENANT_ID: staging only (access A2, contracts D22).
     expect(code.match(/DEMO_TENANT_ID/g)).toHaveLength(1);
     expect(web).toMatch(
@@ -907,6 +919,7 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
         "CREDENTIAL_ENCRYPTION_KEY",
         "CFDI_LIVE_ENABLED",
         "CFDI_GLOBAL_GRACE_MINUTES",
+        "PAYMENTS_PROVIDERS",
       ],
     };
     for (const name of registered.common)
@@ -1334,10 +1347,16 @@ describe("restaurant-day.yml: the go-live gate (specs/acceptance.md §13)", () =
     expect(day).toMatch(/\n {2}workflow_dispatch:\n/);
     expect(day).toContain('- cron: "0 13 * * *"');
     expect(day).toMatch(/pull_request:\n {4}branches: \[main\]/);
-    for (const name of ["day", "cfdi-key"])
+    for (const name of ["day", "cfdi-key", "day-payments"])
       expect(job(name), name).toContain(
         "startsWith(github.head_ref, 'release/')",
       );
+    // Branch P (payments §12.4, LD-80): its own job against the payments fake; the lead makes it
+    // a required check once it is green on main.
+    expect(job("day-payments")).toContain("name: restaurant-day-payments\n");
+    expect(job("day-payments")).toContain('RD_PAYMENTS_FAKE_PORT: "4899"');
+    expect(job("day")).not.toContain("RD_PAYMENTS_FAKE_PORT:");
+    expect(job("day-cfdi")).not.toContain("RD_PAYMENTS_FAKE_PORT:");
     expect(job("day-cfdi")).toContain("needs: cfdi-key");
     // The ruleset requires both by job name; a job skipped by its `if` reports success.
     expect(job("day")).toContain("name: restaurant-day\n");
@@ -1365,10 +1384,10 @@ describe("restaurant-day.yml: the go-live gate (specs/acceptance.md §13)", () =
   });
 
   it("generates its keys per run and names only the disposable acceptance database (§3.2, §3.3)", () => {
-    for (const name of ["day", "day-cfdi"]) {
+    for (const name of ["day", "day-cfdi", "day-payments"]) {
       const text = job(name);
       expect(text, name).not.toMatch(
-        /\b(SIGNING_KEYS|JWT_SECRET|DATABASE_URL|DEMO_TENANT_ID|MIGRATION_DATABASE_URL):/,
+        /\b(SIGNING_KEYS|JWT_SECRET|DATABASE_URL|DEMO_TENANT_ID|MIGRATION_DATABASE_URL|CREDENTIAL_ENCRYPTION_KEY):/,
       );
       expect(text, name).not.toContain("LEGAL_UNPUBLISHED_SIGNUP");
       expect(text, name).toContain("TEST_BASE_URL: http://127.0.0.1:3390");
@@ -1394,6 +1413,7 @@ describe("restaurant-day.yml: the go-live gate (specs/acceptance.md §13)", () =
     }
     // Only the Facturapi branch sees the test key, and only in its test step.
     expect(job("day")).not.toContain("FACTURAPI");
+    expect(job("day-payments")).not.toContain("FACTURAPI");
     expect(day.match(/secrets\.FACTURAPI_TEST_KEY/g)).toHaveLength(2);
   });
 
@@ -1403,17 +1423,19 @@ describe("restaurant-day.yml: the go-live gate (specs/acceptance.md §13)", () =
       .split("\n")
       .filter((l) => l.trim())
       .join("\n");
-    // day-cfdi carries the same guard.
-    const cfdi = job("day-cfdi")
-      .split("\n")
-      .map((l) => l.trim())
-      .join("\n");
-    expect(cfdi).toContain(
-      body
+    // day-cfdi and day-payments carry the same guard.
+    for (const name of ["day-cfdi", "day-payments"]) {
+      const other = job(name)
         .split("\n")
         .map((l) => l.trim())
-        .join("\n"),
-    );
+        .join("\n");
+      expect(other, name).toContain(
+        body
+          .split("\n")
+          .map((l) => l.trim())
+          .join("\n"),
+      );
+    }
     const status = (env: Record<string, string>) => {
       try {
         execFileSync("bash", ["-e", "-c", guard], {

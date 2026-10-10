@@ -20,6 +20,7 @@ import {
   expireLostJobs,
   extendLease,
   failJob,
+  jobErrorCode,
   requeueJob,
 } from "../server/jobs/queue.js";
 import { createJobRunner } from "../server/jobs/runner.js";
@@ -32,7 +33,7 @@ import {
 // The web registry (kitchen_dispatch): server/index.ts imports it as a side
 // effect; the runner no longer does (Wave 2.0, P-1).
 import "../server/jobs/handlers/index.js";
-import { setLogSink } from "../server/logging.js";
+import { setLogSink, type Logger } from "../server/logging.js";
 import { catalog, createOrder } from "../server/orders.js";
 import type { Session } from "../shared/domain.js";
 
@@ -531,6 +532,179 @@ try {
       await runner.stop(5000);
       assert.deepEqual(dead, [`${failing}:provider_down`]);
       await admin`delete from jobs where kind=${failing}`;
+    },
+  );
+
+  await check(
+    "a kind's onDead hook runs in the dead write's transaction (P2-CONCURRENCY-6): a throwing hook rolls the dead write back on the last claim and on lease expiry (the job stays running and the next expiry pass writes both); a staff cancel hands the job to the runner, which writes it dead (cancelled) with its hook; after-commit effects run once",
+    async () => {
+      const hooked = kind + "_hook";
+      const marker = kind + "_mark";
+      let failures = 0;
+      const effects: string[] = [];
+      registerJobHandler(
+        hooked,
+        async () => {
+          throw Object.assign(new Error("provider down"), {
+            code: "provider_down",
+          });
+        },
+        {
+          maxAttempts: 1,
+          leaseSeconds: 10,
+          onDead: async ({ job, code, tx, afterCommit }) => {
+            // The hook's own write: it must commit with the dead write or not at all.
+            await enqueueJob(
+              tx,
+              { tenantId: job.tenantId },
+              {
+                kind: marker,
+                dedupeKey: `${job.dedupeKey}:${code}`,
+                payload: {},
+              },
+            );
+            if (failures > 0) {
+              failures--;
+              throw Object.assign(new Error("hook down"), {
+                code: "hook_down",
+              });
+            }
+            afterCommit(() => void effects.push(`${job.dedupeKey}:${code}`));
+          },
+        },
+      );
+      const lines: string[] = [];
+      const logger: Logger = {
+        debug: (m) => void lines.push(m),
+        info: (m) => void lines.push(m),
+        warn: (m) => void lines.push(m),
+        error: (m) => void lines.push(m),
+        child: () => logger,
+      };
+      const alerts: string[] = [];
+      const only = new Map([[hooked, handlers().get(hooked)!]]);
+      // A fresh runner per pass: its first drain of the tenant runs the expiry pass.
+      const pass = async () => {
+        const runner = createJobRunner(app, {
+          handlers: () => only,
+          log: logger,
+          onDead: (job, code) => alerts.push(`${job.dedupeKey}:${code}`),
+        });
+        await runner.drainTenant(tenantId);
+        for (let i = 0; i < 100 && runner.running() > 0; i++)
+          await new Promise((r) => setTimeout(r, 20));
+        await runner.stop(5000);
+      };
+      const row = async (key: string) =>
+        (
+          await admin`select id, state, error_code, attempts, lease_until < now() as expired
+            from jobs where kind=${hooked} and dedupe_key=${key}`
+        )[0];
+      const marks = async () =>
+        (
+          await admin`select dedupe_key from jobs where kind=${marker} order by dedupe_key`
+        ).map((r) => r.dedupe_key as string);
+      const add = (key: string) =>
+        tenant(app, tenantId, (tx) =>
+          enqueueJob(tx, owner, { kind: hooked, dedupeKey: key, payload: {} }),
+        );
+
+      // (a) The last claim fails and the hook throws: nothing is written, the job keeps its lease.
+      await add("last");
+      failures = 1;
+      await pass();
+      const kept = await row("last");
+      assert.deepEqual(
+        [kept.state, kept.error_code, kept.attempts, kept.expired],
+        ["running", null, 1, false],
+      );
+      assert.deepEqual(await marks(), [], "the hook's write rolled back too");
+      assert.deepEqual([alerts, effects], [[], []]);
+      assert.ok(lines.includes("job_dead_hook_failed"));
+      assert.ok(!lines.includes("job_dead"), "not dead, so no job_dead");
+      // Its lease expires: the expiry pass writes it dead with the hook, once.
+      await admin`update jobs set lease_until=now()-interval '1 second' where kind=${hooked} and dedupe_key='last'`;
+      await pass();
+      assert.deepEqual(
+        [(await row("last")).state, (await row("last")).error_code],
+        ["dead", "lease_expired"],
+      );
+      assert.deepEqual(await marks(), ["last:lease_expired"]);
+      assert.deepEqual(alerts, ["last:lease_expired"]);
+      assert.deepEqual(effects, ["last:lease_expired"]);
+
+      // (b) Lost on its last claim and the hook throws during the expiry pass: that job only
+      // rolls back (the pass and its claims go on), and the next pass writes it with its hook.
+      await add("lost");
+      await admin`update jobs set state='running', attempts=1, lease_until=now()-interval '1 second'
+        where kind=${hooked} and dedupe_key='lost'`;
+      failures = 1;
+      lines.length = 0;
+      await pass();
+      assert.deepEqual(
+        [(await row("lost")).state, (await row("lost")).error_code],
+        ["running", null],
+      );
+      assert.deepEqual(await marks(), ["last:lease_expired"]);
+      assert.ok(lines.includes("job_dead_hook_failed"));
+      await pass();
+      assert.deepEqual(
+        [(await row("lost")).state, (await row("lost")).error_code],
+        ["dead", "lease_expired"],
+      );
+      assert.deepEqual(await marks(), [
+        "last:lease_expired",
+        "lost:lease_expired",
+      ]);
+      assert.deepEqual(effects, ["last:lease_expired", "lost:lease_expired"]);
+
+      // (c) A staff cancel: handed to the runner (never claimed again, the holder fenced out), a
+      // second cancel and a requeue are refused meanwhile; the runner writes it dead, cancelled,
+      // with its hook, and raises no dead-job alert.
+      await add("cancel");
+      const [held] = await tenant(app, tenantId, (tx) =>
+        claimJobs(tx, [hooked], 1, 60, 1),
+      );
+      assert.equal(held?.dedupeKey, "cancel");
+      const cancel = () =>
+        tenant(app, tenantId, (tx) => cancelJob(tx, owner, held.id));
+      await cancel();
+      assert.deepEqual(
+        [
+          (await row("cancel")).state,
+          (await row("cancel")).error_code,
+          (await row("cancel")).expired,
+        ],
+        ["running", "job_cancel_requested", true],
+      );
+      // Claimed with attempts left (1 < 5), a plain lost job would be reclaimed.
+      assert.deepEqual(
+        await tenant(app, tenantId, (tx) => claimJobs(tx, [hooked], 5, 60, 5)),
+        [],
+        "a cancel waiting for its runner is never claimed",
+      );
+      await assert.rejects(cancel(), /job_not_cancellable/);
+      await assert.rejects(
+        tenant(app, tenantId, (tx) => requeueJob(tx, owner, held.id)),
+        /job_not_requeueable/,
+      );
+      assert.equal(await failJob(app, held, { code: "late" }), "lost");
+      alerts.length = 0;
+      await pass();
+      assert.deepEqual(
+        [(await row("cancel")).state, (await row("cancel")).error_code],
+        ["dead", "cancelled"],
+      );
+      assert.deepEqual(await marks(), [
+        "cancel:cancelled",
+        "last:lease_expired",
+        "lost:lease_expired",
+      ]);
+      assert.deepEqual(alerts, [], "a staff cancel raises no dead-job alert");
+      assert.deepEqual(effects.at(-1), "cancel:cancelled");
+      // A handler cannot forge the reserved code.
+      assert.equal(jobErrorCode("job_cancel_requested"), "handler_error");
+      await admin`delete from jobs where kind in (${hooked}, ${marker})`;
     },
   );
 
