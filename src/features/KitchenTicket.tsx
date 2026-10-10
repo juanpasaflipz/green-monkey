@@ -1,7 +1,7 @@
 import type { Label, Locale, Order, PricedLine } from "../../shared/domain";
 import { ALLERGY_PATTERN, type KitchenRound } from "../../shared/service";
 import { strings, type Key } from "../i18n";
-import { channelLabel, orderNumberLabel } from "../labels";
+import { channelLabel, orderModeKey, orderNumberLabel } from "../labels";
 
 /**
  * The business day a printed kitchen paper names its order against (LD-29,
@@ -198,7 +198,8 @@ export function KitchenTicketDocument({
         {ticket.label} {ticket.callName}
       </h2>
       <p>
-        {t.round} {ticket.round} · {t[ticket.mode as Key] ?? ticket.mode} ·{" "}
+        {t.round} {ticket.round} ·{" "}
+        {t[orderModeKey(ticket.mode, !!ticket.tableName)] ?? ticket.mode} ·{" "}
         {ticket.station === "bar" ? t.bar : t.kitchen}
         {ticket.channel && ticket.channel !== "pos" && (
           <> · {channelLabel(ticket.channel, locale)}</>

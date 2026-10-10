@@ -135,7 +135,7 @@ export function KioskCheckout(p: Props) {
     setStep("counter");
   }
 
-  async function payAtCounter() {
+  async function chooseCounter() {
     setBusy(true);
     try {
       await kioskApi.counter(p.token, keys.current.statusKey);
@@ -359,7 +359,7 @@ export function KioskCheckout(p: Props) {
               <Button
                 className="kiosk-choice"
                 disabled={busy}
-                onClick={() => void payAtCounter()}
+                onClick={() => void chooseCounter()}
               >
                 {t.kioskPayCounter}
               </Button>

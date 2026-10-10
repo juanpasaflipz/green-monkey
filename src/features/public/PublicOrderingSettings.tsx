@@ -19,6 +19,7 @@ import { api } from "../../api";
 import { Badge, Button, Field, Modal } from "../../components/ui";
 import { moneyFormatter } from "../Receipt";
 import { fill } from "../menu/format";
+import { KioskSettings } from "./KioskSettings";
 import { LinkRevealDialog } from "./LinkRevealDialog";
 import { shortDate, shortDateTime } from "./TableQrDialog";
 import { refreshPublicInbox } from "./usePublicInbox";
@@ -428,6 +429,7 @@ export function PublicOrderingSettings({
           )}
         </Modal>
       )}
+      <KioskSettings session={session} locale={locale} online={online} />
       {revealed && (
         <LinkRevealDialog
           link={revealed}

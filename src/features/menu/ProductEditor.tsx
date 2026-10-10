@@ -29,6 +29,8 @@ import {
 } from "./format";
 import { SavesAsAmount } from "./SavesAs";
 import { fiscalDraft } from "../fiscal/ProductFiscalFields";
+import { ProductPhotoField } from "./ProductPhotoField";
+import { ProductSuggestionsField } from "./ProductSuggestionsField";
 
 const NEW = "__new";
 
@@ -154,6 +156,12 @@ export function ProductEditor({
   const [busy, setBusy] = useState(false);
   // fiscal (027): the product's tax category and SAT keys (renderFiscal slot).
   const [fiscal, setFiscal] = useState<unknown>(source?.fiscal);
+  // kiosk (039): the description (saved with the product) and the photo (its own commands,
+  // which bump the product's version: the editor follows it).
+  const [descEs, setDescEs] = useState(source?.description?.es ?? "");
+  const [descEn, setDescEn] = useState(source?.description?.en ?? "");
+  const [image, setImage] = useState(product?.image ?? null);
+  const [version, setVersion] = useState(product?.version ?? 0);
   const [dialog, setDialog] = useState<"category" | "group" | null>(null);
   const [confirmArchive, setConfirmArchive] = useState(false);
   // Unsaved edits: the form differs from how it opened. Live availability of
@@ -173,6 +181,8 @@ export function ProductEditor({
     recipeValid,
     cost,
     renderFiscal ? fiscalDraft(fiscal) : null,
+    descEs,
+    descEn,
   ]);
   const [opened] = useState(snapshot);
   const dirty = snapshot !== opened;
@@ -203,7 +213,7 @@ export function ProductEditor({
     const value = {
       operationId,
       id: productId,
-      expectedVersion: product?.version ?? 0,
+      expectedVersion: version,
       name: { es, en },
       categoryId,
       kind,
@@ -217,6 +227,9 @@ export function ProductEditor({
       cost: cost.trim() ? money(cost, "cost") : null,
       // fiscal (027): a bad SAT key fails productInput under `fiscal`.
       ...(renderFiscal ? { fiscal: fiscalDraft(fiscal) } : {}),
+      ...(descEs.trim() || descEn.trim() || source?.description
+        ? { description: { es: descEs.trim(), en: descEn.trim() } }
+        : {}),
     };
     if (!recipeValid) invalid.add("recipe");
     if (choices > MENU_LIMITS.choicesPerLine) invalid.add("groupIds");
@@ -653,6 +666,51 @@ export function ProductEditor({
               </>
             ) : (
               <p className="menu-locked">{t("menuProRequired")}</p>
+            )}
+          </fieldset>
+          <fieldset className="menu-section">
+            <legend>{t("menuPhoto")}</legend>
+            {product ? (
+              <ProductPhotoField
+                product={{ ...product, image, version }}
+                locale={locale}
+                disabled={!online || busy}
+                onChanged={(r) => {
+                  setImage(r.image ?? null);
+                  setVersion(r.version);
+                  onReload();
+                }}
+              />
+            ) : (
+              <p className="muted">{t("menuPhotoSaveFirst")}</p>
+            )}
+            <label className="field">
+              <span>{t("menuDescriptionEs")}</span>
+              <textarea
+                maxLength={300}
+                rows={2}
+                value={descEs}
+                disabled={!online || busy}
+                onChange={(e) => setDescEs(e.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>{t("menuDescriptionEn")}</span>
+              <textarea
+                maxLength={300}
+                rows={2}
+                value={descEn}
+                disabled={!online || busy}
+                onChange={(e) => setDescEn(e.target.value)}
+              />
+            </label>
+            {product && (
+              <ProductSuggestionsField
+                productId={product.id}
+                products={payload.products}
+                locale={locale}
+                disabled={!online || busy}
+              />
             )}
           </fieldset>
           {renderFiscal && (

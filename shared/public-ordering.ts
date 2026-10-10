@@ -392,6 +392,8 @@ export type InboxHold = {
    */
   kiosk?: null | {
     paymentChoice: "card" | "counter" | null;
+    /** The latest attempt (payments' charge), when one was started. */
+    attemptId: string | null;
     charging: boolean;
     review: null | {
       attemptId: string;

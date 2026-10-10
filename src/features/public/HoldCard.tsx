@@ -7,6 +7,12 @@ import { Badge, Button } from "../../components/ui";
 import { moneyFormatter } from "../Receipt";
 import { fill } from "../menu/format";
 import { currentBusinessDate, orderNumberText } from "../../labels";
+import { api } from "../../api";
+import { translateError } from "../../i18n";
+import { ResolveDialog } from "../payments/ResolveDialog";
+import type { AttemptView } from "../../../shared/payments";
+
+const MANAGERS = ["owner", "manager"];
 
 export type AcceptBody = {
   target:
@@ -35,6 +41,7 @@ export function HoldCard({
   onAccept,
   onPay,
   onReject,
+  onKioskChanged,
 }: {
   hold: InboxHold;
   session: Session;
@@ -48,6 +55,8 @@ export function HoldCard({
   onAccept: (body: AcceptBody) => void;
   onPay: (body: AcceptBody, due: number) => void;
   onReject: () => void;
+  /** Kiosk (039): a kiosk charge was cancelled or resolved; the inbox reloads. */
+  onKioskChanged?: () => void;
 }) {
   const t = (k: Key, values?: Record<string, string | number>) =>
     values ? fill(strings[locale][k], values) : strings[locale][k];
@@ -269,43 +278,57 @@ export function HoldCard({
           {error}
         </p>
       )}
-      <div className="row wrap hold-actions">
-        {actions.accept && (
+      {hold.kiosk && (hold.kiosk.charging || hold.kiosk.review) ? (
+        <KioskHoldBlock
+          hold={hold}
+          session={session}
+          locale={locale}
+          online={online}
+          onChanged={() => onKioskChanged?.()}
+        />
+      ) : (
+        <div className="row wrap hold-actions">
+          {actions.accept && (
+            <Button
+              variant="primary"
+              disabled={!ready}
+              onClick={() => onAccept(body())}
+            >
+              {included.length < hold.lines.length
+                ? t("publicAcceptPartial", {
+                    n: included.length,
+                    total: hold.lines.length,
+                  })
+                : t("publicAccept")}
+            </Button>
+          )}
+          {actions.payAndSend && (
+            <Button
+              variant={actions.accept ? "secondary" : "primary"}
+              disabled={!ready}
+              onClick={() => onPay(body(true), current ?? quoted)}
+            >
+              {t("publicPayAndSend")}
+            </Button>
+          )}
           <Button
-            variant="primary"
-            disabled={!ready}
-            onClick={() => onAccept(body())}
+            variant="danger"
+            disabled={!online || busy}
+            onClick={onReject}
           >
-            {included.length < hold.lines.length
-              ? t("publicAcceptPartial", {
-                  n: included.length,
-                  total: hold.lines.length,
-                })
-              : t("publicAccept")}
+            {t("publicReject")}
           </Button>
-        )}
-        {actions.payAndSend && (
-          <Button
-            variant={actions.accept ? "secondary" : "primary"}
-            disabled={!ready}
-            onClick={() => onPay(body(true), current ?? quoted)}
-          >
-            {t("publicPayAndSend")}
-          </Button>
-        )}
-        <Button variant="danger" disabled={!online || busy} onClick={onReject}>
-          {t("publicReject")}
-        </Button>
-        {actions.override && (
-          <Button
-            variant="ghost"
-            aria-expanded={more}
-            onClick={() => setMore(!more)}
-          >
-            {t("publicMoreActions", { label: hold.label })}
-          </Button>
-        )}
-      </div>
+          {actions.override && (
+            <Button
+              variant="ghost"
+              aria-expanded={more}
+              onClick={() => setMore(!more)}
+            >
+              {t("publicMoreActions", { label: hold.label })}
+            </Button>
+          )}
+        </div>
+      )}
       {actions.override && more && (
         <div className="hold-more">
           <Button disabled={!ready} onClick={() => onAccept(body())}>
@@ -314,5 +337,106 @@ export function HoldCard({
         </div>
       )}
     </article>
+  );
+}
+
+/**
+ * Kiosk (039, §2.5, §2.7; critic R12/R13): while the guest pays at the kiosk the card has no
+ * accept or reject ("Pagando en el kiosco…"; a manager may cancel the charge). A charge approved
+ * without an order is a red card: "Resolver cobro del kiosco" opens payments' resolve dialog
+ * (any operator retries once the order fits again; a manager records a refund at the provider,
+ * after which the hold can be rejected).
+ */
+function KioskHoldBlock({
+  hold,
+  session,
+  locale,
+  online,
+  onChanged,
+}: {
+  hold: InboxHold;
+  session: Session;
+  locale: Locale;
+  online: boolean;
+  onChanged: () => void;
+}) {
+  const t = strings[locale];
+  const money = moneyFormatter(session.restaurant.currency, locale);
+  const [attempt, setAttempt] = useState<AttemptView | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const k = hold.kiosk!;
+  const manager = MANAGERS.includes(session.role);
+  async function open() {
+    setBusy(true);
+    setError("");
+    try {
+      setAttempt(
+        await api<AttemptView>(`/payments/terminal/charges/${k.attemptId}`),
+      );
+    } catch (e) {
+      setError(translateError((e as Error).message, locale));
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function cancel() {
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/payments/terminal/charges/${k.attemptId}/cancel`, {
+        operationId: crypto.randomUUID(),
+      });
+      onChanged();
+    } catch (e) {
+      setError(translateError((e as Error).message, locale));
+    } finally {
+      setBusy(false);
+    }
+  }
+  if (k.review)
+    return (
+      <div className="hold-kiosk hold-kiosk-review" role="alert">
+        <p>
+          {fill(t.kioskSettleErrorCard, {
+            label: hold.label,
+            amount: money(k.review.amount),
+            terminal: k.review.terminalLabel,
+            reason: translateError(k.review.code, locale),
+          })}
+        </p>
+        <Button
+          variant="primary"
+          disabled={!online || busy}
+          onClick={() => void open()}
+        >
+          {t.kioskResolve}
+        </Button>
+        {error && <p className="error">{error}</p>}
+        {attempt && (
+          <ResolveDialog
+            attempt={attempt}
+            locale={locale}
+            money={money}
+            manager={manager}
+            onClose={() => setAttempt(null)}
+            onResolved={() => {
+              setAttempt(null);
+              onChanged();
+            }}
+          />
+        )}
+      </div>
+    );
+  return (
+    <div className="hold-kiosk" role="status">
+      <p>{t.kioskCharging}</p>
+      {manager && k.attemptId && (
+        <Button disabled={!online || busy} onClick={() => void cancel()}>
+          {t.kioskCancelCharge}
+        </Button>
+      )}
+      {error && <p className="error">{error}</p>}
+    </div>
   );
 }

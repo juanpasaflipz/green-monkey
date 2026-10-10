@@ -398,6 +398,7 @@ export function PublicOrderInbox({
             onAccept={(body) => void accept(hold, body)}
             onPay={(body, due) => void startPay(hold, body, due)}
             onReject={() => setRejecting(hold)}
+            onKioskChanged={refresh}
           />
         ))}
       </div>

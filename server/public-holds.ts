@@ -209,6 +209,7 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
         r.channel === "kiosk"
           ? {
               paymentChoice: r.payment_choice ?? null,
+              attemptId: r.attempt_id ?? null,
               charging: [
                 "created",
                 "sending",
