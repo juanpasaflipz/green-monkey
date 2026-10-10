@@ -134,8 +134,12 @@ cannot encode WebP on a canvas (Safari on some iPads) get "Súbela desde Chrome 
 
 **Store.** `MEDIA_STORE=r2` (a private Cloudflare R2 bucket, S3 API signed with a small SigV4 signer
 tested against the AWS test suite) or `fs` (`MEDIA_FS_ROOT`, development and CI only; refused in
-staging and production while photos are on). Unset: no photos can be stored, the menu shows text
-tiles. Keys `m/<tenant>/<asset>/<thumb|card|hero>.webp`; ids are server-generated.
+staging and production while photos are on). Unset (anywhere, including a deployed environment
+before the owner provides the R2 media bucket): photos are unavailable. An upload is refused with
+`media_store_not_configured` («Este servidor todavía no tiene dónde guardar fotos»), `/capabilities`
+reports `menuPhotos` off with that reason, and the kiosk, the QR menu and the POS show text tiles.
+`MEDIA_FS_ROOT` alone never selects the local driver, so a Railway service never writes photos to
+its ephemeral disk (tests/config.test.ts, tests/media.test.ts). Keys `m/<tenant>/<asset>/<thumb|card|hero>.webp`; ids are server-generated.
 
 **Serving.** `GET /media/<asset>/<variant>.webp`, same origin (no CSP change), no session: the
 `menu_media_lookup` policy resolves exactly the ready asset. `Cache-Control: public,

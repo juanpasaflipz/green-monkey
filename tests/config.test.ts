@@ -11,6 +11,10 @@ import {
   loadConfig,
 } from "../server/config-rules.js";
 import { ConfigError as PureConfigError } from "../server/config-error.js";
+import {
+  kioskCapabilities,
+  mediaStoreConfig,
+} from "../server/kiosk-config.js";
 
 const secret = "x".repeat(40);
 // A synthetic keyring entry built at runtime (no key material is committed).
@@ -786,5 +790,51 @@ describe("payments worker configuration (spec §4.6, §12.1)", () => {
     expect(() =>
       worker({ MERCADOPAGO_API_URL: "https://evil.example.com" }),
     ).toThrow("payments_api_url_not_allowed");
+  });
+});
+
+describe("menu photos store in a deployed web (kiosk 039; KIOSK-OPS-1, LD-95)", () => {
+  const production = {
+    ...deployedWeb,
+    APP_ENV: "production",
+    APP_URL: "https://app.example.com",
+  };
+  it("MEDIA_STORE unset: the web starts and photos are unavailable (media_store_not_configured), never a local directory, even with MEDIA_FS_ROOT set", () => {
+    for (const env of [
+      deployedWeb,
+      production,
+      { ...deployedWeb, MEDIA_FS_ROOT: "/app/media" },
+      { ...production, MEDIA_FS_ROOT: "/app/media" },
+    ]) {
+      expect(() => loadConfig(env, "web")).not.toThrow();
+      expect(mediaStoreConfig(env)).toBeNull();
+      expect(kioskCapabilities(env).menuPhotos).toEqual({
+        enabled: false,
+        reason: "media_store_not_configured",
+      });
+    }
+  });
+  it("MEDIA_STORE=fs is refused in staging and production while photos are on; r2 without its four values is refused", () => {
+    const fs = { MEDIA_STORE: "fs", MEDIA_FS_ROOT: "/app/media" };
+    for (const env of [deployedWeb, production]) {
+      expect(() => loadConfig({ ...env, ...fs }, "web")).toThrow(
+        "media_store_fs_deployed",
+      );
+      expect(() => loadConfig({ ...env, MEDIA_STORE: "r2" }, "web")).toThrow(
+        "media_store_invalid",
+      );
+    }
+  });
+  it("production as .railway/railway.ts declares it: both switches \"false\", the web starts and /capabilities says switched_off", () => {
+    const env = {
+      ...production,
+      KIOSK_SELF_CHECKOUT_ENABLED: "false",
+      MENU_PHOTOS_ENABLED: "false",
+    };
+    expect(() => loadConfig(env, "web")).not.toThrow();
+    expect(kioskCapabilities(env)).toEqual({
+      kioskSelfCheckout: { enabled: false, reason: "switched_off" },
+      menuPhotos: { enabled: false, reason: "switched_off" },
+    });
   });
 });

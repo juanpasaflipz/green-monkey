@@ -1,7 +1,8 @@
 // Menu photos (039, LD-88): the WebP container validation and rebuild, the upload pipeline's
 // variant rules, the browser's original-file check, and the R2 SigV4 signer against the AWS
 // Signature Version 4 test suite.
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 import { cleanWebp, riffLength, splitRiffs, WebpError } from "../shared/webp";
 import {
   checkOriginal,
@@ -9,9 +10,9 @@ import {
   sniffType,
   MEDIA_LIMITS,
 } from "../shared/media";
-import { processUpload } from "../server/media";
-import { signV4 } from "../server/media-store";
-import { DomainError } from "../shared/domain";
+import { processUpload, uploadProductImage } from "../server/media";
+import { mediaStore, signV4 } from "../server/media-store";
+import { DomainError, type Session } from "../shared/domain";
 import {
   chunk,
   riff,
@@ -334,5 +335,30 @@ describe("SigV4 signer (R2 media store)", () => {
     expect(r.signature).toBe(
       "d3875051da38690788ef43de4db0d8f280229d82040bfac253562e56c3f20e0b",
     );
+  });
+});
+
+describe("an upload with no media store (KIOSK-OPS-1, LD-95)", () => {
+  it("is refused with media_store_not_configured before any database work; MEDIA_FS_ROOT alone never makes a local store", async () => {
+    vi.stubEnv("MEDIA_STORE", "");
+    vi.stubEnv("MEDIA_FS_ROOT", "/app/media");
+    vi.stubEnv("MENU_PHOTOS_ENABLED", "");
+    try {
+      expect(mediaStore()).toBeNull();
+      const manager = { role: "manager" } as unknown as Session;
+      await expect(
+        uploadProductImage(
+          null as never,
+          manager,
+          { operationId: randomUUID(), productId: randomUUID() },
+          Buffer.alloc(0),
+        ),
+      ).rejects.toMatchObject({
+        code: "media_store_not_configured",
+        status: 503,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

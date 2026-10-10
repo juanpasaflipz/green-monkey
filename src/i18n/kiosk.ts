@@ -380,6 +380,10 @@ export default defineArea({
       "We couldn't save the photo. Try again in a moment.",
     ],
     media_not_found: ["La foto ya no existe.", "The photo no longer exists."],
+    media_store_not_configured: [
+      "Este servidor todavía no tiene dónde guardar fotos. El menú se muestra sin fotos.",
+      "This server has no photo storage yet. The menu shows without photos.",
+    ],
     media_disabled: [
       "Las fotos del menú están apagadas en este servidor.",
       "Menu photos are turned off on this server.",

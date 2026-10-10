@@ -160,7 +160,9 @@ export async function uploadProductImage(
   const p = uploadInput.parse(raw);
   if (!menuPhotosEnabled()) throw new DomainError("media_disabled", 404);
   const store = mediaStore();
-  if (!store) throw new DomainError("media_unavailable", 503);
+  // MEDIA_STORE unset (a deployment without the R2 media bucket): photos are unavailable, never a
+  // local directory; the menus show text tiles (/capabilities: media_store_not_configured).
+  if (!store) throw new DomainError("media_store_not_configured", 503);
   const prior = await tenant(sql, s.tenantId, async (tx) => {
     const [r] =
       await tx`select kind,result from operations where id=${p.operationId}`;
