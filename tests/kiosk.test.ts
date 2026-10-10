@@ -53,6 +53,7 @@ import {
   memberLookupOpen,
   stepAnnouncement,
   stepFor,
+  terminalWaitAction,
   terminalExits,
   type KioskStep,
 } from "../src/features/public/kiosk/KioskCheckout";
@@ -1264,5 +1265,37 @@ describe("«Soy del club»: every keypad tap shows on screen (KIOSK-UX-16)", () 
   it("the backspace key's name is «Borrar» / «Delete» (the keypad is a portaled dialog: the browser suite reads it)", () => {
     expect(strings.es.kioskKeyDelete).toBe("Borrar");
     expect(strings.en.kioskKeyDelete).toBe("Delete");
+  });
+});
+
+describe("the terminal screens' own clock is the 5-minute cap the idle rules promise (KIOSK-UX-22)", () => {
+  it("charging asks to cancel at 3 min; «sigue procesando» sends the guest to the counter 2 min later: off the terminal screens within chargeSuspendMaxMs", () => {
+    expect(terminalWaitAction("charging", KIOSK_IDLE.chargeTimeoutMs - 1, false)).toBeNull();
+    expect(terminalWaitAction("charging", KIOSK_IDLE.chargeTimeoutMs, false)).toBe("cancel");
+    expect(terminalWaitAction("charging", KIOSK_IDLE.chargeTimeoutMs * 2, true)).toBeNull();
+    expect(terminalWaitAction("still", KIOSK_IDLE.inProgressExtraMs - 1, true)).toBeNull();
+    expect(terminalWaitAction("still", KIOSK_IDLE.inProgressExtraMs, true)).toBe("askCounter");
+    for (const step of ["pay", "declined", "paid", "askCounter"] as KioskStep[])
+      expect(terminalWaitAction(step, 10 * 60_000, false)).toBeNull();
+    // Poll by poll (every 2 s, the sync answering or not): the step the guest sees, from the
+    // charge's start, until the counter screen.
+    let step: KioskStep = "charging";
+    let since = 0;
+    let cancelled = false;
+    let t = 0;
+    while (step !== "askCounter" && t <= 10 * 60_000) {
+      t += KIOSK_IDLE.pollMs;
+      const action = terminalWaitAction(step, t - since, cancelled);
+      if (action === "cancel") {
+        cancelled = true;
+        step = "still"; // the reader holds the charge: payments answers pending_cancel
+        since = t;
+      } else if (action === "askCounter") step = "askCounter";
+    }
+    expect(step).toBe("askCounter");
+    expect(t).toBeLessThanOrEqual(
+      idleDeadline("charging", { cartEmpty: false }).resetAt!,
+    );
+    expect(t).toBe(KIOSK_IDLE.chargeTimeoutMs + KIOSK_IDLE.inProgressExtraMs);
   });
 });

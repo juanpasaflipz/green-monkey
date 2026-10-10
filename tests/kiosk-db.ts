@@ -81,6 +81,8 @@ import { exceptionRows } from "../server/reports/exceptions.js";
 import { sellingCatalog } from "../server/menu-read.js";
 import { LINK_HEADER, STATUS_HEADER } from "../shared/public-ordering.js";
 import { KIOSK_COOKIE, type KioskCheckoutView } from "../shared/kiosk.js";
+// The kiosk screen's own step rule, fed the server's views (KIOSK-UX-22).
+import { stepFor } from "../src/features/public/kiosk/KioskCheckout.js";
 import type { SessionAccess } from "../shared/access.js";
 import { startPaymentsFake } from "./fakes/payments-fake.js";
 import { noRetries } from "./db-retries.js";
@@ -1162,6 +1164,7 @@ try {
     assert.equal(av.holdState, "pending");
     assert.equal(av.paid, false);
     assert.equal(av.paidNoOrder, false);
+    assert.equal(stepFor(av, "charging"), null, "the kiosk keeps polling");
     await noRetries("K9 settle race", () =>
       Promise.all([
         webRunner.drainTenant(A),
@@ -1300,7 +1303,10 @@ try {
       body: { operationId: randomUUID(), statusKey: o.key },
     });
     assert.equal(cancel.status, 200, JSON.stringify(cancel.body));
-    assert.ok(["withdrawn", "pending_cancel"].includes(cancel.body.outcome));
+    // KIOSK-UX-22: a 'created' attempt (never sent to the reader) is withdrawn, never
+    // pending_cancel: the kiosk shows «Cobro cancelado» at once instead of the 2-minute wait.
+    assert.equal(a.state, "created");
+    assert.equal(cancel.body.outcome, "withdrawn");
     await drive(a.id, ["cancelled"]);
     // The next attempt reaches the reader and the reader keeps it: in progress, then a late approval.
     const c2 = await charge(main, o.key);
@@ -1356,6 +1362,7 @@ try {
     assert.equal(h.state, "pending");
     const view = (await checkout(main, o.key)).body as KioskCheckoutView;
     assert.equal(view.paidNoOrder, true);
+    assert.equal(stepFor(view, "charging"), "paidNoOrder");
     const box = await write(cashier, (tx) => inbox(tx, cashier));
     assert.equal(box.holds[0].id, h.id, "the red card sorts first");
     assert.equal(box.holds[0].kiosk!.review!.code, "kiosk_settle_unavailable");

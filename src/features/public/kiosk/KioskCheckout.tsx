@@ -159,6 +159,25 @@ type Props = {
 };
 
 /**
+ * The terminal screens' clock (KIOSK-UX-22; pure, tests/kiosk.test.ts), checked on every poll
+ * whether the sync answered or not: «Sigue las instrucciones en la terminal» asks payments to
+ * cancel after chargeTimeoutMs; «La terminal sigue procesando» sends the guest to the counter
+ * after inProgressExtraMs, so the guest leaves the terminal screens within chargeSuspendMaxMs
+ * (idleDeadline's "charging" cap), also with the network down.
+ */
+export function terminalWaitAction(
+  step: KioskStep,
+  waitedMs: number,
+  cancelled: boolean,
+): "cancel" | "askCounter" | null {
+  if (step === "charging" && !cancelled && waitedMs >= KIOSK_IDLE.chargeTimeoutMs)
+    return "cancel";
+  if (step === "still" && waitedMs >= KIOSK_IDLE.inProgressExtraMs)
+    return "askCounter";
+  return null;
+}
+
+/**
  * What the persistent live region says when the checkout lands on a step no handler announces
  * (KIOSK-UX-15; pure, tests/kiosk.test.ts): the sale result, «Sigue las instrucciones…», a decline
  * and the counter code are said where they happen; a region inserted already filled is never read.
@@ -406,25 +425,21 @@ export function KioskCheckout(p: Props) {
           setStep(next);
           return;
         }
-        const waited = Date.now() - started;
-        if (
-          step === "charging" &&
-          waited >= KIOSK_IDLE.chargeTimeoutMs &&
-          !cancelled
-        ) {
-          cancelled = true;
-          const c = await kioskApi
-            .cancelCharge(p.token, keys.current.statusKey)
-            .catch(() => null);
-          if (c) cancelOutcome(c.outcome);
-          else setStep("still");
-        }
-        if (step === "still" && waited >= KIOSK_IDLE.inProgressExtraMs)
-          setStep("askCounter");
       } catch {
         failures += 1;
         if (failures >= 2) setOffline(true);
       }
+      if (!live.current) return;
+      // The clock runs whether the sync answered or not (KIOSK-UX-22).
+      const action = terminalWaitAction(step, Date.now() - started, cancelled);
+      if (action === "cancel") {
+        cancelled = true;
+        const c = await kioskApi
+          .cancelCharge(p.token, keys.current.statusKey)
+          .catch(() => null);
+        if (c) cancelOutcome(c.outcome);
+        else setStep("still");
+      } else if (action === "askCounter") setStep("askCounter");
     }, KIOSK_IDLE.pollMs);
     return () => clearInterval(timer);
   }, [step]);
