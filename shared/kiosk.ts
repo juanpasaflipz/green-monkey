@@ -42,6 +42,11 @@ export const KIOSK_LIMITS = {
 export const KIOSK_COOKIE = "gm_kiosk";
 export const KIOSK_COOKIE_PATH = "/api/public/kiosk";
 export const KIOSK_COOKIE_MAX_AGE_SECONDS = 34_560_000;
+/**
+ * A binding older than this gets its cookie re-sent (same secret, a fresh 400 days) on each
+ * heartbeat, so Chrome's cap never unbinds a tablet in service (KIOSK-SECURITY-3).
+ */
+export const KIOSK_COOKIE_REFRESH_DAYS = 30;
 
 /** Kiosk-screen timing (§2.12; WCAG 2.2.1 needs at least 20 s to answer "¿Sigues ahí?"). */
 export const KIOSK_IDLE = {

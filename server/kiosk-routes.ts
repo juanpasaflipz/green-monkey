@@ -57,6 +57,15 @@ const secretOf = (req: express.Request): string | null => {
   return wellFormedSecret(v) ? v : null;
 };
 
+/** The device binding cookie (pairing, and the heartbeat's refresh): HttpOnly, Strict, 400 days. */
+function setDeviceCookie(res: express.Response, secret: string) {
+  res.cookie(KIOSK_COOKIE, secret, {
+    ...cookieOptions,
+    path: KIOSK_COOKIE_PATH,
+    maxAge: KIOSK_COOKIE_MAX_AGE_SECONDS * 1000,
+  });
+}
+
 async function kioskLink(sql: postgres.Sql, req: express.Request, any = false) {
   const l: ResolvedLink = any
     ? await resolveAnyLink(sql, link(req))
@@ -307,11 +316,7 @@ export function kioskDinerRouter(sql: postgres.Sql) {
         log.warn("kiosk_pairing_refused", { ipHash: ipHash(clientIp(req)) });
         throw new DomainError("kiosk_pairing_invalid", 404);
       }
-      res.cookie(KIOSK_COOKIE, r.secret, {
-        ...cookieOptions,
-        path: KIOSK_COOKIE_PATH,
-        maxAge: KIOSK_COOKIE_MAX_AGE_SECONDS * 1000,
-      });
+      setDeviceCookie(res, r.secret);
       return { stationLabel: r.stationLabel };
     }),
   );
@@ -319,11 +324,15 @@ export function kioskDinerRouter(sql: postgres.Sql) {
     "/heartbeat",
     ...malformed,
     heartbeatIp,
-    run(async (req) => {
+    run(async (req, res) => {
       const l = await kioskLink(sql, req);
-      await tenant(sql, l.tenantId, (tx) =>
-        kioskHeartbeat(tx, l.linkId, req.body, secretOf(req)),
+      const secret = secretOf(req);
+      const r = await tenant(sql, l.tenantId, (tx) =>
+        kioskHeartbeat(tx, l.linkId, req.body, secret),
       );
+      // KIOSK-SECURITY-3: a binding past 30 days gets its cookie again (a fresh 400 days), so
+      // Chrome's cap never unbinds a tablet in service.
+      if (r.refreshCookie && secret) setDeviceCookie(res, secret);
       return undefined;
     }),
   );

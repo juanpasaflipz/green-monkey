@@ -39,6 +39,7 @@ import {
 } from "../shared/public-ordering.js";
 import { PAYMENTS_LIMITS } from "../shared/payments.js";
 import {
+  KIOSK_COOKIE_REFRESH_DAYS,
   KIOSK_LIMITS,
   kioskHeartbeatInput,
   kioskMemberInput,
@@ -577,7 +578,7 @@ export async function kioskHeartbeat(
   linkId: string,
   raw: unknown,
   secret: string | null,
-): Promise<void> {
+): Promise<{ refreshCookie: boolean }> {
   const p = kioskHeartbeatInput.parse(raw);
   const { station } = await linkStation(tx, linkId);
   const device = await boundDevice(tx, station, secret);
@@ -585,6 +586,11 @@ export async function kioskHeartbeat(
   await tx`update kiosk_devices set last_seen_at=now(),build=${p.build},viewport=${p.viewport}
     where id=${device.id} and revoked_at is null
       and (last_seen_at is null or last_seen_at<now()-make_interval(secs=>${KIOSK_LIMITS.heartbeatWriteSeconds}))`;
+  // KIOSK-SECURITY-3: the route re-sends the cookie of a binding past KIOSK_COOKIE_REFRESH_DAYS.
+  const [d] = await tx<{ old: boolean }[]>`
+    select paired_at<now()-make_interval(days=>${KIOSK_COOKIE_REFRESH_DAYS}) as old
+    from kiosk_devices where id=${device.id}`;
+  return { refreshCookie: d?.old === true };
 }
 
 /**

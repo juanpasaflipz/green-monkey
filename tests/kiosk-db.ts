@@ -879,6 +879,34 @@ try {
       tablet: t,
     });
     assert.equal(state.body.bound, true);
+    // KIOSK-SECURITY-3: the heartbeat sends no cookie to a young binding, and re-sends the same
+    // secret with a fresh 400 days once the binding is older than 30 days.
+    const beat = () =>
+      call("POST", "/kiosk/heartbeat", {
+        link: k.link,
+        tablet: t,
+        body: { build: "test", viewport: "landscape" },
+      });
+    const young = await beat();
+    assert.equal(young.status, 204, JSON.stringify(young.body));
+    assert.equal(young.setCookie, null);
+    const secret = t.cookie;
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id', ${A}, true)`;
+      await tx`alter table kiosk_devices disable trigger kiosk_devices_transition`;
+      await tx`update kiosk_devices set paired_at=now()-interval '31 days'
+        where station_id=${k.stationId} and revoked_at is null`;
+      await tx`alter table kiosk_devices enable trigger kiosk_devices_transition`;
+    });
+    const aged = await beat();
+    assert.equal(aged.status, 204, JSON.stringify(aged.body));
+    assert.match(
+      aged.setCookie ?? "",
+      new RegExp(
+        `^${KIOSK_COOKIE}=${secret}; Max-Age=34560000; Path=/api/public/kiosk; Expires=[^;]+; HttpOnly; SameSite=Strict$`,
+      ),
+    );
+    assert.equal(t.cookie, secret, "the same secret");
     // Exhausted: five wrong tries kill a code, even the right one after.
     const p2 = await write(manager, (tx) =>
       createPairing(tx, manager, k.stationId),
