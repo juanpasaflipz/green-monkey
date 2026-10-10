@@ -35,9 +35,19 @@ menú with photos → product sheet (photo, description, "Combínalo con…", "A
     club's stamps or join QR. Reset after 30 s.
   - Declined, cancelled or expired: "Tu tarjeta no pasó" → Intentar de nuevo (at most 3 attempts) /
     Pagar en caja / Cancelar pedido.
-  - No answer after 3 minutes: the kiosk asks payments to cancel. Withdrawn → as a decline. Still on
-    the reader → "La terminal sigue procesando…", 2 more minutes of polling, then "Pregunta en caja
-    por tu pedido K-14". The charge keeps settling server-side (payments' poll chain).
+  - «Cancelar cobro» appears after 20 s on "Sigue las instrucciones en la terminal", while the
+    attempt is live and no cancel was asked (KIOSK-UX-03). It asks payments to cancel, which
+    withdraws the charge only when the provider confirms (Clip's withdraw, MP's cancel). Withdrawn →
+    "Cobro cancelado" with retry / Pagar en caja / Cancelar pedido. Refused by the reader → "La
+    terminal sigue procesando…" plus "Cancela el cobro en la terminal". Already final → the next
+    sync shows it.
+  - No answer after 3 minutes: the kiosk asks payments to cancel, with the same outcomes.
+  - "La terminal sigue procesando…" polls 2 more minutes and offers «Pedir ayuda en caja». Either
+    way the guest ends on "Pregunta en caja por tu pedido K-14". Neither exit cancels the hold: the
+    inbox keeps a kiosk hold with a live attempt past its expiry, and a late approval still becomes
+    the order (critic R12). An attempt that ends without money on that screen goes to the decline
+    screen, whose walk-away reset cancels the hold. The charge keeps settling server-side
+    (payments' poll chain).
   - Approved but the order could not be created (an 86 or a price change between start and
     approval): payments' `review` with a `kiosk_settle_*` code; the guest sees "Tu pago se registró.
     Pasa a caja con tu código K-14".

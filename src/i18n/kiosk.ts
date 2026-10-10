@@ -44,6 +44,10 @@ export default defineArea({
     kioskTerminalStill:
       "La terminal sigue procesando. Termina o cancela en la terminal; si ya pagaste, tu pedido {label} se enviará a cocina.",
     kioskAskCounter: "Pregunta en caja por tu pedido {label}.",
+    kioskAskHelp: "Pedir ayuda en caja",
+    kioskCancelOnTerminal: "Cancela el cobro en la terminal.",
+    kioskChargeCancelled:
+      "Cobro cancelado. Puedes intentar de nuevo o pagar en caja.",
     kioskTerminalUnavailable:
       "La terminal no está disponible en este momento. Paga en caja.",
     kioskTerminalBusy:
@@ -192,6 +196,9 @@ export default defineArea({
     kioskTerminalStill:
       "The reader is still working. Finish or cancel on the reader; if you already paid, {label} will go to the kitchen.",
     kioskAskCounter: "Ask at the counter about order {label}.",
+    kioskAskHelp: "Get help at the counter",
+    kioskCancelOnTerminal: "Cancel the payment on the card reader.",
+    kioskChargeCancelled: "Payment cancelled. Try again or pay at the counter.",
     kioskTerminalUnavailable:
       "The card reader isn't available right now. Please pay at the counter.",
     kioskTerminalBusy:

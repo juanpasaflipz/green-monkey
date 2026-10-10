@@ -54,6 +54,8 @@ export const KIOSK_IDLE = {
   chargeSuspendMaxMs: 300_000,
   /** The kiosk polls its checkout every 2 s while charging. */
   pollMs: 2_000,
+  /** «Cancelar cobro» appears on «Sigue las instrucciones en la terminal» after 20 s (KIOSK-UX-03). */
+  cancelOfferMs: 20_000,
   /** No final status after 3 minutes: the kiosk asks payments to cancel. */
   chargeTimeoutMs: 180_000,
   /** "La terminal sigue procesando": 2 more minutes of polling, then reset. */

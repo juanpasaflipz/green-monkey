@@ -20,9 +20,11 @@ import {
   type KioskCheckoutView,
 } from "../shared/kiosk";
 import {
+  afterCancel,
   cancelsOnReset,
   memberLookupOpen,
   stepFor,
+  terminalExits,
   type KioskStep,
 } from "../src/features/public/kiosk/KioskCheckout";
 import { cartInputs } from "../src/features/public/DinerApp";
@@ -219,7 +221,7 @@ describe("the checkout's next step while charging", () => {
     joinOffer: null,
     ...o,
   });
-  it("paid, approved without an order, declined (or after the reader held it: ask at the counter), else keep polling", () => {
+  it("paid, approved without an order, declined (also after the reader held it: retry, counter or cancel), else keep polling", () => {
     expect(stepFor(view({ paid: true, state: "settled" }), "charging")).toBe(
       "paid",
     );
@@ -232,9 +234,77 @@ describe("the checkout's next step while charging", () => {
     expect(view({ state: "approved" }).paidNoOrder).toBe(false);
     expect(stepFor(view({ state: "declined" }), "charging")).toBe("declined");
     expect(stepFor(view({ state: "cancelled" }), "charging")).toBe("declined");
-    expect(stepFor(view({ state: "expired" }), "still")).toBe("askCounter");
+    // KIOSK-UX-03: an attempt that ended without money during «La terminal sigue procesando»
+    // offers retry, «Pagar en caja» or cancel, never a dead end.
+    for (const state of ["declined", "cancelled", "expired"] as const)
+      expect(stepFor(view({ state }), "still"), state).toBe("declined");
+    expect(stepFor(view({ state: "pending" }), "still")).toBe(null);
+    expect(stepFor(view({ paid: true, state: "settled" }), "still")).toBe(
+      "paid",
+    );
     expect(stepFor(view({ state: "pending" }), "charging")).toBe(null);
     expect(stepFor(view({ state: "approved" }), "charging")).toBe(null);
+  });
+
+  it("the terminal screens' exits follow payments' cancel rules (KIOSK-UX-03)", () => {
+    const live = view({ state: "pending" });
+    const asked = view({
+      state: "pending",
+      payment: {
+        state: "pending",
+        attempts: 1,
+        cancelRequested: true,
+        amount: 24500,
+      },
+    });
+    // «Cancelar cobro» only after the offer delay, while the attempt is live and not yet asked.
+    expect(terminalExits("charging", live, false)).toEqual({
+      cancel: false,
+      help: false,
+    });
+    expect(terminalExits("charging", live, true)).toEqual({
+      cancel: true,
+      help: false,
+    });
+    // Once a cancel was requested the reader may still take the card: help, no second cancel.
+    expect(terminalExits("charging", asked, true)).toEqual({
+      cancel: false,
+      help: true,
+    });
+    // Approved (the settle is coming), settled or final: nothing to cancel, keep polling.
+    for (const state of [
+      "approved",
+      "settled",
+      "review",
+      "declined",
+      "cancelled",
+      "expired",
+      "none",
+    ] as const)
+      expect(terminalExits("charging", view({ state }), true), state).toEqual({
+        cancel: false,
+        help: false,
+      });
+    expect(terminalExits("charging", null, true)).toEqual({
+      cancel: false,
+      help: false,
+    });
+    // «La terminal sigue procesando» always has «Pedir ayuda en caja».
+    expect(terminalExits("still", asked, true)).toEqual({
+      cancel: false,
+      help: true,
+    });
+    for (const step of ["pay", "declined", "askCounter", "paid"] as const)
+      expect(terminalExits(step, live, true), step).toEqual({
+        cancel: false,
+        help: false,
+      });
+    // A withdrawn charge offers retry, counter or cancel; a refused or pending cancel keeps the
+    // guest on «sigue procesando» while polling; a final one is shown by the next sync.
+    expect(afterCancel("withdrawn")).toBe("declined");
+    expect(afterCancel("in_progress")).toBe("still");
+    expect(afterCancel("pending_cancel")).toBe("still");
+    expect(afterCancel("already_final")).toBe(null);
   });
 
   it("a reset from the pay, declined or unavailable screens cancels only an unpaid card checkout with no attempt live or approved (KIOSK-MONEY-3)", () => {

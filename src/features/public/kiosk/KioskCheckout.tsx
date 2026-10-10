@@ -34,17 +34,53 @@ export type KioskStep =
   | "paidNoOrder"
   | "counter";
 
-/** The next screen for a checkout read while charging (pure; tests/kiosk.test.ts). */
+/**
+ * The next screen for a checkout read while charging (pure; tests/kiosk.test.ts). An attempt that
+ * ended without money, on either terminal screen, offers retry, «Pagar en caja» or cancel again
+ * (KIOSK-UX-03): nothing can still be taken, and a walk-away from there cancels the hold.
+ */
 export function stepFor(
   view: KioskCheckoutView,
-  current: KioskStep,
+  _current: KioskStep,
 ): KioskStep | null {
   if (view.paid) return "paid";
   if (view.paidNoOrder) return "paidNoOrder";
   const s = view.payment.state;
   if (s === "declined" || s === "cancelled" || s === "expired")
-    return current === "still" ? "askCounter" : "declined";
+    return "declined";
   return null;
+}
+
+/**
+ * The exits of the terminal screens (KIOSK-UX-03; pure, tests/kiosk.test.ts), following payments'
+ * cancel rules: «Cancelar cobro» on «Sigue las instrucciones en la terminal» after
+ * KIOSK_IDLE.cancelOfferMs, only while the attempt is live and no cancel was requested (payments
+ * withdraws it only when the provider confirms: Clip's withdraw, MP's cancel). «Pedir ayuda en
+ * caja» once a cancel was requested and the reader may still take the card. It leads to «Pregunta
+ * en caja por tu pedido K-14» and never cancels the hold: the inbox keeps a hold with a live
+ * attempt past its expiry, and a late approval still becomes the order (critic R12).
+ */
+export function terminalExits(
+  step: KioskStep,
+  view: KioskCheckoutView | null,
+  cancelOffered: boolean,
+): { cancel: boolean; help: boolean } {
+  if (step === "still") return { cancel: false, help: true };
+  if (step !== "charging" || view?.payment.state !== "pending")
+    return { cancel: false, help: false };
+  const requested = view.payment.cancelRequested;
+  return { cancel: cancelOffered && !requested, help: requested };
+}
+
+/** The screen after the kiosk asked payments to cancel (pure): null keeps polling. */
+export function afterCancel(
+  outcome: "withdrawn" | "in_progress" | "already_final" | "pending_cancel",
+): KioskStep | null {
+  if (outcome === "withdrawn") return "declined";
+  // Approved, declined or settled meanwhile: the next sync shows it.
+  if (outcome === "already_final") return null;
+  // The reader holds it (cancel there) or the worker is still asking the provider.
+  return "still";
 }
 
 /**
@@ -111,6 +147,9 @@ export function KioskCheckout(p: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [offline, setOffline] = useState(false);
+  // KIOSK-UX-03: «Cancelar cobro» shows after a while; the reader refused the cancel.
+  const [cancelOffered, setCancelOffered] = useState(false);
+  const [onTerminal, setOnTerminal] = useState(false);
   const keys = useRef({ operationId: crypto.randomUUID(), statusKey: "" });
   const fulfillment = useRef<"here" | "to_go">("to_go");
   const chargeOp = useRef<string | null>(null);
@@ -210,10 +249,32 @@ export function KioskCheckout(p: Props) {
     }
   }
 
+  function cancelOutcome(outcome: Parameters<typeof afterCancel>[0]) {
+    const next = afterCancel(outcome);
+    if (outcome === "in_progress") setOnTerminal(true);
+    if (next === "declined") setFailedOnce(true);
+    if (next) setStep(next);
+  }
+  async function cancelCharge() {
+    setBusy(true);
+    setError("");
+    try {
+      const c = await kioskApi.cancelCharge(p.token, keys.current.statusKey);
+      setView(c.checkout);
+      cancelOutcome(c.outcome);
+    } catch (e) {
+      setError(guestError((e as Error).message, p.locale));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function payByCard() {
     setBusy(true);
     setError("");
     chargeOp.current = crypto.randomUUID();
+    setCancelOffered(false);
+    setOnTerminal(false);
     try {
       const v = await kioskApi.charge(
         p.token,
@@ -284,10 +345,8 @@ export function KioskCheckout(p: Props) {
           const c = await kioskApi
             .cancelCharge(p.token, keys.current.statusKey)
             .catch(() => null);
-          if (c?.outcome === "withdrawn") {
-            setFailedOnce(true);
-            setStep("declined");
-          } else if (c?.outcome !== "already_final") setStep("still");
+          if (c) cancelOutcome(c.outcome);
+          else setStep("still");
         }
         if (step === "still" && waited >= KIOSK_IDLE.inProgressExtraMs)
           setStep("askCounter");
@@ -297,6 +356,16 @@ export function KioskCheckout(p: Props) {
       }
     }, KIOSK_IDLE.pollMs);
     return () => clearInterval(timer);
+  }, [step]);
+
+  // «Cancelar cobro» after a while on the charging screen (KIOSK-UX-03).
+  useEffect(() => {
+    if (step !== "charging") return;
+    const offer = setTimeout(
+      () => setCancelOffered(true),
+      KIOSK_IDLE.cancelOfferMs,
+    );
+    return () => clearTimeout(offer);
   }, [step]);
 
   // Screens that end on their own.
@@ -329,6 +398,16 @@ export function KioskCheckout(p: Props) {
     };
   }, [step]);
 
+  const exits = terminalExits(step, view, cancelOffered);
+  const helpButton = exits.help && (
+    <Button
+      className="kiosk-choice"
+      disabled={busy}
+      onClick={() => setStep("askCounter")}
+    >
+      {t.kioskAskHelp}
+    </Button>
+  );
   const buttons = payButtons({
     selfCheckout: p.kiosk.selfCheckout,
     card: p.kiosk.card && !counterOnly,
@@ -395,7 +474,9 @@ export function KioskCheckout(p: Props) {
         <>
           <h2 className="kiosk-title">
             {step === "declined"
-              ? t.kioskDeclined
+              ? view?.payment.state === "cancelled"
+                ? t.kioskChargeCancelled
+                : t.kioskDeclined
               : step === "unavailable"
                 ? error || t.kioskTerminalUnavailable
                 : t.kioskPayTitle}
@@ -436,19 +517,37 @@ export function KioskCheckout(p: Props) {
         </>
       )}
       {step === "charging" && (
-        <div className="kiosk-charging" role="status">
-          <h2 className="kiosk-title">
-            {fill(t.kioskFollowTerminal, {
-              amount: money(view?.payment.amount ?? view?.total ?? 0),
-            })}
-          </h2>
-          <p className="kiosk-code-small">{label}</p>
-        </div>
+        <>
+          <div className="kiosk-charging" role="status">
+            <h2 className="kiosk-title">
+              {fill(t.kioskFollowTerminal, {
+                amount: money(view?.payment.amount ?? view?.total ?? 0),
+              })}
+            </h2>
+            <p className="kiosk-code-small">{label}</p>
+          </div>
+          {exits.cancel && (
+            <Button
+              className="kiosk-choice"
+              disabled={busy}
+              onClick={() => void cancelCharge()}
+            >
+              {t.kioskCancelCharge}
+            </Button>
+          )}
+          {helpButton}
+        </>
       )}
       {step === "still" && (
-        <h2 className="kiosk-title" role="status">
-          {fill(t.kioskTerminalStill, { label })}
-        </h2>
+        <>
+          <h2 className="kiosk-title" role="status">
+            {fill(t.kioskTerminalStill, { label })}
+          </h2>
+          {onTerminal && (
+            <p className="kiosk-total">{t.kioskCancelOnTerminal}</p>
+          )}
+          {helpButton}
+        </>
       )}
       {step === "askCounter" && (
         <>
