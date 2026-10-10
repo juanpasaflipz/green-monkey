@@ -54,6 +54,11 @@ export function publicLimiter(
     limit: number;
     windowMs?: number;
     scope?: (req: express.Request) => string;
+    /**
+     * A key that replaces the network-and-scope one when it returns a string (a kiosk device's
+     * own bucket on any network, KIOSK-SECURITY-1); undefined falls back to publicKey.
+     */
+    key?: (req: express.Request) => string | undefined;
     /** Requests that do not count towards this limiter (express-rate-limit `skip`). */
     skip?: (req: express.Request, res: express.Response) => boolean;
   },
@@ -63,7 +68,8 @@ export function publicLimiter(
     limit: o.limit,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => publicKey(clientIp(req), o.scope?.(req)),
+    keyGenerator: (req) =>
+      o.key?.(req) ?? publicKey(clientIp(req), o.scope?.(req)),
     skip: o.skip ?? (() => false),
     handler: (req, res) => {
       log.warn("rate_limited", {

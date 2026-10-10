@@ -12,7 +12,7 @@ import {
   resolveLink,
   type ResolvedLink,
 } from "./public-tokens.js";
-import { publicLimiter } from "./public-limits.js";
+import { publicLimiter, scopeKey } from "./public-limits.js";
 import { cookieOptions } from "./auth.js";
 import { kioskMemberLimiter } from "./routes/loyalty.js";
 import { afterAttemptWrite } from "./payments/terminal.js";
@@ -78,7 +78,6 @@ export function kioskDinerRouter(sql: postgres.Sql) {
         : new DomainError("public_link_invalid", 404),
     );
   const malformed = [malformedLimit, refuseMalformed];
-  const device = (req: express.Request) => secretOf(req) ?? "";
   const stateLimit = publicLimiter("kiosk-state", { limit: 60 });
   const submitIp = publicLimiter("kiosk-submit-ip", { limit: 30 });
   const writeLink = publicLimiter("kiosk-write", { limit: 10, scope: link });
@@ -112,11 +111,17 @@ export function kioskDinerRouter(sql: postgres.Sql) {
   const heartbeatIp = publicLimiter("kiosk-heartbeat", {
     limit: KIOSK_RATES.heartbeatPerIp,
   });
-  // R20: 5 lookups per device per 5 minutes, plus loyalty's per-IP limiter.
+  // R20: 5 lookups per device per 5 minutes, plus loyalty's per-IP limiter. The device's bucket
+  // has no network part, so a copied cookie replayed from other networks shares it
+  // (KIOSK-SECURITY-1); a request without a well-formed cookie (refused as kiosk_device_required)
+  // is keyed by its network.
   const memberDevice = publicLimiter("kiosk-member", {
     limit: KIOSK_LIMITS.memberLookups,
     windowMs: KIOSK_LIMITS.memberWindowMs,
-    scope: device,
+    key: (req) => {
+      const secret = secretOf(req);
+      return secret === null ? undefined : "kiosk-device:" + scopeKey(secret);
+    },
   });
   const memberIp = kioskMemberLimiter();
 

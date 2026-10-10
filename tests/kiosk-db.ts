@@ -1659,6 +1659,19 @@ try {
       429,
       "the sixth lookup in 5 minutes from one device",
     );
+    // KIOSK-SECURITY-1: the bucket is the device's, not (network, device): the same cookie
+    // replayed from another network gets no fresh 5.
+    const elsewhere = await call("POST", "/kiosk/member", {
+      link: k.link,
+      tablet: k.tablet,
+      ip: "2001:db8:77::5",
+      body: { phone: "5555550199" },
+    });
+    assert.equal(
+      elsewhere.status,
+      429,
+      "the device's sixth lookup from another network",
+    );
     // The token is bound to this station: another kiosk's order drops it.
     const o = await order(k, [line(ids.taco, 2)], 9000, {
       memberToken: found.body.memberToken,
