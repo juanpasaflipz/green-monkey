@@ -41,6 +41,12 @@ import {
 import kiosk from "../src/i18n/kiosk";
 import { resolveChoices } from "../src/features/payments/attempt-text";
 import type { AttemptView } from "../shared/payments";
+import type { ExceptionRow } from "../shared/reports";
+import {
+  exceptionDetail,
+  exceptionReason,
+} from "../src/features/reports/exception-text";
+import { strings, translateError } from "../src/i18n";
 import {
   acceptInput,
   holdActions,
@@ -164,7 +170,12 @@ describe("idle (§2.12, WCAG 2.2.1)", () => {
     ).toBeLessThanOrEqual(KIOSK_IDLE.chargeSuspendMaxMs);
   });
   it("KIOSK-UX-05: «¿Para aquí…?», pay, declined and unavailable ask «¿Sigues ahí?» 25 s before the 120 s reset", () => {
-    const steps: KioskStep[] = ["fulfillment", "pay", "declined", "unavailable"];
+    const steps: KioskStep[] = [
+      "fulfillment",
+      "pay",
+      "declined",
+      "unavailable",
+    ];
     for (const step of steps) {
       const d = checkoutIdle(step);
       expect(d, step).toEqual({ warnAt: 95_000, resetAt: 120_000 });
@@ -172,9 +183,17 @@ describe("idle (§2.12, WCAG 2.2.1)", () => {
     }
     expect(checkoutIdle("paid")).toEqual({ warnAt: null, resetAt: 30_000 });
     for (const step of ["paidNoOrder", "askCounter"] as KioskStep[])
-      expect(checkoutIdle(step), step).toEqual({ warnAt: null, resetAt: 20_000 });
+      expect(checkoutIdle(step), step).toEqual({
+        warnAt: null,
+        resetAt: 20_000,
+      });
     // Charging and «sigue procesando» run on the poll's clock; the counter code on KioskDone's.
-    for (const step of ["submitting", "charging", "still", "counter"] as KioskStep[])
+    for (const step of [
+      "submitting",
+      "charging",
+      "still",
+      "counter",
+    ] as KioskStep[])
       expect(checkoutIdle(step), step).toEqual({ warnAt: null, resetAt: null });
   });
   it("KIOSK-UX-05: on the pay screen the warning comes at 95 s, a touch re-arms it, the reset at 120 s", () => {
@@ -524,6 +543,75 @@ describe("why a station takes no card, on Configuración's row (KIOSK-UX-10, cri
   });
 });
 
+describe("Excepciones rows of a kiosk charge (KIOSK-OPS-5)", () => {
+  const row = (kind: string, reasonCode: string | null, detail: object) =>
+    ({
+      kind,
+      reasonCode,
+      note: "",
+      amount: 3500,
+      orderId: null,
+      detail,
+    }) as unknown as ExceptionRow;
+  const kioskHold = {
+    holdChannel: "kiosk",
+    holdNumber: 14,
+    terminal: "Clip Entrada",
+  };
+  it("name the hold, and the review says why the charge could not become the order", () => {
+    const review = row(
+      "terminal_attempt_review",
+      "kiosk_settle_unavailable",
+      kioskHold,
+    );
+    expect(exceptionDetail(review, "es", String)).toBe(
+      "Kiosco · K-14 · Clip Entrada",
+    );
+    expect(exceptionDetail(review, "en", String)).toBe(
+      "Kiosk · K-14 · Clip Entrada",
+    );
+    expect(exceptionReason(review, "es")).toBe(
+      translateError("kiosk_settle_unavailable", "es"),
+    );
+    expect(exceptionReason(review, "es")).not.toBe(strings.es.error);
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_dismissed", "refunded_at_provider", {
+          ...kioskHold,
+          resolution: "refunded_at_provider",
+        }),
+        "es",
+        String,
+      ),
+    ).toMatch(/^Kiosco · K-14 · Clip Entrada · /);
+    for (const kind of [
+      "terminal_attempt_unknown_open",
+      "terminal_attempt_late_approval",
+    ])
+      expect(exceptionDetail(row(kind, null, kioskHold), "es", String)).toMatch(
+        /^Kiosco · K-14 · Clip Entrada/,
+      );
+    // A POS charge (an order target) reads as before; a payments review code stays out of Motivo.
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_review", "payments_amount_mismatch", {
+          holdChannel: null,
+          holdNumber: null,
+          terminal: "Clip Caja",
+        }),
+        "es",
+        String,
+      ),
+    ).toBe("Clip Caja");
+    expect(
+      exceptionReason(
+        row("terminal_attempt_review", "payments_amount_mismatch", {}),
+        "es",
+      ),
+    ).toBe("");
+  });
+});
+
 describe("a kiosk hold in the staff inbox (KIOSK-UX-04, KIOSK-MONEY-3)", () => {
   const kiosk = (
     o: Partial<NonNullable<InboxHold["kiosk"]>>,
@@ -543,7 +631,11 @@ describe("a kiosk hold in the staff inbox (KIOSK-UX-04, KIOSK-MONEY-3)", () => {
     provider: "clip" as const,
   };
   it("KIOSK-MONEY-4: a manager cancels a charge payments may still withdraw and resolves an unknown one; other roles get neither", () => {
-    const live = kiosk({ paymentChoice: "card", attemptId: "a", charging: true });
+    const live = kiosk({
+      paymentChoice: "card",
+      attemptId: "a",
+      charging: true,
+    });
     const unknown = { ...live, unknown: true };
     for (const role of ["owner", "manager"]) {
       expect(kioskChargingExits(live, role), role).toEqual({
@@ -554,9 +646,9 @@ describe("a kiosk hold in the staff inbox (KIOSK-UX-04, KIOSK-MONEY-3)", () => {
         cancel: false,
         resolve: true,
       });
-      expect(kioskChargingExits(kiosk({ paymentChoice: "card" }), role)).toEqual(
-        { cancel: false, resolve: false },
-      );
+      expect(
+        kioskChargingExits(kiosk({ paymentChoice: "card" }), role),
+      ).toEqual({ cancel: false, resolve: false });
     }
     for (const role of ["cashier", "server"])
       for (const k of [live, unknown])

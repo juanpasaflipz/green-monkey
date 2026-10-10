@@ -76,6 +76,7 @@ import { riff, uploadBody, vp8l } from "./fixtures/webp.js";
 import { jpeg, jpegUploadBody } from "./fixtures/jpeg.js";
 import { kioskReport } from "../server/kiosk-report.js";
 import { kioskSubmit } from "../server/kiosk-diner.js";
+import { exceptionRows } from "../server/reports/exceptions.js";
 import { sellingCatalog } from "../server/menu-read.js";
 import { LINK_HEADER, STATUS_HEADER } from "../shared/public-ordering.js";
 import { KIOSK_COOKIE, type KioskCheckoutView } from "../shared/kiosk.js";
@@ -1356,6 +1357,25 @@ try {
     assert.equal(box.holds[0].id, h.id, "the red card sorts first");
     assert.equal(box.holds[0].kiosk!.review!.code, "kiosk_settle_unavailable");
     assert.equal(box.holds[0].kiosk!.review!.amount, 3500);
+    // KIOSK-OPS-5: Excepciones' row carries the hold and why the charge could not become the
+    // order (its text, on screen and in the CSV: tests/kiosk.test.ts).
+    const exDay = new Intl.DateTimeFormat("en-CA", {
+      timeZone: restaurant.timezone,
+    }).format(new Date(Date.now() - restaurant.cutoff * 60_000));
+    const ex = await write(manager, (tx) =>
+      exceptionRows(tx, manager, {
+        from: exDay,
+        to: exDay,
+        kinds: "terminal_attempt_review",
+      }),
+    );
+    const exRow = ex.rows.find((r) => r.detail.attemptId === a.id)!;
+    assert.ok(exRow, "the kiosk review row");
+    assert.equal(exRow.orderId, null, "no order yet");
+    assert.equal(exRow.reasonCode, "kiosk_settle_unavailable");
+    assert.equal(exRow.detail.holdChannel, "kiosk");
+    assert.equal(exRow.detail.holdNumber, h.number);
+    assert.equal(exRow.detail.terminal, r.terminal_label);
     await rejects(
       write(manager, (tx) =>
         closeCash(tx, manager, {
