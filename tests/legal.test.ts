@@ -11,6 +11,7 @@ import {
 import { setLogSink } from "../server/logging";
 import {
   BILLING_CONSENT,
+  CLUB_LEGAL_EFFECTIVE_FROM,
   CLUB_LEGAL_VERSION,
   clubLegalCovered,
   LEGAL_CONTENT,
@@ -474,8 +475,20 @@ describe("legal documents", () => {
         .paragraphs.join(" ")
         .toLowerCase();
     for (const [locale, club, phone, history, noTransfer] of [
-      ["es", "club de lealtad", "teléfono", "historial de compras", "no se transfieren"],
-      ["en", "loyalty club", "phone", "purchase history", "neither transferred"],
+      [
+        "es",
+        "club de lealtad",
+        "teléfono",
+        "historial de compras",
+        "no se transfieren",
+      ],
+      [
+        "en",
+        "loyalty club",
+        "phone",
+        "purchase history",
+        "neither transferred",
+      ],
     ] as const) {
       expect(text("dpa", "objeto", locale)).toContain(club);
       expect(text("dpa", "objeto", locale)).toContain(phone);
@@ -483,16 +496,23 @@ describe("legal documents", () => {
       expect(text("dpa", "subencargados", locale)).toContain(club);
       expect(text("dpa", "transferencias", locale)).toContain(club);
       expect(text("dpa", "transferencias", locale)).toContain(noTransfer);
-      expect(text("privacy", "encargados-transferencias", locale)).toContain(club);
+      expect(text("privacy", "encargados-transferencias", locale)).toContain(
+        club,
+      );
       expect(text("privacy", "restaurantes", locale)).toContain(club);
       expect(text("privacy", "restaurantes", locale)).toContain(history);
     }
     for (const d of ["privacy", "dpa"] as const)
-      expect(compareLegalVersions(LEGAL_DOCUMENTS[d].version, CLUB_LEGAL_VERSION), d).toBeGreaterThanOrEqual(0);
+      expect(
+        compareLegalVersions(LEGAL_DOCUMENTS[d].version, CLUB_LEGAL_VERSION),
+        d,
+      ).toBeGreaterThanOrEqual(0);
   });
 
   it("enabling the club waits for the published documents that cover it, in effect (LOYALTY-PRIVACY-4)", () => {
-    const effective = legalInstant(LEGAL_DOCUMENTS.dpa.effectiveFrom);
+    // The club's version's own effect: the documents in force are a later version (the payments
+    // one, P2V-GATE-2) that keeps the club's paragraphs.
+    const effective = legalInstant(CLUB_LEGAL_EFFECTIVE_FROM);
     expect(clubLegalCovered("unpublished", effective + 1)).toBe(false);
     expect(clubLegalCovered("published", effective + 1)).toBe(true);
     expect(clubLegalCovered("published", effective - 1)).toBe(false);
@@ -500,11 +520,20 @@ describe("legal documents", () => {
     const meta = LEGAL_DOCUMENTS.dpa;
     const original = { ...meta };
     try {
-      Object.assign(meta, { version: "2026-10-06", effectiveFrom: "2026-10-06" });
+      Object.assign(meta, {
+        version: "2026-10-06",
+        effectiveFrom: "2026-10-06",
+      });
       expect(clubLegalCovered("published", effective + 864e5)).toBe(false);
       // A later version keeps covering it from the day it is announced.
-      Object.assign(meta, { version: "2026-11-01", announcedAt: "2026-11-01", effectiveFrom: "2026-11-16" });
-      expect(clubLegalCovered("published", legalInstant("2026-11-02"))).toBe(true);
+      Object.assign(meta, {
+        version: "2026-11-01",
+        announcedAt: "2026-11-01",
+        effectiveFrom: "2026-11-16",
+      });
+      expect(clubLegalCovered("published", legalInstant("2026-11-02"))).toBe(
+        true,
+      );
     } finally {
       Object.assign(meta, original);
     }
@@ -716,25 +745,31 @@ describe("legal documents", () => {
         "2026-10-06":
           "30c412cea63b811aca906f95f7f7964b6ba69580e4d6a14e2d07d5caeac27e85",
         "2026-10-09":
-          "13ea7d6762f2121760d6829bf190eb629d842993600f8740dcb06d0e7726cd18",
+          "1c37179a8ff9afd8f94966ecfdab0ec4b155075f169175f77bdef79911a960be",
+        "2026-10-10":
+          "3bd07765ed2c90e3852d6e9e92ab1f7d83dab005089f243e8fc006b9d18fe056",
       },
       terms: {
         "2026-10-06":
           "419e6f331b875a5e68eee218d1307d92757fc471eb8f214f445dcce3e2ab3bcd",
-        "2026-10-09":
-          "0d2a29069456c7bccd38b6dd8394895ed748579ece212ae455eb183c3da6c4a4",
+        "2026-10-10":
+          "7ff6ac52f5582ea2e83f48b43e5f9dc33ad7caeb30eab7351802065110fc669a",
       },
       dpa: {
         "2026-10-06":
           "e27b6ca16653d26a9a31627f7837a96e5c341a4ddf75daa78efc322dc4cc23bb",
         "2026-10-09":
-          "a285ce7f6c9bd79b2036d3d9575f9ebd171b9a2a5a114dd0d4146733d148a7b1",
+          "06879bab89b58dbe2111c757ca0e22d29044ba2e8b5bd079205acb0962ecb999",
+        "2026-10-10":
+          "661b53ef49689fbdb606180b0ca401ecacf5aefead19a690af8462db60bde99e",
       },
       billing_consent: {
         "2026-10-06":
           "f8d6b72d4a9f528126e3e292bc06d88e41e8ceed87289da561e14cd8e6cba90f",
         "2026-10-09":
           "d13021aecb6b7a425b0fa80bd161b74707c090979fbe239c9c4cc456e2a3e68e",
+        "2026-10-10":
+          "e14afa1e67538213a45810489a62553a14e0f30fb9f1f962c66ec5122027e364",
       },
     };
     for (const doc of Object.keys(PUBLISHED) as Array<keyof typeof PUBLISHED>) {
@@ -745,6 +780,20 @@ describe("legal documents", () => {
         `${doc} ${version}: changed text needs a new version (and a line here)`,
       ).toBe(legalContentHash(doc));
     }
+    // The versions PR #12 shipped to production (LD-83): their lines above are exactly the
+    // release's, and a later text never reuses their ids (P2V-GATE-2). The payments text is
+    // 2026-10-10, a later version that keeps the club's paragraphs (CLUB_LEGAL_VERSION).
+    expect(PUBLISHED.privacy["2026-10-09"]).toBe(
+      "1c37179a8ff9afd8f94966ecfdab0ec4b155075f169175f77bdef79911a960be",
+    );
+    expect(PUBLISHED.dpa["2026-10-09"]).toBe(
+      "06879bab89b58dbe2111c757ca0e22d29044ba2e8b5bd079205acb0962ecb999",
+    );
+    for (const doc of ["privacy", "dpa"] as const) {
+      expect(LEGAL_DOCUMENTS[doc].version).not.toBe(CLUB_LEGAL_VERSION);
+      expect(LEGAL_DOCUMENTS[doc].previousVersion).toBe(CLUB_LEGAL_VERSION);
+    }
+    expect(LEGAL_DOCUMENTS.terms.previousVersion).toBe("2026-10-06");
   });
 
   it("legalContentHash is stable and changes with content", () => {

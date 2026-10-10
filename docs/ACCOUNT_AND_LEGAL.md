@@ -428,10 +428,25 @@ published `2026-10-06` exist when it deploys, the release marks it material inst
 effect (`clubLegalCovered`); with unpublished documents only where draft documents may be used
 (`LEGAL_UNPUBLISHED_SIGNUP=allow`, never production). A club already on is not switched off.
 
-**Still inputs for their tracks (not loyalty's):** DPA §2 card brand, type and last 4 digits and the kiosk
-device-binding cookie; Cloudflare's scope widening to "and menu images" (kiosk); DPA §11 transmission to the
-restaurant's own payment providers (Mercado Pago, Clip) on its instruction and custody of its sealed
-credentials. Each ships as a new version the same way.
+**Platform terms, notice and DPA: integrated card payments (037 P2, critic R40, P2-SECURITY-2;
+P2V-GATE-2, LD-85).** Version `2026-10-10` of all three documents: terms §5 describes integrated
+charging with the restaurant's own Mercado Pago or Clip account and the custody of its sealed provider
+credentials; DPA §2 adds the card brand, type and last 4 digits (never the full number) and DPA §11 the
+transmission to the restaurant's own provider on its instruction; privacy §6 adds the encargado line.
+It is a **new version id** because `2026-10-09` shipped to production with PR #12 (LD-83) carrying the
+club text only, and a shipped version's text never changes (its pins in `tests/legal.test.ts` stay the
+release's: privacy `1c37179a…`, DPA `06879bab…`); versions are plain dates (the legal tests refuse a
+`.n` suffix on a current version), so it takes the next release date. `previousVersion` is `2026-10-09`
+for the notice and the DPA and `2026-10-06` for the terms. Non-material (effect on announcement,
+`requiresAcceptanceSince` stays `2026-10-06`): no acceptance of any published version exists in
+production yet. If acceptances exist when P2 deploys (`select document, version, count(*) from
+legal_acceptances group by 1, 2`), the release marks it material instead (`requiresAcceptanceSince` =
+`2026-10-10`, `effectiveFrom` at least 15 days after `announcedAt`). The club's gate keeps pointing at
+`2026-10-09` (`CLUB_LEGAL_VERSION`): the later version keeps every club paragraph, so the club is
+covered from `CLUB_LEGAL_EFFECTIVE_FROM` whatever later version is in force.
+
+**Still inputs for their tracks:** the kiosk device-binding cookie in DPA §2 and Cloudflare's scope
+widening to "and menu images" (kiosk). Each ships as a new version the same way.
 
 ## Plan lapse (GAP-1)
 
