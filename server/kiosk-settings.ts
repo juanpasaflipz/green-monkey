@@ -204,8 +204,11 @@ export async function createPairing(tx: Tx, s: Session, stationId: string) {
   requireRecentAuth(s);
   id.parse(stationId);
   await tx`select id from restaurants where id=${s.tenantId} for share`;
+  // FOR NO KEY UPDATE (KIOSK-CONCURRENCY-2): two pairings of one station serialize here, so the
+  // second one's revoke sees the first one's new device instead of tripping kiosk_devices_one_live
+  // (a 500). Station before device, as revokeLinkRow and revokeKioskDevice.
   const [st] =
-    await tx`select id,archived_at from kiosk_stations where id=${stationId} for share`;
+    await tx`select id,archived_at from kiosk_stations where id=${stationId} for no key update`;
   if (!st || st.archived_at) throw new DomainError("not_found", 404);
   await tx`update kiosk_devices set revoked_at=now(),revoked_by=${s.employeeId}
     where station_id=${stationId} and revoked_at is null`;

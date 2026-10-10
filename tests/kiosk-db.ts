@@ -1006,6 +1006,45 @@ try {
     assert.equal(st.live, 0);
   });
 
+  await test("K3-race. two pairings of one station at once (KIOSK-CONCURRENCY-2): the second waits for the first and replaces its code; no unique-index 500", async () => {
+    const k = await newKiosk("Carrera " + run);
+    let release!: () => void;
+    let created!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const holding = new Promise<void>((r) => (created = r));
+    const first = write(manager, async (tx) => {
+      const r = await createPairing(tx, manager, k.stationId);
+      created();
+      await gate;
+      return r;
+    });
+    // The first pairing holds its new device uncommitted; the second starts and must wait.
+    await holding;
+    const second = write(manager, (tx) =>
+      createPairing(tx, manager, k.stationId),
+    );
+    let waited = false;
+    for (let i = 0; i < 250 && !waited; i++) {
+      const [w] = await sql`select 1 from pg_locks where not granted limit 1`;
+      if (w) waited = true;
+      else await sleep(20);
+    }
+    assert.ok(waited, "the second pairing waits on the first");
+    release();
+    const [p1, p2] = await Promise.all([first, second]);
+    assert.notEqual(p1.deviceId, p2.deviceId);
+    const live = await one(
+      A,
+      (tx) =>
+        tx`select id from kiosk_devices where station_id=${k.stationId} and revoked_at is null`,
+    );
+    assert.equal(live.id, p2.deviceId, "the second code replaces the first");
+    // Its link goes (the restaurant's 10 live kiosk links are counted by later checks).
+    await write(manager, (tx) =>
+      revokeLink(tx, manager, k.linkId, { operationId: randomUUID() }),
+    );
+  });
+
   await test("K4. unbound kiosk: an order becomes a counter-only hold (as before 039), with a checkout; card and member lookups need the binding (403 kiosk_device_required)", async () => {
     const t = newTablet();
     const k = { ...main, tablet: t };
