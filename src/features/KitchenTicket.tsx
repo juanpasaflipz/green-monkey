@@ -1,6 +1,6 @@
 import type { Label, Locale, Order, PricedLine } from "../../shared/domain";
 import { ALLERGY_PATTERN, type KitchenRound } from "../../shared/service";
-import { strings, type Key } from "../i18n";
+import { strings } from "../i18n";
 import { channelLabel, orderModeKey, orderNumberLabel } from "../labels";
 
 /**
