@@ -463,5 +463,9 @@ export default defineArea({
       "Subiste muchas fotos seguidas. Espera unos minutos.",
       "You uploaded many photos in a row. Wait a few minutes.",
     ],
+    media_busy: [
+      "Se está subiendo otra foto. Intenta de nuevo en unos segundos.",
+      "Another photo is uploading. Try again in a few seconds.",
+    ],
   },
 });

@@ -76,7 +76,9 @@ import {
   recordMediaImport,
   removeProductImage,
   uploadProductImage,
+  uploadsInFlight,
 } from "../server/media.js";
+import { uploadRoute } from "../server/routes/kiosk.js";
 import { riff, uploadBody, vp8l } from "./fixtures/webp.js";
 import { jpeg, jpegUploadBody } from "./fixtures/jpeg.js";
 import { kioskReport } from "../server/kiosk-report.js";
@@ -302,6 +304,15 @@ app.use(express.json({ limit: "256kb" }));
 app.use(cookieParser());
 app.use("/api/public", publicOrdering(sql));
 app.get(MEDIA_ROUTE, mediaRoute(sql));
+// The staff photo upload route (KV-SECURITY-1: admission before the body), behind a test session
+// named by a header instead of the authentication middleware.
+app.use("/api/menu", (req, _res, next) => {
+  const who = req.get("x-test-session");
+  (req as unknown as { session: Session }).session =
+    who === "ownerB" ? ownerB : who === "cashier" ? cashier : owner;
+  next();
+});
+uploadRoute(app, sql);
 app.use(
   (
     error: unknown,
@@ -2281,6 +2292,64 @@ try {
       (await write(ownerB, (tx) => tx`select id from menu_media`)).length,
       0,
     );
+  });
+
+  await test("K17c. photo upload admission (KV-SECURITY-1): one upload in flight per restaurant, decided before the body is read; a cashier is refused before it too; the slot frees when the request ends, also when it is aborted", async () => {
+    const { request } = await import("node:http");
+    const path = (productId: string) => `/api/menu/products/${productId}/image`;
+    const post = async (who: string, productId: string, body: Buffer) => {
+      const r = await fetch(origin + path(productId), {
+        method: "POST",
+        headers: {
+          "content-type": "application/octet-stream",
+          "x-gm-operation-id": randomUUID(),
+          "x-test-session": who,
+        },
+        body,
+      });
+      return { status: r.status, body: (await r.json()) as { error?: string } };
+    };
+    const until = async (n: number) => {
+      for (let i = 0; uploadsInFlight() !== n; i++) {
+        assert.ok(i < 500, `uploads in flight: ${uploadsInFlight()} ≠ ${n}`);
+        await sleep(10);
+      }
+    };
+    await until(0);
+    // Restaurant A's upload whose body is still arriving holds A's slot.
+    const slow = request(origin + path(ids.taco), {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": "1000000",
+        "x-gm-operation-id": randomUUID(),
+        "x-test-session": "owner",
+      },
+    });
+    slow.on("error", () => {});
+    slow.write(Buffer.alloc(1000));
+    await until(1);
+    // A second upload of A is refused without its body being parsed: not an image, yet media_busy.
+    for (const r of await Promise.all(
+      [1, 2, 3].map(() => post("owner", ids.taco, Buffer.from("not an image"))),
+    )) {
+      assert.equal(r.status, 429, JSON.stringify(r.body));
+      assert.equal(r.body.error, "media_busy");
+    }
+    assert.equal(uploadsInFlight(), 1);
+    // Roles first: a cashier never takes a slot.
+    const cashierTry = await post("cashier", ids.taco, Buffer.from("x"));
+    assert.equal(cashierTry.status, 403);
+    // Another restaurant has its own slot (B's product check answers before any parse).
+    const b = await post("ownerB", randomUUID(), Buffer.from("not an image"));
+    assert.equal(b.status, 404, JSON.stringify(b.body));
+    await until(1);
+    // The aborted upload frees A's slot: the next one is admitted and parsed.
+    slow.destroy();
+    await until(0);
+    const parsed = await post("owner", ids.taco, Buffer.from("not an image"));
+    assert.match(String(parsed.body.error), /^media_(invalid|type_unsupported)$/);
+    await until(0);
   });
 
   await test("K18. suggestions: product and cart sets are replaced by UPDATE (never deleted); the kiosk reads only sellable products", async () => {

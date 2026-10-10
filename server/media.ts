@@ -121,6 +121,27 @@ function mediaError(e: unknown): DomainError {
   return e as DomainError;
 }
 
+/**
+ * Upload admission before the body is read (R8, KV-SECURITY-1): one upload in flight per
+ * restaurant and MEDIA_LIMITS.uploadSlots in the process. A refused request answers 429
+ * media_busy without its body being buffered or parsed, so concurrent bodies never pile up in
+ * memory behind serial(). The returned release runs once, when the response finishes or the
+ * connection closes.
+ */
+const uploading = new Set<string>();
+/** Uploads admitted and not finished (the kiosk DB suite waits on it). */
+export const uploadsInFlight = () => uploading.size;
+export function admitUpload(tenantId: string): (() => void) | null {
+  if (uploading.has(tenantId) || uploading.size >= MEDIA_LIMITS.uploadSlots)
+    return null;
+  uploading.add(tenantId);
+  let held = true;
+  return () => {
+    if (held) uploading.delete(tenantId);
+    held = false;
+  };
+}
+
 /** One upload at a time per process (R8: bounded CPU and memory on the web replica). */
 let queue: Promise<unknown> = Promise.resolve();
 function serial<T>(fn: () => Promise<T>): Promise<T> {
@@ -184,8 +205,21 @@ export async function uploadProductImage(
       throw new DomainError("operation_conflict", 409);
     return prior.result as ImageResult;
   }
-  const processed = processUpload(body);
   return serial(async () => {
+    // The cheap refusals before the parse (both re-checked in tx A): the restaurant's window, and
+    // a product that does not exist. Then the parse, one at a time (KV-SECURITY-1).
+    await tenant(sql, s.tenantId, async (tx) => {
+      const [n] = await tx`select count(*)::int as n from menu_media
+        where created_at>now()-interval '10 minutes'`;
+      if (n.n >= MEDIA_LIMITS.uploadsPerWindow)
+        throw new DomainError("media_rate_limited", 429);
+      const [product] =
+        await tx`select id from catalog where id=${p.productId}`;
+      if (!product) throw new DomainError("not_found", 404);
+    });
+    const processed = processUpload(body);
+    // Let the requests that waited during the parse run before the next phase.
+    await new Promise((resolve) => setImmediate(resolve));
     const assetId = randomUUID();
     await tenant(sql, s.tenantId, async (tx) => {
       await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + p.operationId},0))`;

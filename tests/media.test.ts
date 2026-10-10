@@ -12,7 +12,12 @@ import {
   MEDIA_LIMITS,
   mediaUrl,
 } from "../shared/media";
-import { processUpload, uploadProductImage } from "../server/media";
+import {
+  admitUpload,
+  processUpload,
+  uploadProductImage,
+  uploadsInFlight,
+} from "../server/media";
 import { mediaStore, signV4 } from "../server/media-store";
 import { DomainError, type Session } from "../shared/domain";
 import {
@@ -639,5 +644,31 @@ describe("an upload with no media store (KIOSK-OPS-1, LD-95)", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe("photo upload admission before the body is read (KV-SECURITY-1, R8)", () => {
+  it("one upload in flight per restaurant and MEDIA_LIMITS.uploadSlots in the process; each release frees its slot once", () => {
+    expect(MEDIA_LIMITS.uploadSlots).toBe(2);
+    expect(uploadsInFlight()).toBe(0);
+    const a = admitUpload("A");
+    expect(a).toBeTypeOf("function");
+    expect(admitUpload("A")).toBeNull();
+    const b = admitUpload("B");
+    expect(b).toBeTypeOf("function");
+    expect(admitUpload("C")).toBeNull();
+    expect(uploadsInFlight()).toBe(2);
+    a!();
+    a!();
+    expect(uploadsInFlight()).toBe(1);
+    const c = admitUpload("C");
+    expect(c).toBeTypeOf("function");
+    // The process is full again: A waits even though its own upload ended.
+    expect(admitUpload("A")).toBeNull();
+    b!();
+    c!();
+    expect(uploadsInFlight()).toBe(0);
+    admitUpload("A")!();
+    expect(uploadsInFlight()).toBe(0);
   });
 });

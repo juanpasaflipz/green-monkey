@@ -132,7 +132,7 @@ export function MenuMediaImport({
           importDigestInput(productId, product.version, fileHash),
         ),
       );
-      for (let tries = 0; ; tries++) {
+      for (let tries = 0, busy = 0; ; tries++) {
         try {
           const r = await api<{ image: { id: string } | null }>(
             `/menu/products/${productId}/image`,
@@ -149,6 +149,16 @@ export function MenuMediaImport({
           );
           return { outcome: "imported", assetId: r.image?.id };
         } catch (e) {
+          // Another upload in flight on the server (KV-SECURITY-1): a short wait, the same upload.
+          if (
+            (e as Error).message === "media_busy" &&
+            busy < MEDIA_IMPORT_LIMITS.busyRetries
+          ) {
+            busy += 1;
+            tries -= 1;
+            await wait(MEDIA_IMPORT_LIMITS.busyWaitMs);
+            continue;
+          }
           // The per-tenant upload limit (30 per 10 minutes): wait and retry the same upload.
           if (
             (e as Error).message !== "media_rate_limited" ||

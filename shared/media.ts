@@ -14,6 +14,11 @@ export const MEDIA_LIMITS = {
   quality: 0.8,
   /** Uploads per tenant per 10 minutes (R8). */
   uploadsPerWindow: 30,
+  /**
+   * Uploads in flight in one process, one per restaurant; more answer 429 media_busy before the
+   * body is read (R8, KV-SECURITY-1).
+   */
+  uploadSlots: 2,
   /** The upload body (three variants). */
   maxUploadBytes: 4 * 1024 * 1024,
   /** Removed assets are purged 7 days later; an upload left half-done is swept after 1 hour. */

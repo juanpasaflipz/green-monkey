@@ -4,7 +4,7 @@
 import express from "express";
 import type postgres from "postgres";
 import type { RouteContext } from "../http.js";
-import type { AuthRequest } from "../auth.js";
+import { managers, permit, type AuthRequest } from "../auth.js";
 import { DomainError, id } from "../../shared/domain.js";
 import { MEDIA_LIMITS } from "../../shared/media.js";
 import {
@@ -17,6 +17,7 @@ import {
   saveSuggestions,
 } from "../kiosk-settings.js";
 import {
+  admitUpload,
   recordMediaImport,
   removeProductImage,
   uploadProductImage,
@@ -24,13 +25,33 @@ import {
 import { kioskReport } from "../kiosk-report.js";
 import { snapshotTenant } from "../reports/snapshot.js";
 
-function uploadRoute(app: express.Express, sql: postgres.Sql) {
+/**
+ * POST /api/menu/products/:id/image. Admission runs before express.raw (KV-SECURITY-1): an
+ * owner or manager, and a free upload slot (admitUpload: one per restaurant, MEDIA_LIMITS
+ * .uploadSlots per process), else the body is never read (403, 429 media_busy). Exported for the
+ * kiosk DB suite, which mounts it behind its own session.
+ */
+export function uploadRoute(app: express.Express, sql: postgres.Sql) {
   const raw = express.raw({
     type: ["application/octet-stream", "image/webp"],
     limit: MEDIA_LIMITS.maxUploadBytes,
   });
   app.post(
     "/api/menu/products/:id/image",
+    (req, res, next) => {
+      try {
+        const s = (req as unknown as AuthRequest).session;
+        permit(s, managers);
+        const release = admitUpload(s.tenantId);
+        if (!release) throw new DomainError("media_busy", 429);
+        res.once("finish", release);
+        res.once("close", release);
+        next();
+      } catch (e) {
+        res.set("Cache-Control", "no-store");
+        next(e);
+      }
+    },
     (req, res, next) =>
       raw(req, res, (e?: unknown) => {
         if ((e as { type?: string } | undefined)?.type === "entity.too.large")
