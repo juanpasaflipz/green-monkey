@@ -391,8 +391,10 @@ export function orderNumberLabel(
 
 /**
  * The order mode's label key: a dine-in order without a table is a kiosk "para aquí" (039),
- * labelled "Comer aquí" instead of "En mesa" on the KDS, the kitchen ticket and Órdenes.
+ * labelled "Comer aquí" instead of "En mesa" on the KDS, the kitchen ticket, Órdenes, the order
+ * detail and the orders CSV. Finanzas › Por tipo de servicio gets the same split from the server
+ * as the key 'eat_in' (server/reports/breakdowns.ts groupBreakdown).
  */
 export function orderModeKey(mode: string, hasTable: boolean): Key {
-  return mode === "dine_in" && !hasTable ? "kioskEatIn" : (mode as Key);
+  return mode === "dine_in" && !hasTable ? "eat_in" : (mode as Key);
 }

@@ -298,13 +298,20 @@ export async function hourBreakdown(
   };
 }
 
-/** Por canal / Por tipo de servicio: orders and sales per orders.channel or orders.mode. */
+/**
+ * Por canal / Por tipo de servicio: orders and sales per orders.channel or orders.mode. A dine-in
+ * order without a table (the kiosk's «para aquí», 039) is its own key, 'eat_in' («Comer aquí»),
+ * never counted as table service (KIOSK-OPS-11; src/labels.ts orderModeKey).
+ */
 export async function groupBreakdown(
   tx: Tx,
   range: DateRange,
   by: "channel" | "mode",
 ): Promise<BreakdownResponse & { by: "channel" | "mode" }> {
-  const column = by === "channel" ? tx`o.channel` : tx`o.mode`;
+  const column =
+    by === "channel"
+      ? tx`o.channel`
+      : tx`case when o.mode = 'dine_in' and o.table_id is null then 'eat_in' else o.mode end`;
   const rows = await tx<Row[]>`
     select ${column} as key, count(*) filter (where o.total > 0)::int as orders,
       coalesce(sum(o.total), 0)::int8 as sales_total

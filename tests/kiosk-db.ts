@@ -75,6 +75,7 @@ import {
 import { riff, uploadBody, vp8l } from "./fixtures/webp.js";
 import { jpeg, jpegUploadBody } from "./fixtures/jpeg.js";
 import { kioskReport } from "../server/kiosk-report.js";
+import { groupBreakdown } from "../server/reports/breakdowns.js";
 import { kioskSubmit } from "../server/kiosk-diner.js";
 import { exceptionRows } from "../server/reports/exceptions.js";
 import { sellingCatalog } from "../server/menu-read.js";
@@ -2404,6 +2405,28 @@ try {
     assert.equal(r.review.refunded, 1);
     assert.equal(r.review.refundedAmount, 3500);
     assert.ok(r.review.resolved >= 3, "two retries and one refund");
+    // KIOSK-OPS-11: «Por tipo de servicio» counts a kiosk «para aquí» (dine-in, no table) as
+    // eat_in («Comer aquí»), never as table service.
+    const modes = await write(manager, (tx) =>
+      groupBreakdown(tx, { from: day, to: day }, "mode"),
+    );
+    const [eatIn] = await asOwner(
+      A,
+      (tx) => tx`select
+        count(*) filter (where total > 0 and table_id is null)::int as orders,
+        coalesce(sum(total) filter (where table_id is null),0)::int as total,
+        count(*) filter (where total > 0 and table_id is not null)::int as tabled
+      from orders where tenant_id=${A} and business_date=${day}::date and mode='dine_in'`,
+    );
+    assert.ok(eatIn.orders > 0, "the kiosk's «para aquí» orders");
+    const eatInRow = modes.rows.find((x) => x.key === "eat_in");
+    assert.equal(eatInRow?.orders, eatIn.orders);
+    assert.equal(eatInRow?.salesTotal, eatIn.total);
+    assert.equal(
+      modes.rows.find((x) => x.key === "dine_in")?.orders ?? 0,
+      eatIn.tabled,
+      "En mesa counts only orders with a table",
+    );
     await rejects(
       write(cashier, (tx) => kioskReport(tx, cashier, { from: day, to: day })),
       "forbidden",

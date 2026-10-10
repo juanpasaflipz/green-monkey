@@ -23,6 +23,11 @@ import {
 import { cardOffText } from "../src/features/public/KioskSettings";
 import { kioskReportTiles } from "../src/features/public/KioskReport";
 import { moneyFormatter } from "../src/features/menu/format";
+import { orderModeKey } from "../src/labels";
+import {
+  channelColumns,
+  orderColumns,
+} from "../src/features/reports/csv";
 import {
   afterCancel,
   cancelsOnReset,
@@ -992,5 +997,32 @@ describe("Finanzas › Kiosco (039 §6.3, KIOSK-OPS-4, KIOSK-UX-19)", () => {
       ["Refunded at the provider", "0"],
       ["Amount refunded", "MX$0.00"],
     ]);
+  });
+});
+
+describe("a kiosk «para aquí» order reads «Comer aquí», never table service (KIOSK-OPS-11, KIOSK-UX-14)", () => {
+  it("orderModeKey: dine-in without a table is eat_in; with a table, and every other mode, keep their key", () => {
+    expect(orderModeKey("dine_in", false)).toBe("eat_in");
+    expect(orderModeKey("dine_in", true)).toBe("dine_in");
+    expect(orderModeKey("takeaway", false)).toBe("takeaway");
+    expect(orderModeKey("delivery", false)).toBe("delivery");
+    expect(strings.es[orderModeKey("dine_in", false)]).toBe("Comer aquí");
+    expect(strings.en[orderModeKey("dine_in", false)]).toBe("Eat in");
+    expect(strings.es[orderModeKey("dine_in", true)]).toBe("En mesa");
+  });
+  it("the orders CSV and «Por tipo de servicio» CSV label the server's eat_in key «Comer aquí»", () => {
+    const mode = orderColumns("es").find(
+      (c) =>
+        typeof c.header !== "string" &&
+        c.header.es === strings.es.reportsColMode,
+    )!;
+    const row = (tableName: string | null) =>
+      ({ mode: "dine_in", tableName }) as never;
+    expect(mode.value(row(null))).toBe("Comer aquí");
+    expect(mode.value(row("Mesa 4"))).toBe("En mesa");
+    const group = channelColumns("es")[0];
+    expect(
+      group.value({ group: "mode", key: "eat_in" } as never),
+    ).toBe("Tipo de servicio: Comer aquí");
   });
 });

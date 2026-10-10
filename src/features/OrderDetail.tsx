@@ -9,6 +9,7 @@ import { strings, errorNotice, type Key } from "../i18n";
 import {
   channelLabel,
   currentBusinessDate,
+  orderModeKey,
   orderNumberText,
   tenderLabel,
 } from "../labels";
@@ -179,7 +180,8 @@ export function OrderDetail({
           <p className="muted">
             {dateTime(order.createdAt, zone, locale)} ·{" "}
             {channelLabel(order.channel ?? "pos", locale)} ·{" "}
-            {t(order.mode as Key)} · {order.tableName ?? t("noTable")} ·{" "}
+            {t(orderModeKey(order.mode, !!order.tableName))} ·{" "}
+            {order.tableName ?? t("noTable")} ·{" "}
             {order.waiterName}
             <br />
             {t("serviceDetailOpenedBy")

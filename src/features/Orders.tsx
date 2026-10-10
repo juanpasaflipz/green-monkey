@@ -9,7 +9,7 @@ import {
 } from "../../shared/service";
 import { api } from "../api";
 import { strings, errorNotice, translateError, type Key } from "../i18n";
-import { channelLabel, orderNumberLabel } from "../labels";
+import { channelLabel, orderModeKey, orderNumberLabel } from "../labels";
 import { Badge, Button, Empty, Field } from "../components/ui";
 import {
   requestSellingContext,
@@ -327,7 +327,8 @@ export function Orders({
                   {/* LD-29: the number names an order of another business day
                       ("#10 · 5 oct"); the card shows that date once (LD-48). */}
                   <span className="eyebrow">
-                    {orderNumberLabel(o, today, locale)} · {t(o.mode as Key)} ·{" "}
+                    {orderNumberLabel(o, today, locale)} ·{" "}
+                    {t(orderModeKey(o.mode, !!o.tableName))} ·{" "}
                     {channelLabel(o.channel, locale)}
                   </span>
                   <h3>{o.name || t("order")}</h3>

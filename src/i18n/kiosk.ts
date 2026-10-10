@@ -149,7 +149,6 @@ export default defineArea({
     kioskAcceptCollectRest: "Aceptar y cobrar {rest}",
     kioskRejectRefundHint:
       "Antes de confirmar, reembolsa los {amount} completos en la app de la terminal ({terminal}) y anota el folio del reembolso.",
-    kioskEatIn: "Comer aquí",
     kioskReportTitle: "Kiosco",
     kioskReportOrders: "Pedidos del kiosco",
     kioskReportPaidKiosk: "Pagados en el kiosco",
@@ -313,7 +312,6 @@ export default defineArea({
     kioskAcceptCollectRest: "Accept and collect {rest}",
     kioskRejectRefundHint:
       "Before you confirm, refund the full {amount} in the terminal's app ({terminal}) and note the refund's reference.",
-    kioskEatIn: "Eat in",
     kioskReportTitle: "Kiosk",
     kioskReportOrders: "Kiosk orders",
     kioskReportPaidKiosk: "Paid at the kiosk",

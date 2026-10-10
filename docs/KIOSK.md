@@ -279,7 +279,8 @@ declared.
 039 adds `kiosk_settings`, `kiosk_stations`, `kiosk_devices`, `kiosk_checkouts`, `menu_media`,
 `menu_suggestions` (FORCE RLS; no DELETE grant on any; identities immutable by trigger),
 `public_links.station_id` and `public_order_holds.decision_source` (`staff` | `kiosk`), and lets a
-kiosk hold be dine-in without a table ("Comer aquí" on the KDS and the kitchen ticket). Owner export
+kiosk hold be dine-in without a table ("Comer aquí" on the KDS, the kitchen ticket, Órdenes, the
+order detail and the orders CSV; its own `eat_in` row in Finanzas › Por tipo de servicio). Owner export
 labels all six tables; device hashes are excluded by the column rule. Retention blanks
 `kiosk_checkouts.loyalty_member_id` after 30 days; media rows are kept, objects purged 7 days after
 removal.
