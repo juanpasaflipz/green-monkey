@@ -64,6 +64,7 @@ export function ProductEditor({
   onClose,
   onReload,
   onAvailability,
+  onPhoto,
   renderFiscal,
 }: {
   payload: MenuEditorPayload;
@@ -81,6 +82,11 @@ export function ProductEditor({
   onReload: () => void;
   /** The live switch in the header was saved; the list must follow. */
   onAvailability?: (productId: string, available: boolean) => void;
+  /**
+   * A photo was uploaded or removed (its own command; the editor follows the version it bumps):
+   * the list must follow, and the editor stays open with its preview and unsaved edits.
+   */
+  onPhoto?: () => void;
   /**
    * Extension slot for fiscal (027): renders the "Impuestos" section. Without
    * it no section is shown and no `fiscal` is sent, so saves preserve whatever
@@ -688,7 +694,7 @@ export function ProductEditor({
                 onChanged={(r) => {
                   setImage(r.image ?? null);
                   setVersion(r.version);
-                  onReload();
+                  onPhoto?.();
                 }}
               />
             ) : (

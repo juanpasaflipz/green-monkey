@@ -728,6 +728,7 @@ export function MenuWorkspace({
             patch((cur) => withProductAvailable(cur, id, available));
             void load();
           }}
+          onPhoto={() => void load()}
         />
       )}
       {importing && (
