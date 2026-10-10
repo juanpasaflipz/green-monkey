@@ -42,7 +42,12 @@ import { saveTerminal } from "../server/payments/settings.js";
 import { requestCancel, resolveAttempt } from "../server/payments/terminal.js";
 import { publicOrdering } from "../server/public-ordering.js";
 import { createLink, revokeLink, rotateLink } from "../server/public-links.js";
-import { acceptHold, inbox, rejectHold } from "../server/public-holds.js";
+import {
+  acceptHold,
+  claimHold,
+  inbox,
+  rejectHold,
+} from "../server/public-holds.js";
 import { closeCash } from "../server/cash.js";
 import { saveFiscalProfile } from "../server/fiscal.js";
 import { getOrder, recordPayment } from "../server/orders.js";
@@ -3321,6 +3326,81 @@ try {
     const normal = await plain(cashier, h4.id);
     assert.equal(normal.hold.state, "accepted");
     assert.equal((await holdOf(o4.key)).policy_override, false);
+    // KV-FIXES-1: «Cobrar y enviar a cocina» claims a declined hold for the counter before the
+    // cashier collects. Refused while the charge is live; then the kiosk's idle reset (its cancel)
+    // and a new card start are refused, and the cash accept succeeds.
+    const claim = (holdId: string) =>
+      write(cashier, (tx) =>
+        claimHold(tx, cashier, holdId, { operationId: randomUUID() }),
+      );
+    const o5 = await order(k, [line(ids.taco)], 4500);
+    const h5 = await holdOf(o5.key);
+    await charge(k, o5.key);
+    const a5 = await attemptOf(o5.key);
+    await drive(a5.id, ["pending"]);
+    await rejects(claim(h5.id), "kiosk_charge_in_progress");
+    fake.decline(fake.chargeFor(a5.id)!.id);
+    await drive(a5.id, ["declined"]);
+    assert.equal((await inboxCard(h5.id))!.kiosk!.paymentChoice, "card");
+    const claimed = await claim(h5.id);
+    assert.equal(claimed.hold.id, h5.id);
+    assert.equal(claimed.hold.state, "pending");
+    assert.equal((await holdOf(o5.key)).payment_choice, "counter");
+    assert.equal((await inboxCard(h5.id))!.kiosk!.paymentChoice, "counter");
+    // A second claim (the dialog opened again) leaves it at the counter.
+    assert.equal((await claim(h5.id)).hold.state, "pending");
+    const reset = await call("POST", "/kiosk/cancel", {
+      link: k.link,
+      tablet: k.tablet,
+      body: { statusKey: o5.key },
+    });
+    assert.equal(reset.status, 409, JSON.stringify(reset.body));
+    assert.equal(reset.body.error, "kiosk_hold_at_counter");
+    assert.equal((await holdOf(o5.key)).state, "pending");
+    const retry = await charge(k, o5.key);
+    assert.equal(retry.status, 409, JSON.stringify(retry.body));
+    assert.equal(retry.body.error, "kiosk_card_unavailable");
+    const collected = await write(cashier, (tx) =>
+      acceptHold(tx, cashier, h5.id, {
+        operationId: randomUUID(),
+        target: { kind: "new" },
+        payment: { method: "cash", amount: 4500, tip: 0, received: 5000 },
+      }),
+    );
+    assert.equal(collected.hold.state, "accepted");
+    assert.equal(collected.order.paid, 4500);
+    // A decided hold is not claimed.
+    await rejects(claim(h5.id), "public_order_not_pending");
+    // KV-FIXES-3: a hold claimed in time and collected after it expired gets the paid accept's
+    // grace (the cashier charged before confirming); a claim after the expiry is refused.
+    const age = (holdId: string, ago: string) =>
+      admin.begin(async (tx) => {
+        await tx`select set_config('app.tenant_id', ${A}, true)`;
+        await tx`alter table public_order_holds disable trigger public_order_holds_transition`;
+        await tx`update public_order_holds
+          set created_at=created_at-(expires_at-now()+${ago}::interval),
+            expires_at=now()-${ago}::interval
+          where tenant_id=${A} and id=${holdId}`;
+        await tx`alter table public_order_holds enable trigger public_order_holds_transition`;
+      });
+    const o6 = await order(k, [line(ids.taco)], 4500);
+    const h6 = await holdOf(o6.key);
+    await claim(h6.id);
+    await age(h6.id, "2 minutes");
+    const late = await write(cashier, (tx) =>
+      acceptHold(tx, cashier, h6.id, {
+        operationId: randomUUID(),
+        target: { kind: "new" },
+        payment: { method: "cash", amount: 4500, tip: 0, received: 4500 },
+      }),
+    );
+    assert.equal(late.hold.state, "accepted");
+    assert.equal(late.order.paid, 4500);
+    const o7 = await order(k, [line(ids.taco)], 4500);
+    const h7 = await holdOf(o7.key);
+    await age(h7.id, "1 second");
+    await rejects(claim(h7.id), "public_order_expired");
+    assert.equal((await holdOf(o7.key)).payment_choice, null);
     await write(manager, (tx) =>
       revokeLink(tx, manager, k.linkId, { operationId: randomUUID() }),
     );

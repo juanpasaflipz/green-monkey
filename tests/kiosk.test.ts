@@ -82,6 +82,7 @@ import { strings, translateError } from "../src/i18n";
 import {
   acceptInput,
   holdActions,
+  claimsForCounter,
   inboxActions,
   kioskChargingExits,
   kioskInboxState,
@@ -736,6 +737,20 @@ describe("a kiosk hold in the staff inbox (KIOSK-UX-04, KIOSK-MONEY-3)", () => {
     }
     // Under the default policy a plain «Aceptar» would have fired the unpaid order.
     expect(holdActions("accept", "cashier", 4500).accept).toBe(true);
+  });
+  it("KV-FIXES-1: «Cobrar y enviar a cocina» first claims, for the counter, a hold still at the kiosk or an abandoned card checkout, and nothing else", () => {
+    expect(claimsForCounter(kiosk({}))).toBe(true);
+    expect(claimsForCounter(kiosk({ paymentChoice: "card" }))).toBe(true);
+    expect(claimsForCounter(null)).toBe(false);
+    expect(claimsForCounter(kiosk({ paymentChoice: "counter" }))).toBe(false);
+    expect(
+      claimsForCounter(
+        kiosk({ paymentChoice: "card", attemptId: "a", charging: true }),
+      ),
+    ).toBe(false);
+    expect(claimsForCounter(kiosk({ paymentChoice: "card", review }))).toBe(
+      false,
+    );
   });
 });
 

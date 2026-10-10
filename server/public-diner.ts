@@ -497,11 +497,15 @@ export async function cancelHold(
   const [h] = await holdByKey(tx, linkId, statusKey, true);
   if (!h) throw new DomainError("public_hold_not_found", 404);
   // Kiosk (039, critic R12): the checkout right after its hold; no cancel while payments may still
-  // take, or has taken, the hold's card charge.
+  // take, or has taken, the hold's card charge. Nor once the hold belongs to the counter («Pagar
+  // en caja», or staff claimed it to collect: KV-FIXES-1), since the cashier may be charging.
   if (h.channel === "kiosk") {
-    await tx`select hold_id from kiosk_checkouts where hold_id=${h.id} for update`;
+    const [c] =
+      await tx`select payment_choice from kiosk_checkouts where hold_id=${h.id} for update`;
     if (await liveAttemptForHold(tx, h.id))
       throw new DomainError("kiosk_charge_in_progress", 409);
+    if (h.state === "pending" && c?.payment_choice === "counter")
+      throw new DomainError("kiosk_hold_at_counter", 409);
   }
   if (h.state !== "pending")
     throw new DomainError("public_order_not_pending", 409);

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { Locale, Order, Session } from "../../../shared/domain";
-import type {
-  InboxHold,
-  InboxResponse,
-  RejectReason,
+import {
+  claimsForCounter,
+  type InboxHold,
+  type InboxResponse,
+  type RejectReason,
 } from "../../../shared/public-ordering";
 import type { PaymentValues } from "../../../shared/service";
 import {
@@ -240,6 +241,22 @@ export function PublicOrderInbox({
     due: number,
     charge?: KioskCharge,
   ) {
+    // A kiosk hold the guest has not sent to the counter is claimed for it first, so the kiosk's
+    // idle reset cannot cancel the hold while the cashier charges the guest (KV-FIXES-1).
+    if (!charge && claimsForCounter(hold.kiosk)) {
+      setBusy(hold.id);
+      try {
+        await api(`/ordering/holds/${hold.id}/claim`, {
+          operationId: crypto.randomUUID(),
+        });
+      } catch (e) {
+        failed(hold, e);
+        return;
+      } finally {
+        setBusy(null);
+      }
+      refresh();
+    }
     // This device's drawer (id and closed_at stay visible to every role).
     const drawerOpen = await api<{
       id?: string;

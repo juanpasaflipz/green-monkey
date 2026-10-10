@@ -377,6 +377,10 @@ export default defineArea({
       "Hay un cobro en curso en la terminal. Espera a que termine.",
       "A payment is in progress on the reader. Wait for it to finish.",
     ],
+    kiosk_hold_at_counter: [
+      "Tu pedido ya está en caja. Págalo ahí.",
+      "Your order is already at the counter. Please pay there.",
+    ],
     kiosk_charge_in_progress: [
       "El cliente está pagando en el kiosco. Espera o cancela el cobro en curso.",
       "The guest is paying at the kiosk. Wait, or cancel the payment in progress.",

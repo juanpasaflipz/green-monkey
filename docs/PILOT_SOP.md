@@ -734,6 +734,11 @@ kiosco de POS Lite (paso 1).
 - **Pedidos pagados en el kiosco.** Llegan solos a cocina en cuanto se aprueba la tarjeta, con
   «Comer aquí» o «Para llevar». El cobro queda en la caja que recibe los cobros, en su terminal.
 - **«Pagar en caja».** El cliente trae su código (K-14): cóbralo y acéptalo en Órdenes como hoy.
+- **«En el kiosco · aún no paga» y «Cobro con tarjeta abandonado».** El cliente sigue en el kiosco
+  sin elegir cómo pagar, o eligió tarjeta y no pagó (rechazada o se fue). Ese pedido no se acepta
+  sin cobrar: si el cliente pasa a caja, toca **Cobrar y enviar a cocina**. Al abrirse el cobro, el
+  pedido queda en caja y el kiosco ya no lo puede cancelar ni cobrar con tarjeta. Si nadie lo
+  cobra, el kiosco lo cancela solo 2 minutos después de que el cliente se va, y sale de Órdenes.
 - **«Pagando en el kiosco…».** Ese pedido no se puede aceptar ni rechazar mientras el cliente paga.
   Si se quedó atorado, un gerente toca **Cancelar cobro** en esa tarjeta.
 - **Tarjeta roja «pagó … y no se pudo enviar a cocina».** El cliente pagó pero un producto se

@@ -283,6 +283,11 @@ export const rejectInput = z
       .optional(),
   })
   .strict();
+/**
+ * Staff claim a kiosk hold for the counter when «Cobrar y enviar a cocina» opens on it
+ * (KV-FIXES-1): from then on the kiosk can no longer cancel it.
+ */
+export const claimInput = z.object({ operationId: id }).strict();
 
 // ---- wire views ---------------------------------------------------------
 
@@ -560,6 +565,17 @@ export function inboxActions(
     role,
     currentTotal,
   );
+}
+
+/**
+ * Whether «Cobrar y enviar a cocina» claims the hold for the counter before the payment dialog
+ * opens (KV-FIXES-1; pure, tests/kiosk.test.ts): a kiosk hold the guest has not sent to the counter
+ * («En el kiosco», «Cobro con tarjeta abandonado»). The kiosk's idle reset or «Cancelar pedido»
+ * would otherwise cancel the hold while the cashier charges the guest.
+ */
+export function claimsForCounter(k: InboxHold["kiosk"]): boolean {
+  const state = kioskInboxState(k);
+  return state === "at_kiosk" || state === "card_unpaid";
 }
 
 /** The diner never learns that staff flagged the order as abuse. */

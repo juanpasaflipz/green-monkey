@@ -14,6 +14,7 @@ import {
 } from "../public-links.js";
 import {
   acceptHold,
+  claimHold,
   inbox,
   inboxSummary,
   rejectHold,
@@ -104,6 +105,10 @@ export function register({ app, route }: RouteContext) {
   route("post", "/ordering/holds/:id/accept", async (tx, s, req) => {
     gate();
     return acceptHold(tx, s, id.parse(req.params.id), req.body);
+  });
+  route("post", "/ordering/holds/:id/claim", async (tx, s, req) => {
+    gate();
+    return claimHold(tx, s, id.parse(req.params.id), req.body);
   });
   route("post", "/ordering/holds/:id/reject", async (tx, s, req) => {
     gate();

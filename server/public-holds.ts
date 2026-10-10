@@ -41,6 +41,7 @@ import {
   PAID_ACCEPT_GRACE_SECONDS,
   PUBLIC_LIMITS,
   acceptInput,
+  claimInput,
   holdLabel,
   rejectInput,
   type HoldPolicy,
@@ -298,8 +299,13 @@ export async function lockHold(
   if (h.state !== "pending")
     throw new DomainError("public_order_not_pending", 409);
   if (o.paidInTime) return h;
+  // A kiosk hold is collected before its accept like a pay-first one: staff take it pay-first
+  // until the guest sends it to the counter, and «Cobrar y enviar a cocina» claims it for the
+  // counter before the cashier charges (KV-FIXES-1, KV-FIXES-3).
   const grace =
-    o.withPayment && h.policy === "pay_first" ? PAID_ACCEPT_GRACE_SECONDS : 0;
+    o.withPayment && (h.policy === "pay_first" || h.channel === "kiosk")
+      ? PAID_ACCEPT_GRACE_SECONDS
+      : 0;
   // A second statement: the lock statement's own expressions may be computed
   // before it waited for the row.
   const [clock] =
@@ -479,6 +485,39 @@ export async function assertNoKioskCharge(tx: Tx, h: HoldDecisionRow) {
   if (h.channel !== "kiosk") return;
   if (await liveAttemptForHold(tx, h.id))
     throw new DomainError("kiosk_charge_in_progress", 409);
+}
+
+/**
+ * «Cobrar y enviar a cocina» opened on a kiosk hold the guest has not sent to the counter
+ * (KV-FIXES-1): staff claim it for the counter before collecting (payment_choice 'counter'; 039's
+ * trigger allows null → counter and card → counter), so the kiosk's idle reset or «Cancelar
+ * pedido» can no longer cancel the hold the cashier is charging (cancelHold refuses a counter
+ * hold on the kiosk), and the kiosk can no longer start a card (kioskStartCharge). Refused while
+ * payments may still take, or has taken, the hold's card, and once the hold expired (no grace:
+ * nothing was collected yet). Locks: 1 → 2 → 2b (hold → checkout). A counter hold stays one.
+ */
+export async function claimHold(
+  tx: Tx,
+  s: Session,
+  holdId: string,
+  raw: unknown,
+): Promise<{ hold: { id: string; label: string; state: "pending" } }> {
+  permit(s, operators);
+  const p = claimInput.parse(raw);
+  return once(tx, s, p.operationId, "public.hold.claim", { holdId }, async () => {
+    const h = await lockHold(tx, holdId);
+    if (h.channel !== "kiosk") throw new DomainError("invalid_input");
+    await assertNoKioskCharge(tx, h);
+    await tx`update kiosk_checkouts set payment_choice='counter',updated_at=now()
+      where hold_id=${h.id} and payment_choice is distinct from 'counter'`;
+    return {
+      hold: {
+        id: h.id,
+        label: holdLabel(h.channel, h.number),
+        state: "pending" as const,
+      },
+    };
+  });
 }
 
 type AcceptBody = Pick<
