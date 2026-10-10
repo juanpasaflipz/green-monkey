@@ -23,7 +23,10 @@
  *   the retried ones (decision_source `kiosk`), staff the accepted one (`staff`). Finanzas ›
  *   Kiosco counts by that decision, the reviews resolved, and the suggestion lines accepted.
  * - S-R6 Excepciones: payments' kinds only (the kiosk adds none): one «Cobro en terminal por
- *   revisar» per review, one «resuelto por gerente» per manager record.
+ *   revisar» per review, one «resuelto por gerente» per manager record, and no other row. A
+ *   review names why the kiosk charge could not become the order (KIOSK-OPS-5): the 86'd product
+ *   of a retry (kiosk_settle_unavailable), the price that rose before an accept with the kiosk
+ *   payment (kiosk_settle_price_changed).
  * - S-R7 the club: the member's paid order earns one stamp (no extra-stamp threshold); before it
  *   the kiosk shows 0 of the stamps required, no name, the phone masked.
  */
@@ -247,6 +250,10 @@ export function oracleS() {
         number: x.o.number,
         amount: mxn(x.charged),
         terminal: PAYMENTS_S.terminals[x.terminal].name,
+        reason:
+          x.o.resolution.kind === "retry"
+            ? "un producto ya no está disponible"
+            : "cambió un precio",
       })),
       recorded: recorded.map((x) => ({
         number: x.o.number,

@@ -911,10 +911,17 @@ async function corteZ(owner: Device) {
   await expect(preview).toHaveCount(0);
 }
 
-/** Excepciones: payments' attempt kinds only; the kiosk adds none (critic R13). */
-async function exceptions(owner: Device) {
+/**
+ * Excepciones: payments' attempt kinds only; the kiosk adds none (critic R13, S-R6). Each kiosk
+ * charge's row names its hold «Kiosco · K-n», its terminal and why it went to review
+ * (KIOSK-OPS-5).
+ */
+async function exceptions(owner: Device, state: RunState) {
   const page = owner.page;
   const e = O().exceptions;
+  const labels = state.kioskLabels as Record<string, string>;
+  const hold = (number: number) =>
+    `Kiosco · ${labels[ORDERS_S.find((o) => o.number === number)!.id]!}`;
   run.step = "S6.3";
   await openFinance(owner, "Excepciones");
   const review = page
@@ -924,7 +931,7 @@ async function exceptions(owner: Device) {
   for (const x of e.review)
     await expect(
       review.filter({ hasText: `#${x.number}` }).filter({ hasText: x.amount }),
-    ).toContainText(x.terminal);
+    ).toContainText(`${hold(x.number)} · ${x.terminal} · ${x.reason}`);
   const recorded = page
     .getByRole("row")
     .filter({ hasText: "Cobro en terminal resuelto por gerente" });
@@ -934,7 +941,7 @@ async function exceptions(owner: Device) {
       `#${x.number}`,
       x.amount,
       staffS("saul").name,
-      `${x.terminal} · registrado`,
+      `${hold(x.number)} · ${x.terminal} · registrado`,
     ])
       await expect(recorded).toContainText(s);
   await expect(
@@ -942,9 +949,12 @@ async function exceptions(owner: Device) {
       .getByRole("row")
       .filter({ hasText: "Cobro en terminal sin confirmar" }),
   ).toHaveCount(0);
+  // No other row: the kiosk adds no exception kind of its own.
   await expect(
-    page.getByRole("row").filter({ hasText: /[Kk]iosco/ }),
-  ).toHaveCount(0);
+    page
+      .getByRole("table", { name: "Excepciones", exact: true })
+      .locator("tbody tr"),
+  ).toHaveCount(e.review.length + e.recorded.length);
 }
 
 async function tableRows(page: Page, heading: string) {
@@ -1087,7 +1097,7 @@ export async function serviceS(dev: Devices, state: RunState) {
   }
   await closeDrawer(caja);
   await corteZ(owner);
-  await exceptions(owner);
+  await exceptions(owner, state);
   await finance(owner);
   run.step = "S6.6";
   await fakeAtClose(state);

@@ -230,8 +230,18 @@ export const EXPECTED_S = {
   },
   exceptions: {
     review: [
-      { number: 3, amount: "$120.00", terminal: "MP Kiosco" },
-      { number: 4, amount: "$95.00", terminal: "Clip Kiosco" },
+      {
+        number: 3,
+        amount: "$120.00",
+        terminal: "MP Kiosco",
+        reason: "un producto ya no está disponible",
+      },
+      {
+        number: 4,
+        amount: "$95.00",
+        terminal: "Clip Kiosco",
+        reason: "cambió un precio",
+      },
     ],
     recorded: [{ number: 4, amount: "$95.00", terminal: "Clip Kiosco" }],
   },
