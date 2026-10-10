@@ -413,10 +413,57 @@
   font-weight: 700;
   margin: 0;
 }
+/* ¡Pagado! (KIOSK-UX-08): code and folio, the QRs side by side, then «Nuevo pedido»; in
+   landscape with a QR, two columns, so all of it fits 1280×800 and 800×1280, large text too. */
 .kiosk-paid {
   display: grid;
   justify-items: center;
+  gap: 16px;
+  width: 100%;
+}
+.kiosk-paid-main,
+.kiosk-paid-end {
+  display: grid;
+  justify-items: center;
   gap: 12px;
+}
+.kiosk-paid-main p,
+.kiosk-paid-end p {
+  margin: 0;
+}
+.kiosk-paid-qrs {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: start;
+  gap: 24px;
+}
+.kiosk-paid-qrs .kiosk-qr {
+  width: 220px;
+}
+@media (orientation: landscape) and (min-width: 900px) {
+  .kiosk-checkout:has(.kiosk-paid-qr) {
+    padding-top: 24px;
+  }
+  .kiosk-paid.kiosk-paid-qr {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "main qrs"
+      "main end";
+    align-items: center;
+    column-gap: 32px;
+  }
+  .kiosk-paid-qr .kiosk-paid-main {
+    grid-area: main;
+  }
+  .kiosk-paid-qr .kiosk-paid-qrs {
+    grid-area: qrs;
+    align-self: end;
+  }
+  .kiosk-paid-qr .kiosk-paid-end {
+    grid-area: end;
+    align-self: start;
+  }
 }
 .kiosk-qr {
   display: grid;

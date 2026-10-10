@@ -608,7 +608,12 @@ export function KioskCheckout(p: Props) {
   );
 }
 
-/** "¡Pagado!": the order number, the folio and self-invoice QR, and the club. */
+/**
+ * "¡Pagado!": the order number, the folio and self-invoice QR, and the club. The code and folio,
+ * the QRs side by side, then «Nuevo pedido»; in landscape with a QR, two columns (code on the
+ * left, QRs and «Nuevo pedido» on the right), so it fits 1280×800 and 800×1280 with «Texto
+ * grande» on (KIOSK-UX-08).
+ */
 function KioskPaid({
   view,
   locale,
@@ -620,51 +625,61 @@ function KioskPaid({
 }) {
   const t = strings[locale];
   const origin = typeof window === "undefined" ? "" : window.location.origin;
+  const invoice = view.selfInvoiceCode;
+  const join = !view.loyalty && view.joinOffer ? view.joinOffer : null;
   return (
-    <div className="kiosk-paid">
-      <h2 className="kiosk-title">
-        {fill(t.kioskPaid, { label: view.label })}
-      </h2>
-      <p className="kiosk-code">{view.label}</p>
-      {view.folio && <p>{fill(t.kioskFolio, { folio: view.folio })}</p>}
-      {view.selfInvoiceCode && (
-        <figure className="kiosk-qr">
-          <QRCodeSVG
-            value={`${origin}/f/${view.selfInvoiceCode}`}
-            size={160}
-            role="img"
-            aria-label={fill(t.kioskInvoiceQr, { folio: view.folio ?? "" })}
-          />
-          <figcaption>
-            {fill(t.kioskInvoiceQr, { folio: view.folio ?? "" })}
-          </figcaption>
-        </figure>
+    <div className={"kiosk-paid" + (invoice || join ? " kiosk-paid-qr" : "")}>
+      <div className="kiosk-paid-main">
+        <h2 className="kiosk-title">
+          {fill(t.kioskPaid, { label: view.label })}
+        </h2>
+        <p className="kiosk-code">{view.label}</p>
+        {view.folio && <p>{fill(t.kioskFolio, { folio: view.folio })}</p>}
+        {view.loyalty?.member && (
+          <p className="kiosk-club">
+            {fill(t.kioskStampEarned, {
+              earned: view.loyalty.stampsEarned,
+              n: view.loyalty.stamps,
+              required: view.loyalty.required,
+            })}
+            {view.loyalty.rewards > 0 && <span> {t.kioskReward}</span>}
+          </p>
+        )}
+      </div>
+      {(invoice || join) && (
+        <div className="kiosk-paid-qrs">
+          {invoice && (
+            <figure className="kiosk-qr">
+              <QRCodeSVG
+                value={`${origin}/f/${invoice}`}
+                size={160}
+                role="img"
+                aria-label={fill(t.kioskInvoiceQr, { folio: view.folio ?? "" })}
+              />
+              <figcaption>
+                {fill(t.kioskInvoiceQr, { folio: view.folio ?? "" })}
+              </figcaption>
+            </figure>
+          )}
+          {join && (
+            <figure className="kiosk-qr">
+              <QRCodeSVG
+                value={join.url}
+                size={160}
+                role="img"
+                aria-label={t.kioskJoinPitch}
+              />
+              <figcaption>{t.kioskJoinPitch}</figcaption>
+            </figure>
+          )}
+        </div>
       )}
-      {view.loyalty?.member && (
-        <p className="kiosk-club">
-          {fill(t.kioskStampEarned, {
-            earned: view.loyalty.stampsEarned,
-            n: view.loyalty.stamps,
-            required: view.loyalty.required,
-          })}
-          {view.loyalty.rewards > 0 && <span> {t.kioskReward}</span>}
-        </p>
-      )}
-      {!view.loyalty && view.joinOffer && (
-        <figure className="kiosk-qr">
-          <QRCodeSVG
-            value={view.joinOffer.url}
-            size={160}
-            role="img"
-            aria-label={t.kioskJoinPitch}
-          />
-          <figcaption>{t.kioskJoinPitch}</figcaption>
-        </figure>
-      )}
-      <p className="muted">{t.kioskPrintedTicket}</p>
-      <Button variant="primary" className="kiosk-new" onClick={onDone}>
-        {t.kioskNewOrder}
-      </Button>
+      <div className="kiosk-paid-end">
+        <p className="muted">{t.kioskPrintedTicket}</p>
+        <Button variant="primary" className="kiosk-new" onClick={onDone}>
+          {t.kioskNewOrder}
+        </Button>
+      </div>
     </div>
   );
 }

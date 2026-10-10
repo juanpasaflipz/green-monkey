@@ -338,12 +338,25 @@ test("kiosk card payment: pairing from Configuración, para aquí, the card appr
     ).toBeVisible({ timeout: 60_000 });
     await expect(kiosk.locator(".kiosk-paid")).toContainText("Folio");
     await axe(kiosk);
+    // KIOSK-UX-08: the code, every QR and «Nuevo pedido» fit the screen in both orientations.
+    const paidFits = async () => {
+      await expect(kiosk.locator(".kiosk-paid .kiosk-code")).toBeInViewport({
+        ratio: 1,
+      });
+      for (const qr of await kiosk.locator(".kiosk-paid .kiosk-qr").all())
+        await expect(qr).toBeInViewport({ ratio: 1 });
+      await expect(
+        kiosk.getByRole("button", { name: "Nuevo pedido", exact: true }),
+      ).toBeInViewport({ ratio: 1 });
+    };
+    await paidFits();
     // The welcome tap asked for fullscreen (§2.11); leave it to resize the window.
     await kiosk.evaluate(() =>
       document.fullscreenElement ? document.exitFullscreen() : undefined,
     );
     await kiosk.setViewportSize({ width: 800, height: 1280 });
     await axe(kiosk);
+    await paidFits();
     // The order reached the kitchen as "Comer aquí" (dine in, no table), paid by the card.
     const label = (
       await kiosk.locator(".kiosk-paid .kiosk-code").innerText()
