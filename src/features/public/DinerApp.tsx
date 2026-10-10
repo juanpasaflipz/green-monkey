@@ -35,6 +35,29 @@ import { KioskDone } from "./KioskDone";
 import { PrivacyDialog } from "./PrivacyDialog";
 import { Button, Modal } from "../../components/ui";
 import { PLATFORM_PRIVACY_PATH } from "./dinerRoute";
+import {
+  KIOSK_LIMITS,
+  pickSuggestions,
+  type KioskMenuBlock,
+} from "../../../shared/kiosk";
+import { orderable } from "../../../shared/menu";
+import { kioskApi } from "./kiosk/kioskApi";
+import { KioskCheckout } from "./kiosk/KioskCheckout";
+import {
+  KioskAccessibility,
+  KioskMember,
+  KioskSetup,
+  KioskWelcome,
+  SetupGesture,
+  type KioskA11y,
+} from "./kiosk/KioskScreens";
+import { KioskProductSheet, SuggestionStrip } from "./kiosk/KioskProduct";
+import {
+  enterFullscreen,
+  keepAwake,
+  viewportClass,
+  watchDevice,
+} from "./kiosk/kioskDevice";
 import "./diner.css";
 
 export type DraftLine = {
@@ -42,6 +65,8 @@ export type DraftLine = {
   productId: string;
   quantity: number;
   options: string[];
+  /** Kiosk (039): added from a suggestion (report attribution only). */
+  origin?: "suggestion";
 };
 export type Draft = { lines: DraftLine[]; name: string; note: string };
 /** A diner's own order on this phone (QR only, sessionStorage). */
@@ -111,9 +136,9 @@ export function DinerApp({
   const [error, setError] = useState("");
   const [picker, setPicker] = useState<Product | null>(null);
   // A reload of a QR page returns to this phone's latest order.
-  const [view, setView] = useState<"menu" | "status" | "kiosk-done">(() =>
-    !kiosk && readStored(token).length ? "status" : "menu",
-  );
+  const [view, setView] = useState<
+    "menu" | "status" | "kiosk-done" | "checkout"
+  >(() => (!kiosk && readStored(token).length ? "status" : "menu"));
   const [holds, setHolds] = useState<StoredHold[]>(() =>
     kiosk ? [] : readStored(token),
   );
@@ -131,6 +156,16 @@ export function DinerApp({
   // Focus moves to the status heading after a user action switched to it (UX-6).
   const [focusStatus, setFocusStatus] = useState(false);
   const [loadFailures, setLoadFailures] = useState(0);
+  // Kiosk self-checkout (039): the station's state, the welcome screen of a bound tablet, the
+  // hidden setup form, the club lookup, accessibility, and the product sheet.
+  const [kioskState, setKioskState] = useState<KioskMenuBlock | null>(null);
+  const [welcome, setWelcome] = useState(false);
+  const [setup, setSetup] = useState(false);
+  const [memberOpen, setMemberOpen] = useState(false);
+  const [memberToken, setMemberToken] = useState<string | null>(null);
+  const [a11yOpen, setA11yOpen] = useState(false);
+  const [a11y, setA11y] = useState<KioskA11y>({ large: false, reach: false });
+  const [sheet, setSheet] = useState<Product | null>(null);
   const failures = useRef(0);
   const baseline = useRef<number | null>(null);
   const viewRef = useRef(view);
@@ -180,6 +215,50 @@ export function DinerApp({
   useEffect(() => {
     void loadMenu().catch(() => {});
   }, [token]);
+  async function loadKioskState(first = false) {
+    try {
+      const k = await kioskApi.state(token);
+      setKioskState(k);
+      if (first && k.bound) setWelcome(true);
+    } catch {
+      // Unknown: the kiosk keeps working as a counter-only kiosk.
+    }
+  }
+  useEffect(() => {
+    if (!kiosk) return;
+    void loadKioskState(true);
+    const timer = setInterval(
+      () => void loadKioskState(),
+      KIOSK_LIMITS.heartbeatMs,
+    );
+    return () => clearInterval(timer);
+  }, [kiosk, token]);
+  const bound = !!kioskState?.bound;
+  const idleRef = useRef(true);
+  idleRef.current = welcome && draft.lines.length === 0;
+  // A bound tablet: heartbeat and new-build reload every minute, and a wake lock while visible.
+  useEffect(() => {
+    if (!kiosk || !bound) return;
+    const stopWatch = watchDevice({
+      everyMs: KIOSK_LIMITS.heartbeatMs,
+      beat: () =>
+        kioskApi.heartbeat(
+          token,
+          (
+            (import.meta as unknown as { env?: Record<string, string> }).env
+              ?.VITE_BUILD_ID ?? "local"
+          ).slice(0, 40),
+          viewportClass(window.innerWidth, window.innerHeight),
+        ),
+      idle: () => idleRef.current,
+      reload: () => window.location.reload(),
+    });
+    const stopAwake = keepAwake(() => true);
+    return () => {
+      stopWatch();
+      stopAwake();
+    };
+  }, [kiosk, bound, token]);
   // A kiosk that powered on before the network keeps trying until the menu
   // loads, without anyone tapping "Reintentar" (UX-14).
   useEffect(() => {
@@ -255,11 +334,13 @@ export function DinerApp({
     setUnknown(null);
     setError("");
   }
-  function add(p: Product, options: string[] = []) {
+  function add(p: Product, options: string[] = [], origin?: "suggestion") {
+    setSheet(null);
     edit((d) => {
       const same = d.lines.find(
         (l) =>
           l.productId === p.id &&
+          l.origin === origin &&
           l.options.length === options.length &&
           l.options.every((o, i) => o === options[i]),
       );
@@ -278,6 +359,7 @@ export function DinerApp({
                 productId: p.id,
                 quantity: 1,
                 options,
+                ...(origin ? { origin } : {}),
               },
             ],
       };
@@ -381,6 +463,12 @@ export function DinerApp({
     }
   }
   function submit() {
+    if (kiosk && kioskState) {
+      // Kiosk (039): "¿Para aquí o para llevar?" and the payment happen in the checkout.
+      setError("");
+      setView("checkout");
+      return;
+    }
     key.current ??= {
       operationId: crypto.randomUUID(),
       statusKey: newStatusKey(),
@@ -406,6 +494,13 @@ export function DinerApp({
     setError("");
     setLocale("es");
     setView("menu");
+    setSheet(null);
+    setSetup(false);
+    setMemberOpen(false);
+    setMemberToken(null);
+    setA11yOpen(false);
+    setA11y({ large: false, reach: false });
+    setWelcome(bound);
     window.scrollTo({ top: 0 });
     refreshCatalog();
     setAnnounce(strings.es.publicKioskReset);
@@ -506,10 +601,36 @@ export function DinerApp({
       </main>
     );
 
+  const inCart = new Set(draft.lines.map((l) => l.productId));
+  const byId = new Map(catalog.map((p) => [p.id, p]));
+  const sellable = new Set(catalog.filter(orderable).map((p) => p.id));
+  const cartSuggestions = kioskState
+    ? pickSuggestions(
+        kioskState.suggestions.cart.length
+          ? kioskState.suggestions.cart
+          : kioskState.suggestions.popular,
+        { inCart, sellable },
+      ).flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []))
+    : [];
+  const pickKiosk = (p: Product) => {
+    if (
+      p.image ||
+      p.description?.es ||
+      (kioskState?.suggestions.byProduct[p.id]?.length ?? 0) > 0
+    )
+      setSheet(p);
+    else if (pickerNeeded(p)) setPicker(p);
+    else add(p);
+  };
+  const title = <h1>{menu.restaurant.name}</h1>;
   const header = (
     <header className="diner-header">
       <div>
-        <h1>{menu.restaurant.name}</h1>
+        {kiosk ? (
+          <SetupGesture onSetup={() => setSetup(true)}>{title}</SetupGesture>
+        ) : (
+          title
+        )}
         <p className="diner-place">
           {menu.link.kind === "table"
             ? t("publicOrderingFor", { table: menu.link.tableName ?? "" })
@@ -527,6 +648,16 @@ export function DinerApp({
             })}
           </Button>
         )}
+        {kiosk && bound && (
+          <Button onClick={() => setA11yOpen(true)}>
+            {t("kioskAccessibility")}
+          </Button>
+        )}
+        {kiosk && kioskState?.loyalty && (
+          <Button onClick={() => setMemberOpen(true)}>
+            {t("kioskMember")}
+          </Button>
+        )}
         <Button
           className="diner-language"
           onClick={() => setLocale(locale === "es" ? "en" : "es")}
@@ -539,7 +670,15 @@ export function DinerApp({
   );
 
   return (
-    <main className={"diner" + (kiosk ? " kiosk" : "")} lang={locale}>
+    <main
+      className={
+        "diner" +
+        (kiosk ? " kiosk" : "") +
+        (a11y.large ? " kiosk-large" : "") +
+        (a11y.reach ? " kiosk-reach" : "")
+      }
+      lang={locale}
+    >
       {view !== "menu" && header}
       <p className="sr-only" aria-live="polite">
         {announce}
@@ -563,6 +702,47 @@ export function DinerApp({
           onNewOrder={toMenu}
           onRestore={(k) => restore(holds.find((h) => h.key === k))}
         />
+      ) : kiosk && welcome && view === "menu" ? (
+        <KioskWelcome
+          restaurant={menu.restaurant.name}
+          locale={locale}
+          loyalty={!!kioskState?.loyalty}
+          onStart={() => {
+            enterFullscreen();
+            setWelcome(false);
+          }}
+          onLanguage={() => setLocale(locale === "es" ? "en" : "es")}
+          onAccessibility={() => setA11yOpen(true)}
+          onMember={() => setMemberOpen(true)}
+          onSetup={() => setSetup(true)}
+        />
+      ) : view === "checkout" && kioskState ? (
+        <KioskCheckout
+          token={token}
+          locale={locale}
+          currency={menu.restaurant.currency}
+          kiosk={kioskState}
+          body={{
+            lines: draft.lines,
+            name: draft.name.trim(),
+            note: draft.note.trim(),
+            expectedTotal: cart.total,
+            ...(memberToken ? { memberToken } : {}),
+          }}
+          announce={setAnnounce}
+          onDone={resetKiosk}
+          onBack={() => setView("menu")}
+          onRefused={(message, code) => {
+            setView("menu");
+            setError(message);
+            if (
+              CATALOG_ERRORS.has(code) ||
+              code === "public_price_changed" ||
+              code === "unavailable"
+            )
+              refreshCatalog();
+          }}
+        />
       ) : view === "kiosk-done" && done ? (
         <KioskDone
           hold={done}
@@ -580,7 +760,10 @@ export function DinerApp({
               menu={menu}
               ordering={ordering ?? menu.ordering}
               locale={locale}
-              onPick={(p) => (pickerNeeded(p) ? setPicker(p) : add(p))}
+              kiosk={kiosk}
+              onPick={(p) =>
+                kiosk ? pickKiosk(p) : pickerNeeded(p) ? setPicker(p) : add(p)
+              }
             />
           </div>
           <DinerCart
@@ -606,6 +789,23 @@ export function DinerApp({
               setUnknown(null);
               setError("");
             }}
+            extra={
+              kiosk && kioskState?.suggestions && draft.lines.length > 0 ? (
+                <SuggestionStrip
+                  title={
+                    kioskState.suggestions.cart.length
+                      ? t("kioskAnythingElse")
+                      : t("kioskPopularNow")
+                  }
+                  products={cartSuggestions}
+                  locale={locale}
+                  currency={menu.restaurant.currency}
+                  onAdd={(p) =>
+                    pickerNeeded(p) ? setPicker(p) : add(p, [], "suggestion")
+                  }
+                />
+              ) : null
+            }
           />
         </div>
       )}
@@ -646,6 +846,47 @@ export function DinerApp({
           canOpen={false}
           onConfirm={(selection) => add(picker, selection.options)}
           onClose={() => setPicker(null)}
+        />
+      )}
+      {sheet && (
+        <KioskProductSheet
+          product={sheet}
+          catalog={catalog}
+          suggestions={kioskState?.suggestions.byProduct[sheet.id] ?? []}
+          inCart={inCart}
+          locale={locale}
+          currency={menu.restaurant.currency}
+          onAdd={(p, origin) => add(p, [], origin)}
+          onPick={(p) => {
+            setSheet(null);
+            setPicker(p);
+          }}
+          onClose={() => setSheet(null)}
+        />
+      )}
+      {setup && (
+        <KioskSetup
+          token={token}
+          locale={locale}
+          bound={bound}
+          onPaired={() => void loadKioskState(true)}
+          onClose={() => setSetup(false)}
+        />
+      )}
+      {memberOpen && (
+        <KioskMember
+          token={token}
+          locale={locale}
+          onFound={(m) => setMemberToken(m)}
+          onClose={() => setMemberOpen(false)}
+        />
+      )}
+      {a11yOpen && (
+        <KioskAccessibility
+          locale={locale}
+          value={a11y}
+          onChange={setA11y}
+          onClose={() => setA11yOpen(false)}
         />
       )}
       {idleWarn && (

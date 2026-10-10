@@ -53,9 +53,14 @@ export const PUBLIC_LIMITS = {
   minOrderTotal: 10_000,
   maxOrderTotal: 10_000_000,
 } as const;
+/**
+ * Kiosk idle timing (kiosk 039 §2.12): "¿Sigues ahí?" at 70 s and the reset at 95 s leave 25 s
+ * to answer (WCAG 2.2.1 asks at least 20; before 039 it was 75/90, 15 s). shared/kiosk.ts
+ * KIOSK_IDLE repeats these for the kiosk's own screens.
+ */
 export const KIOSK_TIMING = {
-  warnAfterMs: 75_000,
-  resetAfterMs: 90_000,
+  warnAfterMs: 70_000,
+  resetAfterMs: 95_000,
   doneResetMs: 20_000,
 } as const;
 export const STATUS_POLL = {

@@ -23,15 +23,21 @@ const controller = (dirty: boolean) => {
 };
 
 describe("kiosk idle reset", () => {
-  it("14. with a cart, warns at 75 s and resets at 90 s", () => {
+  it("14. with a cart, warns at 70 s and resets at 95 s (kiosk 039 §2.12: 25 s to answer)", () => {
     const { onWarn, onReset } = controller(true);
-    vi.advanceTimersByTime(74_999);
+    vi.advanceTimersByTime(69_999);
     expect(onWarn).not.toHaveBeenCalled();
     vi.advanceTimersByTime(1);
     expect(onWarn).toHaveBeenCalledTimes(1);
     expect(onReset).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(15_000);
+    vi.advanceTimersByTime(24_999);
+    expect(onReset).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
     expect(onReset).toHaveBeenCalledTimes(1);
+  });
+
+  it("14b. WCAG 2.2.1: the warning always leaves at least 20 s before the reset", () => {
+    expect(KIOSK_TIMING.resetAfterMs - KIOSK_TIMING.warnAfterMs).toBeGreaterThanOrEqual(20_000);
   });
 
   it("15. activity at 80 s cancels the pending reset and arms again", () => {
@@ -41,18 +47,18 @@ describe("kiosk idle reset", () => {
     c.activity();
     vi.advanceTimersByTime(20_000);
     expect(onReset).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(55_000);
+    vi.advanceTimersByTime(50_000);
     expect(onWarn).toHaveBeenCalledTimes(2);
-    vi.advanceTimersByTime(15_000);
+    vi.advanceTimersByTime(25_000);
     expect(onReset).toHaveBeenCalledTimes(1);
   });
 
-  it("16. with an empty cart there is no warning; the reset (menu refetch) runs every 90 s", () => {
+  it("16. with an empty cart there is no warning; the reset (menu refetch) runs every 95 s", () => {
     const { onWarn, onReset } = controller(false);
-    vi.advanceTimersByTime(90_000);
+    vi.advanceTimersByTime(95_000);
     expect(onWarn).not.toHaveBeenCalled();
     expect(onReset).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(90_000);
+    vi.advanceTimersByTime(95_000);
     expect(onReset).toHaveBeenCalledTimes(2);
   });
 

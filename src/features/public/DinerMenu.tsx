@@ -6,6 +6,7 @@ import type {
 import { orderable } from "../../../shared/menu";
 import { strings } from "../../i18n";
 import { fill, moneyFormatter } from "../menu/format";
+import { ProductPhoto } from "./kiosk/KioskProduct";
 
 /** Products grouped by category in POS order. */
 function byCategory(products: Product[], locale: Locale) {
@@ -25,12 +26,16 @@ export function DinerMenu({
   ordering,
   locale,
   onPick,
+  kiosk = false,
 }: {
   menu: PublicMenuView;
   ordering: OrderingState;
   locale: Locale;
   onPick: (p: Product) => void;
+  /** Kiosk (039): photo cards, a neutral tile when a product has none (only when any has one). */
+  kiosk?: boolean;
 }) {
+  const photos = menu.catalog.some((p) => p.image);
   const t = strings[locale];
   const money = moneyFormatter(locale, menu.restaurant.currency);
   const table = menu.link.kind === "table";
@@ -73,7 +78,20 @@ export function DinerMenu({
                   aria-label={`${p.name[locale]}, ${price}`}
                   onClick={() => onPick(p)}
                 >
+                  {(p.image || (kiosk && photos)) && (
+                    <ProductPhoto
+                      product={p}
+                      locale={locale}
+                      variant={kiosk ? "card" : "thumb"}
+                      decorative
+                    />
+                  )}
                   <span className="diner-product-name">{p.name[locale]}</span>
+                  {!kiosk && (p.description?.[locale] || p.description?.es) && (
+                    <span className="diner-product-description">
+                      {p.description?.[locale] || p.description?.es}
+                    </span>
+                  )}
                   <span className="diner-product-meta">
                     <strong>{price}</strong>
                     {p.kind === "combo" && (

@@ -469,6 +469,7 @@ export async function kioskSubmit(
     ? await checkoutView(tx, { ...placed.hold, expired: false }, c)
     : null;
   return {
+    hold: placed.view,
     checkout: checkout ?? {
       label: holdLabel("kiosk", placed.hold.number),
       holdState: placed.hold.state,

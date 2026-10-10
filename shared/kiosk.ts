@@ -11,6 +11,7 @@ import {
   publicLineInput,
 } from "./public-ordering.js";
 import type { LoyaltyCountry } from "./loyalty.js";
+import type { DinerHoldView } from "./public-ordering.js";
 
 export const KIOSK_LIMITS = {
   /** Card attempts per kiosk hold (§2.5), then only "Pagar en caja". */
@@ -276,6 +277,8 @@ export type KioskCheckoutView = {
 };
 
 export type KioskSubmitResult = {
+  /** The hold as the diner pages show it (the counter-code screen reads its label and policy). */
+  hold: DinerHoldView;
   checkout: KioskCheckoutView;
   /** Why the kiosk could not take the payment itself: the guest pays at the counter. */
   counterOnly:

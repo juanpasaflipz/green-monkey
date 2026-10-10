@@ -181,9 +181,9 @@ export function kioskDinerRouter(sql: postgres.Sql) {
         const checkout = await tenant(sql, l.tenantId, (tx) =>
           kioskCheckout(tx, l.linkId, statusKey),
         );
-        return { checkout, counterOnly: r.counterOnly };
+        return { hold: r.hold, checkout, counterOnly: r.counterOnly };
       }
-      return { checkout: r.checkout, counterOnly: r.counterOnly };
+      return { hold: r.hold, checkout: r.checkout, counterOnly: r.counterOnly };
     }),
   );
   router.post(

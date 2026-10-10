@@ -305,6 +305,193 @@
   min-width: 240px;
 }
 
+/* Kiosk self-checkout (039): photos, the welcome screen, the checkout steps, the product sheet,
+   suggestions, the club keypad and the accessibility modes. Targets stay at least 48 px (64 px
+   for kiosk buttons above), body text 18 px, prices and names 22 px. */
+.kiosk-photo {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--fill);
+}
+.kiosk-photo-empty {
+  display: grid;
+  place-items: center;
+  font-size: 40px;
+  font-weight: 700;
+  color: var(--text-2);
+}
+.diner-product .kiosk-photo {
+  margin-bottom: 8px;
+}
+.diner-product-description {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 14px;
+  text-align: left;
+}
+.kiosk .diner-product-name {
+  font-size: 22px;
+}
+.kiosk-welcome {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: 32px;
+  min-height: 80vh;
+  text-align: center;
+}
+.kiosk-welcome h1 {
+  font-size: 40px;
+  margin: 0;
+}
+.diner .kiosk-start {
+  min-height: 120px;
+  min-width: 360px;
+  font-size: 32px;
+}
+.kiosk-welcome-actions,
+.kiosk-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: center;
+}
+.kiosk-setup-gesture {
+  touch-action: none;
+  user-select: none;
+}
+.kiosk-checkout {
+  display: grid;
+  justify-items: center;
+  gap: 24px;
+  padding: 48px 0;
+  text-align: center;
+}
+.diner .kiosk-title {
+  font-size: 32px;
+  max-width: 28ch;
+  margin: 0;
+}
+.diner .kiosk-choice {
+  min-height: 120px;
+  min-width: 280px;
+  font-size: 28px;
+}
+.kiosk-back {
+  min-width: 200px;
+}
+.kiosk-banner {
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 18px;
+}
+.kiosk-code-small {
+  font-size: 48px;
+  font-weight: 700;
+  margin: 0;
+}
+.kiosk-paid {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+}
+.kiosk-qr {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.kiosk-qr svg {
+  background: #fff;
+  padding: 8px;
+}
+.kiosk-club {
+  font-size: 22px;
+}
+.kiosk-sheet {
+  display: grid;
+  gap: 16px;
+}
+.kiosk-description {
+  font-size: 18px;
+  margin: 0;
+}
+.kiosk-add {
+  min-height: 64px;
+  font-size: 22px;
+}
+.kiosk-suggestions h3 {
+  margin: 8px 0;
+  font-size: 18px;
+}
+.kiosk-suggestion-row {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(140px, 1fr);
+  gap: 12px;
+  overflow-x: auto;
+}
+.kiosk-suggestion {
+  display: grid;
+  gap: 4px;
+  min-height: 48px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.kiosk-phone {
+  font-size: 32px;
+  font-weight: 700;
+  text-align: center;
+}
+.kiosk-keypad {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(64px, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.diner .kiosk-key {
+  min-height: 64px;
+  font-size: 28px;
+}
+.kiosk-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  font-size: 18px;
+}
+.kiosk-toggle input {
+  width: 28px;
+  height: 28px;
+}
+/* Texto grande: 125 %. Modo alcance: the content starts a third of the way down. */
+.diner.kiosk-large {
+  zoom: 1.25;
+}
+.diner.kiosk-reach {
+  padding-top: 33vh;
+}
+@media (prefers-reduced-motion: reduce) {
+  .kiosk * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
 @media (min-width: 480px) {
   .diner-products {
     grid-template-columns: repeat(2, minmax(0, 1fr));
