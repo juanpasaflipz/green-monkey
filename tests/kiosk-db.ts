@@ -1,0 +1,1443 @@
+// Kiosk self-checkout (039) DB and HTTP suite (specs/kiosk-w4.md §8.2, adapted to LD-72: on
+// payment only; critic R4, R9–R14, R20–R25, R35, R36). The real diner router over loopback with a
+// cookie jar per tablet, the payments worker on the jobs login against the MP and Clip HTTP fake
+// (tests/fakes/payments-fake.ts), payments' web settle job, and the media route with the fs store.
+//
+// Every value here is fictional and obviously so: test card brand and last four digits from the
+// providers' test documentation ("visa" / "4242"), secrets spelled "...-not-real", ids like
+// 1000001, loopback only. Run: npm run test:db:kiosk (part of test:db:qualification).
+import "dotenv/config";
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { AddressInfo } from "node:net";
+import express from "express";
+import cookieParser from "cookie-parser";
+import postgres from "postgres";
+import { ZodError } from "zod";
+import { isolatedTarget, requireWorker } from "./isolated-target.js";
+import {
+  checkRole,
+  checkWorkerRole,
+  connect,
+  connectWorker,
+  tenant,
+  type Tx,
+} from "../server/db.js";
+import { setLogSink } from "../server/logging.js";
+import { handlers } from "../server/jobs.js";
+import { createJobRunner } from "../server/jobs/runner.js";
+import { workerHandlers } from "../server/jobs/worker-registry.js";
+import "../server/jobs/handlers/payments.js";
+import "../server/jobs/handlers/loyalty.js";
+import "../server/jobs/handlers/kiosk.js";
+import "../server/payments/worker/register.js";
+import { publishPaymentsPlatform } from "../server/payments/worker/boot.js";
+import { setPaymentsRuntime } from "../server/payments/worker/runtime.js";
+import { parseCredentialKeyring } from "../server/cfdi/config.js";
+import { saveCredentials } from "../server/payments/providers.js";
+import { saveTerminal } from "../server/payments/settings.js";
+import {
+  requestCancel,
+  resolveAttempt,
+  syncAttemptCore,
+} from "../server/payments/terminal.js";
+import { publicOrdering } from "../server/public-ordering.js";
+import { createLink, revokeLink, rotateLink } from "../server/public-links.js";
+import { acceptHold, inbox, rejectHold } from "../server/public-holds.js";
+import { closeCash } from "../server/cash.js";
+import { saveFiscalProfile } from "../server/fiscal.js";
+import { getOrder } from "../server/orders.js";
+import {
+  createPairing,
+  kioskSettingsView,
+  revokeKioskDevice,
+  saveKioskSettings,
+  saveStation,
+  saveSuggestions,
+} from "../server/kiosk-settings.js";
+import { DomainError, type Session } from "../shared/domain.js";
+import { LINK_HEADER, STATUS_HEADER } from "../shared/public-ordering.js";
+import { KIOSK_COOKIE, type KioskCheckoutView } from "../shared/kiosk.js";
+import type { SessionAccess } from "../shared/access.js";
+import { startPaymentsFake } from "./fakes/payments-fake.js";
+import { noRetries } from "./db-retries.js";
+
+const logLines: string[] = [];
+setLogSink((line) => {
+  logLines.push(line);
+  if (process.env.KIOSK_DB_DEBUG && /"level":"(warn|error)"/.test(line))
+    console.error(line);
+});
+
+const target = isolatedTarget(process.env);
+const admin = postgres(target.migration, { max: 2, onnotice: () => {} });
+const sql = connect(target.runtime);
+await checkRole(sql);
+const worker = connectWorker(requireWorker(target));
+await checkWorkerRole(worker);
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const run = Date.now().toString(36);
+const mediaRoot = await mkdtemp(join(tmpdir(), "gm-kiosk-media-"));
+process.env.MEDIA_STORE = "fs";
+process.env.MEDIA_FS_ROOT = mediaRoot;
+delete process.env.KIOSK_SELF_CHECKOUT_ENABLED;
+delete process.env.MENU_PHOTOS_ENABLED;
+
+// ---- The payments fake and the worker runtime pointed at it (fictional credentials).
+const FAKE = {
+  mpToken: "TEST-mp-access-token-not-real-0000",
+  mpSecret: "testWebhookSecretNotReal0000",
+  mpUserId: "1000001",
+  clipKey: "test-clip-api-key-not-real",
+  clipSecret: "test-clip-secret-key-not-real",
+};
+const fake = await startPaymentsFake(FAKE);
+const TEST_CARD = {
+  brand: "visa",
+  type: "credit_card" as const,
+  last4: "4242",
+};
+const runtime = {
+  providers: ["mercadopago", "clip"] as ("mercadopago" | "clip")[],
+  mercadopagoApiUrl: fake.mpBase,
+  clipApiUrl: fake.clipBase,
+  ring: parseCredentialKeyring(
+    "t1:" + Buffer.alloc(32, 7).toString("base64url"),
+  ),
+  appUrl: "https://pos.example.test",
+  alert: () => {},
+};
+setPaymentsRuntime(runtime);
+const [platformBefore] =
+  await admin`select providers,upload_kid,upload_public_jwk from payments_platform where id=1`;
+{
+  const { paymentsVault } = await import("../server/vault/vault.js");
+  await publishPaymentsPlatform(worker, {
+    providers: ["mercadopago", "clip"],
+    uploadKid: runtime.ring.active,
+    uploadPublicJwk: paymentsVault.uploadKeyPair(runtime.ring).publicJwk,
+  });
+}
+const dead: { kind: string; code: string }[] = [];
+const workerRunner = createJobRunner(worker, {
+  handlers: workerHandlers,
+  concurrency: 4,
+  sweepMs: 3_600_000,
+  onDead: (job, code) => dead.push({ kind: job.kind, code }),
+});
+const webKinds = new Map(
+  ["payments_settle", "loyalty_reconcile", "media_purge", "media_stale"].map(
+    (k) => [k, handlers().get(k)!] as const,
+  ),
+);
+const webRunner = createJobRunner(sql, {
+  handlers: () => webKinds,
+  concurrency: 2,
+  sweepMs: 3_600_000,
+  onDead: (job, code) => dead.push({ kind: job.kind, code }),
+});
+
+// ---- Fictional restaurants: A (Pro; till "Caja mostrador" with an open drawer) and B.
+const organizationId = randomUUID();
+const A = randomUUID(),
+  B = randomUUID();
+const ids = {
+  owner: randomUUID(),
+  manager: randomUUID(),
+  cashier: randomUUID(),
+  ownerB: randomUUID(),
+  till: randomUUID(),
+  till2: randomUUID(),
+  deviceB: randomUUID(),
+  drawer: randomUUID(),
+  drawerB: randomUUID(),
+  taco: randomUUID(),
+  agua: randomUUID(),
+  papas: randomUUID(),
+  gratis: randomUUID(),
+  tacoB: randomUUID(),
+};
+const restaurant = {
+  name: "Kiosco ficticio " + run,
+  currency: "MXN",
+  timezone: "America/Mexico_City",
+  cutoff: 240,
+};
+const session = (
+  tenantId: string,
+  employeeId: string,
+  role: string,
+  deviceId: string,
+  access?: Partial<SessionAccess>,
+): Session => ({
+  id: randomUUID(),
+  tenantId,
+  employeeId,
+  name: role,
+  role,
+  deviceId,
+  expiresAt: "",
+  offlineUntil: "",
+  csrf: "",
+  restaurant,
+  ...(access
+    ? {
+        access: {
+          absoluteExpiresAt: null,
+          authenticatedAt: new Date().toISOString(),
+          deviceName: "Caja mostrador",
+          deviceKind: "terminal",
+          idleLockSeconds: null,
+          ownerAccount: false,
+          ...access,
+        } as SessionAccess,
+      }
+    : {}),
+});
+const owner = session(A, ids.owner, "owner", ids.till, {});
+const manager = session(A, ids.manager, "manager", ids.till, {});
+const cashier = session(A, ids.cashier, "cashier", ids.till);
+const ownerB = session(B, ids.ownerB, "owner", ids.deviceB, {});
+
+let checks = 0;
+async function test(name: string, fn: () => Promise<void>) {
+  await fn();
+  checks++;
+  console.log("PASS", name);
+}
+async function rejects(promise: Promise<unknown>, code: string | RegExp) {
+  await assert.rejects(promise, (e: any) => {
+    const got = String(e.code ?? e.message);
+    if (code instanceof RegExp) assert.match(`${got} ${e.message ?? ""}`, code);
+    else assert.equal(got, code);
+    return true;
+  });
+}
+const write = <T>(s: Session, fn: (tx: Tx) => Promise<T>) =>
+  tenant(sql, s.tenantId, fn);
+async function asOwner<T>(tenantId: string, fn: (tx: any) => Promise<T>) {
+  return admin.begin(async (tx) => {
+    await tx`select set_config('app.tenant_id', ${tenantId}, true)`;
+    return fn(tx);
+  }) as Promise<T>;
+}
+const one = async (tenantId: string, q: (tx: any) => Promise<any[]>) =>
+  (await asOwner(tenantId, q))[0] as Record<string, any>;
+
+// ---- Job rounds: worker kinds (push, poll, cancel) then the web settle.
+async function round(tenantId: string) {
+  await admin`update jobs set next_at=now() where tenant_id=${tenantId}
+    and state='available' and kind like 'payments\\_%'`;
+  const w = await workerRunner.drainTenant(tenantId);
+  while (workerRunner.running() > 0) await sleep(10);
+  const s = await webRunner.drainTenant(tenantId);
+  while (webRunner.running() > 0) await sleep(10);
+  return w + s;
+}
+async function drive(attemptId: string, states: string[], tenantId = A) {
+  for (let i = 0; i < 40; i++) {
+    const r = await one(
+      tenantId,
+      (tx) => tx`select state from payment_attempts where id=${attemptId}`,
+    );
+    if (states.includes(r.state)) return r.state as string;
+    await round(tenantId);
+  }
+  throw new Error(`attempt ${attemptId} never reached ${states.join("|")}`);
+}
+
+/** Worker kinds only (no web settle) until the attempt reaches `state`. */
+async function workerUntil(attemptId: string, state: string, tenantId = A) {
+  for (let i = 0; i < 40; i++) {
+    const r = await one(
+      tenantId,
+      (tx) => tx`select state from payment_attempts where id=${attemptId}`,
+    );
+    if (r.state === state) return;
+    await admin`update jobs set next_at=now() where tenant_id=${tenantId}
+      and state='available' and kind like 'payments\\_%' and kind<>'payments_settle'`;
+    await workerRunner.drainTenant(tenantId);
+    while (workerRunner.running() > 0) await sleep(10);
+  }
+  throw new Error(`attempt ${attemptId} never reached ${state}`);
+}
+
+// ---- The diner router as server/index.ts mounts it, with a cookie jar per tablet.
+type Tablet = { cookie: string | null; ip: string };
+let ipSeq = 10;
+const newTablet = (): Tablet => ({ cookie: null, ip: `198.51.100.${ipSeq++}` });
+const app = express();
+app.set("trust proxy", "loopback");
+app.use(express.json({ limit: "256kb" }));
+app.use(cookieParser());
+app.use("/api/public", publicOrdering(sql));
+app.use(
+  (
+    error: unknown,
+    _req: express.Request,
+    res: express.Response,
+    _next: express.NextFunction,
+  ) =>
+    res
+      .status(
+        error instanceof DomainError
+          ? error.status
+          : error instanceof ZodError
+            ? 400
+            : 500,
+      )
+      .json({
+        error:
+          error instanceof DomainError
+            ? error.code
+            : error instanceof ZodError
+              ? "invalid_input"
+              : String(error),
+      }),
+);
+const server = app.listen(0, "127.0.0.1");
+await new Promise<void>((r) => server.once("listening", r));
+const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+type Reply = { status: number; body: any; setCookie: string | null };
+async function call(
+  method: "GET" | "POST",
+  path: string,
+  o: {
+    link: string;
+    tablet?: Tablet;
+    status?: string;
+    body?: unknown;
+    ip?: string;
+  },
+): Promise<Reply> {
+  // Every request claims its own documentation-range address unless a test pins one, so the
+  // per-IP limiters (checked on their own in K19) never interfere with the flows.
+  const ip = o.ip ?? `198.51.${(ipSeq >> 8) % 256}.${ipSeq++ % 256}`;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "x-forwarded-for": `${ip}, 192.0.2.84`,
+    "x-real-ip": ip,
+    [LINK_HEADER]: o.link,
+  };
+  if (o.status) headers[STATUS_HEADER] = o.status;
+  if (o.tablet?.cookie) headers.cookie = `${KIOSK_COOKIE}=${o.tablet.cookie}`;
+  const r = await fetch(origin + "/api/public" + path, {
+    method,
+    headers,
+    body: method === "POST" ? JSON.stringify(o.body ?? {}) : undefined,
+  });
+  const setCookie = r.headers.get("set-cookie");
+  if (o.tablet && setCookie) {
+    const m = new RegExp(`${KIOSK_COOKIE}=([^;]*)`).exec(setCookie);
+    if (m) o.tablet.cookie = m[1] || null;
+  }
+  const text = await r.text();
+  return { status: r.status, body: text ? JSON.parse(text) : null, setCookie };
+}
+const statusKey = () =>
+  Buffer.from(randomUUID().replace(/-/g, ""), "hex").toString("base64url");
+const line = (productId: string, quantity = 1, origin?: "suggestion") => ({
+  id: randomUUID(),
+  productId,
+  quantity,
+  options: [],
+  ...(origin ? { origin } : {}),
+});
+
+type Kiosk = {
+  link: string;
+  linkId: string;
+  stationId: string;
+  tablet: Tablet;
+};
+async function newKiosk(label: string, s: Session = manager): Promise<Kiosk> {
+  const l = await write(s, (tx) => createLink(tx, s, { kind: "kiosk", label }));
+  const r = await one(
+    s.tenantId,
+    (tx) => tx`select station_id from public_links where id=${l.id}`,
+  );
+  return {
+    link: l.token,
+    linkId: l.id,
+    stationId: r.station_id,
+    tablet: newTablet(),
+  };
+}
+async function stationVersion(tenantId: string, stationId: string) {
+  return (
+    await one(
+      tenantId,
+      (tx) => tx`select version from kiosk_stations where id=${stationId}`,
+    )
+  ).version as number;
+}
+async function configure(k: Kiosk, terminalId: string | null, till = ids.till) {
+  const v = await stationVersion(A, k.stationId);
+  await write(manager, (tx) =>
+    saveStation(tx, manager, k.stationId, {
+      operationId: randomUUID(),
+      expectedVersion: v,
+      terminalId,
+      registerDeviceId: till,
+    }),
+  );
+}
+async function pair(k: Kiosk) {
+  const p = await write(manager, (tx) =>
+    createPairing(tx, manager, k.stationId),
+  );
+  const r = await call("POST", "/kiosk/pair", {
+    link: k.link,
+    tablet: k.tablet,
+    body: { operationId: randomUUID(), code: p.code },
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  return r;
+}
+async function order(
+  k: Kiosk,
+  lines: ReturnType<typeof line>[],
+  total: number,
+  extra: Record<string, unknown> = {},
+) {
+  const key = statusKey();
+  const r = await call("POST", "/kiosk/orders", {
+    link: k.link,
+    tablet: k.tablet,
+    body: {
+      operationId: randomUUID(),
+      statusKey: key,
+      lines,
+      name: "Ana",
+      expectedTotal: total,
+      fulfillment: "here",
+      ...extra,
+    },
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  return {
+    key,
+    ...(r.body as { checkout: KioskCheckoutView; counterOnly: string | null }),
+  };
+}
+async function charge(k: Kiosk, key: string, operationId = randomUUID()) {
+  return call("POST", "/kiosk/charge", {
+    link: k.link,
+    tablet: k.tablet,
+    body: { operationId, statusKey: key },
+  });
+}
+const checkout = (k: Kiosk, key: string) =>
+  call("GET", "/kiosk/checkout", {
+    link: k.link,
+    tablet: k.tablet,
+    status: key,
+  });
+const sync = (k: Kiosk, key: string) =>
+  call("POST", "/kiosk/checkout/sync", {
+    link: k.link,
+    tablet: k.tablet,
+    body: { statusKey: key },
+  });
+async function holdOf(key: string, tenantId = A) {
+  const { createHash } = await import("node:crypto");
+  const h = createHash("sha256")
+    .update("gm-public-status-v1:" + key)
+    .digest("hex");
+  return one(
+    tenantId,
+    (tx) => tx`select h.*,c.attempt_id,c.attempt_count,c.payment_choice,
+      c.loyalty_member_id,c.device_id as checkout_device
+    from public_order_holds h left join kiosk_checkouts c on c.tenant_id=h.tenant_id and c.hold_id=h.id
+    where h.status_key_hash=${h}`,
+  );
+}
+async function attemptOf(key: string) {
+  const h = await holdOf(key);
+  return one(
+    A,
+    (tx) => tx`select * from payment_attempts where id=${h.attempt_id}`,
+  );
+}
+async function staffOnline(
+  tenantId: string,
+  employeeId: string,
+  deviceId: string,
+) {
+  await admin`insert into sessions(tenant_id,id,employee_id,device_id,token_hash,csrf,expires_at,
+      offline_until,created_at,last_seen_at,authenticated_at,absolute_expires_at)
+    values(${tenantId},${randomUUID()},${employeeId},${deviceId},${"fx-" + randomUUID()},'fixture',
+      now()+interval '8 hours',now()+interval '4 hours',now(),now(),now(),now()+interval '16 hours')`;
+}
+const setAvailable = (productId: string, available: boolean) =>
+  asOwner(
+    A,
+    (tx) =>
+      tx`update catalog set data=jsonb_set(data,'{available}',to_jsonb(${available}::boolean)) where id=${productId}`,
+  ).then(() =>
+    asOwner(
+      A,
+      (tx) =>
+        tx`update menu_state set revision=revision+1 where tenant_id=${A}`,
+    ),
+  );
+
+const terminals = { mp: "", clip: "", manual: "" };
+let failed = false;
+try {
+  await admin`insert into organizations(id,name) values(${organizationId},${restaurant.name})`;
+  await admin`insert into restaurants(id,organization_id,name,currency,timezone,cutoff,free_location)
+    values (${A},${organizationId},${restaurant.name},'MXN',${restaurant.timezone},${restaurant.cutoff},false),
+           (${B},${organizationId},${restaurant.name + " B"},'MXN',${restaurant.timezone},${restaurant.cutoff},false)`;
+  await admin`insert into restaurant_entitlements(tenant_id,status,access_until,source)
+    values (${A},'active',now()+interval '1 day','fixture'),(${B},'active',now()+interval '1 day','fixture')`;
+  for (const [tenantId, employee, role, name] of [
+    [A, ids.owner, "owner", "Olga Dueña"],
+    [A, ids.manager, "manager", "Marisol Vega"],
+    [A, ids.cashier, "cashier", "Carlos Caja"],
+    [B, ids.ownerB, "owner", "Beto Dueño"],
+  ])
+    await admin`insert into employees(tenant_id,id,name,login,secret_hash,role)
+      values(${tenantId},${employee},${name},${"k" + randomUUID().slice(0, 12)},'fixture',${role})`;
+  await admin`insert into devices(tenant_id,id,name,token_hash,free_slot)
+    values (${A},${ids.till},'Caja mostrador','fixture',1),(${A},${ids.till2},'Caja barra','fixture',null),
+           (${B},${ids.deviceB},'Caja B','fixture',1)`;
+  await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at)
+    values (${A},${ids.drawer},${ids.till},${ids.cashier},100000,now()-interval '2 hours'),
+           (${B},${ids.drawerB},${ids.deviceB},${ids.ownerB},0,now()-interval '1 hour')`;
+  await admin`insert into restaurant_account_settings(tenant_id,privacy_notice_url)
+    values(${A},'https://example.com/aviso-de-privacidad')`;
+  const product = (
+    tenantId: string,
+    productId: string,
+    name: string,
+    price: number,
+  ) =>
+    admin`insert into catalog(tenant_id,id,data) values(${tenantId},${productId},${admin.json(
+      {
+        id: productId,
+        name: { es: name, en: name },
+        category: { es: "Pruebas", en: "Tests" },
+        categoryId: randomUUID(),
+        price,
+        available: true,
+        station: "kitchen",
+        groups: [],
+        cost: 1500,
+        recipe: [],
+        version: 1,
+      },
+    )})`;
+  await product(A, ids.taco, "Taco ficticio", 4500);
+  await product(A, ids.agua, "Agua ficticia", 300);
+  await product(A, ids.papas, "Papas ficticias", 3500);
+  await product(A, ids.gratis, "Salsa gratis", 0);
+  await product(B, ids.tacoB, "Taco B", 2000);
+  await asOwner(
+    A,
+    (tx) =>
+      tx`insert into menu_state(tenant_id,revision) values(${A},1) on conflict do nothing`,
+  );
+  await staffOnline(A, ids.cashier, ids.till);
+  await staffOnline(B, ids.ownerB, ids.deviceB);
+  await write(owner, (tx) =>
+    saveFiscalProfile(tx, owner, {
+      operationId: randomUUID(),
+      expectedVersion: 0,
+      identity: {
+        rfc: "EKU9003173C9",
+        legalName: "ALIMENTOS DE PRUEBA",
+        regime: "601",
+        postalCode: "06700",
+        address: {
+          street: "Av. Ficticia 123",
+          neighborhood: "Roma Norte",
+          municipality: "Cuauhtémoc",
+          state: "Ciudad de México",
+        },
+      },
+      ticketSeries: "",
+      taxRegion: "general",
+      defaultTaxCategory: "iva16",
+      borderConfirmed: false,
+    }),
+  );
+  // Integrated payments: both providers connected through the fake, then terminals.
+  for (const [provider, body] of [
+    [
+      "mercadopago",
+      { accessToken: FAKE.mpToken, webhookSecret: FAKE.mpSecret },
+    ],
+    ["clip", { apiKey: FAKE.clipKey, secretKey: FAKE.clipSecret }],
+  ] as const) {
+    await write(owner, (tx) =>
+      saveCredentials(tx, owner, provider, body, {
+        appEnv: "test",
+        appUrl: "https://pos.example.test",
+      }),
+    );
+    for (let i = 0; i < 10; i++) await round(A);
+  }
+  const accounts = await asOwner(
+    A,
+    (tx) =>
+      tx`select provider,state from payment_provider_accounts where tenant_id=${A} order by provider`,
+  );
+  assert.deepEqual(
+    accounts.map((a: any) => `${a.provider}:${a.state}`),
+    ["clip:active", "mercadopago:active"],
+  );
+  const integrated = async (
+    name: string,
+    kind: string,
+    providerDeviceId: string | null,
+  ) =>
+    (
+      await write(manager, (tx) =>
+        saveTerminal(tx, manager, {
+          operationId: randomUUID(),
+          name,
+          kind,
+          ...(providerDeviceId ? { providerDeviceId } : {}),
+          feeBp: 350,
+        }),
+      )
+    ).terminals.find((t) => t.name === name)!.id;
+  terminals.mp = await integrated(
+    "MP Kiosco",
+    "mercadopago_point",
+    "NEWLAND_N950__FAKE0001",
+  );
+  terminals.clip = await integrated(
+    "Clip Kiosco",
+    "clip_pinpad",
+    "P8220724FAKE01",
+  );
+  terminals.manual = await integrated("Banco ficticio", "manual", null);
+  await write(manager, (tx) =>
+    saveKioskSettings(tx, manager, {
+      operationId: randomUUID(),
+      expectedVersion: 0,
+      paymentMode: "card_and_counter",
+      askFulfillment: true,
+      suggestions: true,
+      loyaltyAtKiosk: false,
+    }),
+  );
+
+  // ----------------------------------------------------------------------------------------------
+  await test("K1. 039 shape: RLS forced on the six tables; the media lookup policy; no DELETE for the runtime role; identity triggers", async () => {
+    const forced =
+      await admin`select relname from pg_class where relname = any(${[
+        "kiosk_settings",
+        "kiosk_stations",
+        "kiosk_devices",
+        "kiosk_checkouts",
+        "menu_media",
+        "menu_suggestions",
+      ]}) and relrowsecurity and relforcerowsecurity order by relname`;
+    assert.equal(forced.length, 6);
+    const grants =
+      await admin`select table_name,privilege_type from information_schema.role_table_grants
+      where grantee=current_setting('app.runtime_role',true) or grantee in ('gm_app')
+        and table_name in ('kiosk_settings','kiosk_stations','kiosk_devices','kiosk_checkouts','menu_media','menu_suggestions')
+        and privilege_type='DELETE'`;
+    assert.equal(grants.length, 0, "no DELETE on kiosk tables");
+    // The runtime role cannot point a link at another station, nor blank a member reference.
+    const k = await newKiosk("Forma " + run);
+    await rejects(
+      write(
+        manager,
+        (tx) =>
+          tx`update public_links set station_id=null where id=${k.linkId}`,
+      ),
+      /permission denied/,
+    );
+    await rejects(
+      write(
+        manager,
+        (tx) => tx`update kiosk_checkouts set loyalty_member_id=null`,
+      ),
+      /permission denied/,
+    );
+    // Identity triggers (as the owner).
+    await rejects(
+      asOwner(
+        A,
+        (tx) =>
+          tx`update kiosk_stations set created_by=${ids.cashier} where id=${k.stationId}`,
+      ),
+      /kiosk_station_immutable/,
+    );
+    await rejects(
+      asOwner(
+        A,
+        (tx) => tx`delete from kiosk_stations where id=${k.stationId}`,
+      ),
+      /kiosk_station_immutable|violates foreign key/,
+    );
+    await rejects(
+      asOwner(
+        A,
+        (tx) =>
+          tx`update public_links set station_id=null where id=${k.linkId}`,
+      ),
+      /public_link_immutable/,
+    );
+    // The media lookup: no tenant, exactly the ready id supplied.
+    const mediaA = randomUUID(),
+      mediaUploading = randomUUID();
+    await asOwner(A, async (tx) => {
+      await tx`insert into menu_media(tenant_id,id,state,width,height,variants,created_by)
+        values(${A},${mediaA},'ready',4,3,${tx.json({ thumb: { sha256: "x" } })},${ids.owner})`;
+      await tx`insert into menu_media(tenant_id,id,created_by) values(${A},${mediaUploading},${ids.owner})`;
+    });
+    const look = (id: string) =>
+      sql.begin(async (raw) => {
+        const tx = raw as Tx;
+        await tx`select set_config('app.media_id', ${id}, true)`;
+        return tx`select id from menu_media`;
+      });
+    assert.deepEqual(
+      (await look(mediaA)).map((r: any) => r.id),
+      [mediaA],
+    );
+    assert.equal(
+      (await look(mediaUploading)).length,
+      0,
+      "an uploading asset is not served",
+    );
+    assert.equal(
+      (await sql`select id from menu_media`).length,
+      0,
+      "nothing without a tenant or a media id",
+    );
+    await rejects(
+      asOwner(
+        A,
+        (tx) =>
+          tx`update menu_media set state='uploading',variants=null,width=null,height=null where id=${mediaA}`,
+      ),
+      /menu_media_immutable/,
+    );
+  });
+
+  await test("K2. holds: a kiosk hold may be dine-in without a table; a counter QR hold may not; decision_source 'kiosk' only on an accepted kiosk hold", async () => {
+    const counter = await write(manager, (tx) =>
+      createLink(tx, manager, { kind: "counter", label: "Mostrador " + run }),
+    );
+    const base = (linkId: string, channel: string, mode: string) =>
+      asOwner(
+        A,
+        (
+          tx,
+        ) => tx`insert into public_order_holds(tenant_id,id,link_id,operation_id,request_hash,status_key_hash,
+          business_date,number,channel,mode,table_id,policy,lines,priced,quoted_total,menu_revision,order_operation_id,expires_at)
+        values(${A},${randomUUID()},${linkId},${randomUUID()},${"a".repeat(64)},${randomUUID().replace(/-/g, "").padEnd(64, "0")},
+          current_date,${Math.floor(Math.random() * 1e6) + 1000},${channel},${mode},null,'accept',
+          ${tx.json([line(ids.taco)])},'[]',4500,1,${randomUUID()},now()+interval '30 minutes')`,
+      );
+    const k = await newKiosk("Modo " + run);
+    await base(k.linkId, "kiosk", "dine_in");
+    await rejects(
+      base(counter.id, "qr", "dine_in"),
+      /public_order_holds_table_mode/,
+    );
+    await rejects(
+      asOwner(
+        A,
+        (tx) =>
+          tx`update public_order_holds set state='cancelled',decided_at=now(),decision_source='kiosk' where link_id=${k.linkId}`,
+      ),
+      /public_order_holds_kiosk_decision/,
+    );
+  });
+
+  // The main kiosk: Clip terminal (Clip has no expiry; the fake approves on command).
+  const main = await newKiosk("Entrada " + run);
+  await configure(main, terminals.clip);
+
+  await test("K3. pairing: one-time 8-digit code; wrong, expired, used and exhausted codes get one answer; the cookie is HttpOnly, SameSite=Strict, scoped to the kiosk path; a new code replaces the tablet; unpairing and deactivation revoke it; rotation keeps it", async () => {
+    const k = await newKiosk("Pareo " + run);
+    const p = await write(manager, (tx) =>
+      createPairing(tx, manager, k.stationId),
+    );
+    assert.match(p.code, /^[0-9]{8}$/);
+    // Step-up is required to create a code.
+    await rejects(
+      write(manager, (tx) =>
+        createPairing(
+          tx,
+          session(A, ids.manager, "manager", ids.till, {
+            authenticatedAt: new Date(Date.now() - 86_400_000).toISOString(),
+          }),
+          k.stationId,
+        ),
+      ),
+      "step_up_required",
+    );
+    const wrong = String((Number(p.code) + 1) % 1e8).padStart(8, "0");
+    const t = newTablet();
+    // The pairing limiter is 5 per IP per 15 minutes; the code itself dies after 5 wrong tries
+    // from anywhere, so each try here comes from another address.
+    for (let i = 0; i < 4; i++) {
+      const r = await call("POST", "/kiosk/pair", {
+        link: k.link,
+        tablet: newTablet(),
+        body: { operationId: randomUUID(), code: wrong },
+      });
+      assert.equal(r.status, 404);
+      assert.equal(r.body.error, "kiosk_pairing_invalid");
+      assert.equal(r.setCookie, null);
+    }
+    const ok = await call("POST", "/kiosk/pair", {
+      link: k.link,
+      tablet: t,
+      body: { operationId: randomUUID(), code: p.code },
+    });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.stationLabel, "Pareo " + run);
+    assert.match(
+      ok.setCookie!,
+      new RegExp(
+        `^${KIOSK_COOKIE}=[A-Za-z0-9_-]{22}; Max-Age=34560000; Path=/api/public/kiosk; Expires=[^;]+; HttpOnly; SameSite=Strict$`,
+      ),
+    );
+    // Used: the same code again is the same answer.
+    const used = await call("POST", "/kiosk/pair", {
+      link: k.link,
+      tablet: newTablet(),
+      body: { operationId: randomUUID(), code: p.code },
+    });
+    assert.equal(used.body.error, "kiosk_pairing_invalid");
+    // The secret is stored only as a hash.
+    const d = await one(
+      A,
+      (tx) =>
+        tx`select secret_hash,pairing_code_hash,paired_at from kiosk_devices where station_id=${k.stationId} and revoked_at is null`,
+    );
+    assert.notEqual(d.secret_hash, t.cookie);
+    assert.equal(d.pairing_code_hash, null);
+    assert.ok(
+      !logLines.some((l) => l.includes(t.cookie!) || l.includes(p.code)),
+      "neither the code nor the cookie is logged",
+    );
+    const state = await call("GET", "/kiosk/state", {
+      link: k.link,
+      tablet: t,
+    });
+    assert.equal(state.body.bound, true);
+    // Exhausted: five wrong tries kill a code, even the right one after.
+    const p2 = await write(manager, (tx) =>
+      createPairing(tx, manager, k.stationId),
+    );
+    const t2 = newTablet();
+    assert.equal(
+      (await call("GET", "/kiosk/state", { link: k.link, tablet: t })).body
+        .bound,
+      false,
+      "a new code replaces the paired tablet",
+    );
+    const wrong2 = String((Number(p2.code) + 7) % 1e8).padStart(8, "0");
+    for (let i = 0; i < 5; i++)
+      await call("POST", "/kiosk/pair", {
+        link: k.link,
+        tablet: newTablet(),
+        body: { operationId: randomUUID(), code: wrong2 },
+      });
+    const dead5 = await call("POST", "/kiosk/pair", {
+      link: k.link,
+      tablet: t2,
+      body: { operationId: randomUUID(), code: p2.code },
+    });
+    assert.equal(dead5.body.error, "kiosk_pairing_invalid");
+    // Expired.
+    const p3 = await write(manager, (tx) =>
+      createPairing(tx, manager, k.stationId),
+    );
+    await asOwner(
+      A,
+      (tx) =>
+        tx`update kiosk_devices set pairing_expires_at=now()-interval '1 second' where station_id=${k.stationId} and revoked_at is null`,
+    );
+    assert.equal(
+      (
+        await call("POST", "/kiosk/pair", {
+          link: k.link,
+          tablet: newTablet(),
+          body: { operationId: randomUUID(), code: p3.code },
+        })
+      ).body.error,
+      "kiosk_pairing_invalid",
+    );
+    // Pair, rotate the link (binding kept), unpair (binding gone).
+    const p4 = await write(manager, (tx) =>
+      createPairing(tx, manager, k.stationId),
+    );
+    const t4 = newTablet();
+    assert.equal(
+      (
+        await call("POST", "/kiosk/pair", {
+          link: k.link,
+          tablet: t4,
+          body: { operationId: randomUUID(), code: p4.code },
+        })
+      ).status,
+      200,
+    );
+    const rotated = await write(manager, (tx) =>
+      rotateLink(tx, manager, k.linkId),
+    );
+    assert.equal(
+      (await call("GET", "/kiosk/state", { link: rotated.token, tablet: t4 }))
+        .body.bound,
+      true,
+      "rotation keeps the station and its tablet",
+    );
+    assert.equal(
+      (await call("GET", "/kiosk/state", { link: k.link, tablet: t4 })).body
+        .error,
+      "public_link_invalid",
+    );
+    const live = await one(
+      A,
+      (tx) =>
+        tx`select id from kiosk_devices where station_id=${k.stationId} and revoked_at is null`,
+    );
+    await write(manager, (tx) =>
+      revokeKioskDevice(tx, manager, live.id, { operationId: randomUUID() }),
+    );
+    assert.equal(
+      (await call("GET", "/kiosk/state", { link: rotated.token, tablet: t4 }))
+        .body.bound,
+      false,
+    );
+    // Deactivating the kiosk link archives the station and revokes a pending code.
+    await write(manager, (tx) => createPairing(tx, manager, k.stationId));
+    await write(manager, (tx) =>
+      revokeLink(tx, manager, rotated.id, { operationId: randomUUID() }),
+    );
+    const st = await one(
+      A,
+      (tx) =>
+        tx`select archived_at,(select count(*)::int from kiosk_devices d where d.station_id=s.id and d.revoked_at is null) as live from kiosk_stations s where id=${k.stationId}`,
+    );
+    assert.ok(st.archived_at);
+    assert.equal(st.live, 0);
+  });
+
+  await test("K4. unbound kiosk: an order becomes a counter-only hold (as before 039), with a checkout; card and member lookups need the binding (403 kiosk_device_required)", async () => {
+    const t = newTablet();
+    const k = { ...main, tablet: t };
+    const state = await call("GET", "/kiosk/state", {
+      link: k.link,
+      tablet: t,
+    });
+    assert.equal(state.body.bound, false);
+    assert.equal(state.body.selfCheckout, false);
+    assert.equal(state.body.card, false);
+    const o = await order(k, [line(ids.taco, 2)], 9000);
+    assert.equal(o.counterOnly, "unbound");
+    assert.equal(o.checkout.holdState, "pending");
+    const h = await holdOf(o.key);
+    assert.equal(h.mode, "dine_in");
+    assert.equal(h.table_id, null);
+    assert.equal(h.checkout_device, null);
+    const c = await charge(k, o.key);
+    assert.equal(c.status, 403);
+    assert.equal(c.body.error, "kiosk_device_required");
+    const m = await call("POST", "/kiosk/member", {
+      link: k.link,
+      tablet: t,
+      body: { phone: "5555550101" },
+    });
+    assert.equal(m.body.error, "kiosk_device_required");
+    // A forged cookie is the same as none.
+    t.cookie = "AAAAAAAAAAAAAAAAAAAAAA";
+    assert.equal((await charge(k, o.key)).body.error, "kiosk_device_required");
+  });
+
+  await pair(main);
+
+  await test("K9. card approved: the hold becomes the order with the charge as its tender in the receiving till's drawer, a folio, decision_source 'kiosk', the drawer opener as actor; the webhook-style job and two syncs race onto one settle (one order, one tender, one ticket)", async () => {
+    const state = await call("GET", "/kiosk/state", {
+      link: main.link,
+      tablet: main.tablet,
+    });
+    assert.equal(state.body.selfCheckout, true);
+    assert.equal(state.body.card, true);
+    const o = await order(
+      main,
+      [line(ids.taco, 2), line(ids.papas, 1, "suggestion")],
+      12500,
+    );
+    assert.equal(o.counterOnly, null);
+    const op = randomUUID();
+    const c = await charge(main, o.key, op);
+    assert.equal(c.status, 200, JSON.stringify(c.body));
+    assert.equal(c.body.payment.state, "pending");
+    assert.equal(c.body.payment.amount, 12500);
+    // A replay of the same operation id answers the same attempt; a new one while live is refused.
+    const replay = await charge(main, o.key, op);
+    assert.equal(replay.status, 200);
+    assert.equal((await holdOf(o.key)).attempt_count, 1);
+    assert.equal(
+      (await charge(main, o.key)).body.error,
+      "kiosk_charge_pending",
+    );
+    const a = await attemptOf(o.key);
+    assert.equal(a.target, "kiosk_hold");
+    assert.equal(a.origin, "kiosk");
+    assert.equal(a.session_id, null);
+    assert.equal(a.device_id, ids.till);
+    assert.equal(a.cash_session_id, ids.drawer);
+    assert.equal(a.employee_id, ids.cashier, "the drawer opener");
+    await drive(a.id, ["pending"]);
+    fake.approve(fake.chargeFor(a.id)!.id, { ...TEST_CARD });
+    // The worker reads approved and queues payments_settle; the kiosk syncs twice at the same time.
+    await workerUntil(a.id, "approved");
+    await noRetries("K9 settle race", () =>
+      Promise.all([
+        webRunner.drainTenant(A),
+        sync(main, o.key),
+        sync(main, o.key),
+      ]),
+    );
+    while (webRunner.running() > 0) await sleep(10);
+    const after = await attemptOf(o.key);
+    assert.equal(after.state, "settled");
+    const h = await holdOf(o.key);
+    assert.equal(h.state, "accepted");
+    assert.equal(h.decision_source, "kiosk");
+    assert.equal(h.decided_by, ids.cashier);
+    assert.equal(h.paid_at_accept, true);
+    const counts = await one(
+      A,
+      (tx) => tx`select
+        (select count(*)::int from orders where id=${h.order_id}) as orders,
+        (select count(*)::int from tenders where order_id=${h.order_id}) as tenders,
+        (select count(*)::int from fiscal_tickets where order_id=${h.order_id}) as tickets,
+        (select session_id from tenders where order_id=${h.order_id} limit 1) as drawer,
+        (select sum(amount)::int from tenders where order_id=${h.order_id}) as paid`,
+    );
+    assert.deepEqual(
+      { ...counts },
+      { orders: 1, tenders: 1, tickets: 1, drawer: ids.drawer, paid: 12500 },
+    );
+    const ord = await write(manager, (tx) => getOrder(tx, h.order_id));
+    assert.equal(ord.mode, "dine_in");
+    assert.equal(ord.channel, "kiosk");
+    assert.match(ord.name, /^K-\d+ · Ana$/);
+    const view = (await checkout(main, o.key)).body as KioskCheckoutView;
+    assert.equal(view.paid, true);
+    assert.equal(view.payment.state, "settled");
+    assert.ok(view.folio);
+    assert.equal(view.orderNumber, ord.number);
+    const audit = await one(
+      A,
+      (tx) =>
+        tx`select detail from audit where operation='public.hold_accepted' and entity_id=${h.id}`,
+    );
+    assert.deepEqual(audit.detail.via, { kind: "kiosk" });
+    // The suggestion line kept its origin in the hold (report attribution).
+    assert.equal(
+      (h.lines as any[]).filter((l) => l.origin === "suggestion").length,
+      1,
+    );
+  });
+
+  await test("K10. decline: the hold stays pending; a retry is a new attempt, at most 3; Pagar en caja makes a normal inbox card that staff accept", async () => {
+    const o = await order(main, [line(ids.taco)], 4500);
+    for (let i = 0; i < 3; i++) {
+      const c = await charge(main, o.key);
+      assert.equal(c.status, 200, JSON.stringify(c.body));
+      const a = await attemptOf(o.key);
+      await drive(a.id, ["pending"]);
+      fake.decline(fake.chargeFor(a.id)!.id);
+      await drive(a.id, ["declined"]);
+      const v = (await sync(main, o.key)).body as KioskCheckoutView;
+      assert.equal(v.payment.state, "declined");
+      assert.equal(v.holdState, "pending");
+    }
+    assert.equal(
+      (await charge(main, o.key)).body.error,
+      "kiosk_charge_attempts",
+    );
+    const counter = await call("POST", "/kiosk/counter", {
+      link: main.link,
+      tablet: main.tablet,
+      body: { statusKey: o.key },
+    });
+    assert.equal(counter.status, 200);
+    assert.equal(counter.body.paymentChoice, "counter");
+    const h = await holdOf(o.key);
+    const box = await write(cashier, (tx) => inbox(tx, cashier));
+    const card = box.holds.find((x) => x.id === h.id)!;
+    assert.equal(card.kiosk!.charging, false);
+    assert.equal(card.kiosk!.paymentChoice, "counter");
+    const accepted = await write(cashier, (tx) =>
+      acceptHold(tx, cashier, h.id, {
+        operationId: randomUUID(),
+        target: { kind: "new" },
+        payment: { method: "cash", amount: 4500, tip: 0, received: 5000 },
+      }),
+    );
+    assert.equal(accepted.order.paid, 4500);
+    assert.equal((await holdOf(o.key)).decision_source, "staff");
+  });
+
+  await test("K11/K12. a charge in progress blocks staff accept, reject and the diner's cancel (kiosk_charge_in_progress); timeout cancel withdraws; an uncancellable one stays pending and a late approval still creates the order", async () => {
+    const o = await order(main, [line(ids.taco)], 4500);
+    await charge(main, o.key);
+    const a = await attemptOf(o.key);
+    const h = await holdOf(o.key);
+    await rejects(
+      write(cashier, (tx) =>
+        acceptHold(tx, cashier, h.id, {
+          operationId: randomUUID(),
+          target: { kind: "new" },
+        }),
+      ),
+      "kiosk_charge_in_progress",
+    );
+    await rejects(
+      write(cashier, (tx) =>
+        rejectHold(tx, cashier, h.id, {
+          operationId: randomUUID(),
+          reason: "other",
+        }),
+      ),
+      "kiosk_charge_in_progress",
+    );
+    const cancelOrder = await call("POST", "/kiosk/cancel", {
+      link: main.link,
+      tablet: main.tablet,
+      body: { statusKey: o.key },
+    });
+    assert.equal(cancelOrder.body.error, "kiosk_charge_in_progress");
+    assert.equal(
+      (
+        await call("POST", "/kiosk/counter", {
+          link: main.link,
+          tablet: main.tablet,
+          body: { statusKey: o.key },
+        })
+      ).body.error,
+      "kiosk_charge_pending",
+    );
+    const box = await write(cashier, (tx) => inbox(tx, cashier));
+    assert.equal(box.holds.find((x) => x.id === h.id)!.kiosk!.charging, true);
+    // The kiosk's timeout: the request was never sent (created) → withdrawn at once.
+    const cancel = await call("POST", "/kiosk/charge/cancel", {
+      link: main.link,
+      tablet: main.tablet,
+      body: { operationId: randomUUID(), statusKey: o.key },
+    });
+    assert.equal(cancel.status, 200, JSON.stringify(cancel.body));
+    assert.ok(["withdrawn", "pending_cancel"].includes(cancel.body.outcome));
+    await drive(a.id, ["cancelled"]);
+    // The next attempt reaches the reader and the reader keeps it: in progress, then a late approval.
+    const c2 = await charge(main, o.key);
+    assert.equal(c2.status, 200, JSON.stringify(c2.body));
+    const a2 = await attemptOf(o.key);
+    await drive(a2.id, ["pending"]);
+    fake.atTerminalUncancellable(fake.chargeFor(a2.id)!.id);
+    const cancel2 = await call("POST", "/kiosk/charge/cancel", {
+      link: main.link,
+      tablet: main.tablet,
+      body: { operationId: randomUUID(), statusKey: o.key },
+    });
+    assert.equal(cancel2.status, 200);
+    for (let i = 0; i < 4; i++) await round(A);
+    const still = (await sync(main, o.key)).body as KioskCheckoutView;
+    assert.equal(still.payment.state, "pending", "the reader still holds it");
+    // The kiosk resets; the guest pays on the reader later: the order is created anyway.
+    fake.approve(fake.chargeFor(a2.id)!.id, { ...TEST_CARD });
+    await drive(a2.id, ["settled"]);
+    assert.equal((await holdOf(o.key)).state, "accepted");
+    // A manager's "Cancelar cobro en curso" on another hold withdraws a created attempt.
+    const o3 = await order(main, [line(ids.agua, 2)], 600);
+    await charge(main, o3.key);
+    const a3 = await attemptOf(o3.key);
+    const v = await write(manager, (tx) =>
+      requestCancel(tx, manager, a3.id, { operationId: randomUUID() }),
+    );
+    assert.equal(v.state, "cancelled");
+  });
+
+  await test("K13. approved but the product was 86'd: review with kiosk_settle_unavailable, a red card first in the inbox, the drawer cannot close; an operator retry after the product is back creates the order; reject and refund needs the provider refund recorded first", async () => {
+    const o = await order(main, [line(ids.papas)], 3500);
+    await charge(main, o.key);
+    const a = await attemptOf(o.key);
+    await drive(a.id, ["pending"]);
+    await setAvailable(ids.papas, false);
+    fake.approve(fake.chargeFor(a.id)!.id, { ...TEST_CARD });
+    await drive(a.id, ["review"]);
+    const r = await attemptOf(o.key);
+    assert.equal(r.error_code, "kiosk_settle_unavailable");
+    assert.equal(r.order_id, null);
+    assert.equal(r.tender_id, null);
+    const h = await holdOf(o.key);
+    assert.equal(h.state, "pending");
+    const view = (await checkout(main, o.key)).body as KioskCheckoutView;
+    assert.equal(view.paidNoOrder, true);
+    const box = await write(cashier, (tx) => inbox(tx, cashier));
+    assert.equal(box.holds[0].id, h.id, "the red card sorts first");
+    assert.equal(box.holds[0].kiosk!.review!.code, "kiosk_settle_unavailable");
+    assert.equal(box.holds[0].kiosk!.review!.amount, 3500);
+    await rejects(
+      write(manager, (tx) =>
+        closeCash(tx, manager, {
+          operationId: randomUUID(),
+          counted: 100000,
+          reason: "Corte de prueba",
+        }),
+      ),
+      "payments_attempt_unresolved",
+    );
+    // Retry while still 86'd: refused, still review.
+    await rejects(
+      write(cashier, (tx) =>
+        resolveAttempt(tx, cashier, a.id, {
+          operationId: randomUUID(),
+          outcome: "retry",
+        }),
+      ),
+      /kiosk_settle_unavailable|unavailable/,
+    );
+    await setAvailable(ids.papas, true);
+    const done = await write(cashier, (tx) =>
+      resolveAttempt(tx, cashier, a.id, {
+        operationId: randomUUID(),
+        outcome: "retry",
+      }),
+    );
+    assert.equal(done.attempt.state, "settled");
+    const h2 = await holdOf(o.key);
+    assert.equal(h2.state, "accepted");
+    assert.equal(h2.decision_source, "kiosk");
+    // (c) Another 86: the manager records the provider refund, then rejects the hold.
+    const o2 = await order(main, [line(ids.papas)], 3500);
+    await charge(main, o2.key);
+    const b = await attemptOf(o2.key);
+    await drive(b.id, ["pending"]);
+    await setAvailable(ids.papas, false);
+    fake.approve(fake.chargeFor(b.id)!.id, { ...TEST_CARD });
+    await drive(b.id, ["review"]);
+    const hb = await holdOf(o2.key);
+    await rejects(
+      write(cashier, (tx) =>
+        rejectHold(tx, cashier, hb.id, {
+          operationId: randomUUID(),
+          reason: "unavailable",
+        }),
+      ),
+      "kiosk_charge_in_progress",
+    );
+    await write(manager, (tx) =>
+      resolveAttempt(tx, manager, b.id, {
+        operationId: randomUUID(),
+        outcome: "refunded_at_provider",
+        note: "Reembolso completo hecho en la app de Clip",
+        confirmed: true,
+      }),
+    );
+    await write(cashier, (tx) =>
+      rejectHold(tx, cashier, hb.id, {
+        operationId: randomUUID(),
+        reason: "unavailable",
+      }),
+    );
+    assert.equal((await holdOf(o2.key)).state, "rejected");
+    await setAvailable(ids.papas, true);
+  });
+
+  await test("K14. a price changed after the order: the charge start answers public_price_changed and the hold is unchanged", async () => {
+    const o = await order(main, [line(ids.agua)], 300);
+    await asOwner(
+      A,
+      (tx) =>
+        tx`update catalog set data=jsonb_set(data,'{price}','400') where id=${ids.agua}`,
+    );
+    const c = await charge(main, o.key);
+    assert.equal(c.status, 409);
+    assert.equal(c.body.error, "public_price_changed");
+    const h = await holdOf(o.key);
+    assert.equal(h.attempt_count, 0);
+    assert.equal(h.state, "pending");
+    await asOwner(
+      A,
+      (tx) =>
+        tx`update catalog set data=jsonb_set(data,'{price}','300') where id=${ids.agua}`,
+    );
+    // Below the provider minimum on MP, unavailable on a manual terminal.
+    const mp = await newKiosk("MP " + run);
+    await configure(mp, terminals.mp);
+    await pair(mp);
+    const small = await order(mp, [line(ids.agua)], 300);
+    assert.equal(
+      (await charge(mp, small.key)).body.error,
+      "kiosk_amount_below_min",
+    );
+    const manual = await newKiosk("Manual " + run);
+    await configure(manual, terminals.manual);
+    await pair(manual);
+    const st = await call("GET", "/kiosk/state", {
+      link: manual.link,
+      tablet: manual.tablet,
+    });
+    assert.equal(
+      st.body.card,
+      false,
+      "a manual terminal is not a kiosk card reader (critic R14)",
+    );
+    const m = await order(manual, [line(ids.taco)], 4500);
+    assert.equal(m.counterOnly, "no_terminal");
+    assert.equal(
+      (await charge(manual, m.key)).body.error,
+      "kiosk_card_unavailable",
+    );
+  });
+
+  await test("K15/K20. the kiosk switch off: card refused, counter only, while an approved charge still settles (the job path never reads either switch); a live kiosk charge blocks the drawer close", async () => {
+    const o = await order(main, [line(ids.taco)], 4500);
+    await charge(main, o.key);
+    const a = await attemptOf(o.key);
+    await drive(a.id, ["pending"]);
+    process.env.KIOSK_SELF_CHECKOUT_ENABLED = "false";
+    const st = await call("GET", "/kiosk/state", {
+      link: main.link,
+      tablet: main.tablet,
+    });
+    assert.equal(st.body.selfCheckout, false);
+    const o2 = await order(main, [line(ids.taco)], 4500);
+    assert.equal(o2.counterOnly, "disabled");
+    assert.equal(
+      (await charge(main, o2.key)).body.error,
+      "kiosk_card_unavailable",
+    );
+    fake.approve(fake.chargeFor(a.id)!.id, { ...TEST_CARD });
+    await drive(a.id, ["settled"]);
+    delete process.env.KIOSK_SELF_CHECKOUT_ENABLED;
+    // A drawer close with a live kiosk charge is refused (payments P-5 covers hold targets).
+    const o3 = await order(main, [line(ids.taco)], 4500);
+    await charge(main, o3.key);
+    await rejects(
+      write(manager, (tx) =>
+        closeCash(tx, manager, {
+          operationId: randomUUID(),
+          counted: 100000,
+          reason: "Corte de prueba",
+        }),
+      ),
+      "payments_attempt_unresolved",
+    );
+    const a3 = await attemptOf(o3.key);
+    await write(manager, (tx) =>
+      requestCancel(tx, manager, a3.id, { operationId: randomUUID() }),
+    );
+    await drive(a3.id, ["cancelled"]);
+  });
+
+  await test("K-zero. a till without an open drawer: counter only (till_closed); a zero total with self-checkout: the kiosk accepts it itself (no charge)", async () => {
+    const k = await newKiosk("Gratis " + run);
+    await configure(k, terminals.clip, ids.till2);
+    await pair(k);
+    const closed = await order(k, [line(ids.taco)], 4500);
+    assert.equal(closed.counterOnly, "till_closed");
+    assert.equal(
+      (await charge(k, closed.key)).body.error,
+      "kiosk_card_unavailable",
+    );
+    const free0 = await order(k, [line(ids.gratis)], 0);
+    assert.equal(
+      (await holdOf(free0.key)).state,
+      "pending",
+      "no open till: no kiosk accept",
+    );
+    await configure(k, terminals.clip, ids.till);
+    const o = await order(k, [line(ids.gratis)], 0);
+    const h = await holdOf(o.key);
+    assert.equal(h.state, "accepted");
+    assert.equal(h.decision_source, "kiosk");
+    assert.equal(o.checkout.holdState, "accepted");
+    assert.equal(o.checkout.paid, true);
+  });
+
+  await test("K-settings. settings view and saves: managers only; versions; station terminal and till", async () => {
+    const v = await write(manager, (tx) => kioskSettingsView(tx, manager));
+    assert.equal(v.settings.paymentMode, "card_and_counter");
+    const st = v.stations.find((x) => x.id === main.stationId)!;
+    assert.equal(st.terminalId, terminals.clip);
+    assert.equal(st.registerDeviceId, ids.till);
+    assert.equal(st.tillOpen, true);
+    assert.equal(st.device!.state, "paired");
+    await rejects(
+      write(cashier, (tx) => kioskSettingsView(tx, cashier)),
+      "forbidden",
+    );
+    await rejects(
+      write(manager, (tx) =>
+        saveKioskSettings(tx, manager, {
+          operationId: randomUUID(),
+          expectedVersion: 0,
+          paymentMode: "counter",
+          askFulfillment: true,
+          suggestions: true,
+          loyaltyAtKiosk: false,
+        }),
+      ),
+      "kiosk_settings_changed",
+    );
+    await rejects(
+      write(manager, (tx) =>
+        saveSuggestions(tx, manager, ids.taco, {
+          operationId: randomUUID(),
+          expectedVersion: 0,
+          productIds: [ids.taco],
+        }),
+      ),
+      "invalid_input",
+    );
+  });
+
+  // Tenant B never sees A's kiosk rows.
+  await test("K-tenancy. another restaurant's session reads none of A's kiosk rows", async () => {
+    const rows = await write(
+      ownerB,
+      (tx) => tx`select
+      (select count(*)::int from kiosk_stations) as stations,
+      (select count(*)::int from kiosk_checkouts) as checkouts,
+      (select count(*)::int from kiosk_devices) as devices`,
+    );
+    assert.deepEqual({ ...rows[0] }, { stations: 0, checkouts: 0, devices: 0 });
+  });
+
+  assert.deepEqual(dead, [], "no job went dead");
+  assert.deepEqual(fake.violations, [], "the fake saw no contract breach");
+} catch (e) {
+  failed = true;
+  console.error(e);
+} finally {
+  server.close();
+  // payments_platform is one global row: put back what the run found.
+  if (platformBefore)
+    await admin`update payments_platform set providers=${platformBefore.providers},
+      upload_kid=${platformBefore.upload_kid},
+      upload_public_jwk=${platformBefore.upload_public_jwk ? admin.json(platformBefore.upload_public_jwk) : null},
+      updated_at=now() where id=1`;
+  else await admin`delete from payments_platform where id=1`;
+  setPaymentsRuntime(null);
+  await workerRunner.stop(2000);
+  await webRunner.stop(2000);
+  await fake.close();
+  await rm(mediaRoot, { recursive: true, force: true });
+  await sql.end();
+  await worker.end();
+  await admin.end();
+}
+if (failed) process.exit(1);
+console.log(`kiosk DB: ${checks} checks passed`);

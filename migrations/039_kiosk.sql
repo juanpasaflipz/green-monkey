@@ -223,7 +223,8 @@ CREATE TRIGGER kiosk_stations_transition BEFORE UPDATE OR DELETE ON kiosk_statio
   FOR EACH ROW EXECUTE FUNCTION kiosk_station_transition();
 
 -- A device is born pending (a pairing code), is paired once (the secret replaces the code), sees
--- heartbeats, and is revoked once. A revoked device never changes; a paired one never re-pairs.
+-- heartbeats, and is revoked once. A revoked device never changes; a paired one never re-pairs; a
+-- pending code never changes and its expiry only moves earlier.
 CREATE FUNCTION kiosk_device_transition() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'kiosk_device_immutable'; END IF;
@@ -235,8 +236,8 @@ BEGIN
          (NEW.secret_hash, NEW.paired_at, NEW.pairing_attempts)
          IS DISTINCT FROM (OLD.secret_hash, OLD.paired_at, OLD.pairing_attempts))
      OR (OLD.secret_hash IS NULL AND NEW.secret_hash IS NULL AND
-         (NEW.pairing_code_hash, NEW.pairing_expires_at)
-         IS DISTINCT FROM (OLD.pairing_code_hash, OLD.pairing_expires_at))
+         (NEW.pairing_code_hash IS DISTINCT FROM OLD.pairing_code_hash
+          OR NEW.pairing_expires_at > OLD.pairing_expires_at))
      OR (OLD.paired_at IS NULL AND
          (NEW.last_seen_at, NEW.build, NEW.viewport)
          IS DISTINCT FROM (OLD.last_seen_at, OLD.build, OLD.viewport)) THEN
