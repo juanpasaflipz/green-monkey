@@ -575,17 +575,13 @@ async function paidAtKiosk(k: Device, state: RunState, o: OrderS, ref: string) {
 async function paidNoOrder(k: Device, state: RunState, o: OrderS, ref: string) {
   const page = k.page;
   await approve(state, ref, o.card);
-  await expect(
-    page.getByText(
-      /^Tu pago se registró\. Pasa a caja con tu código K-\d+ para confirmar tu pedido\.$/,
-    ),
-  ).toBeVisible({ timeout: 60_000 });
-  const label = /K-\d+/.exec(
-    await page
-      .getByText(/^Tu pago se registró\./)
-      .first()
-      .innerText(),
-  )![0];
+  // The screen's instructions; the persistent live region (KIOSK-UX-15) says the same words
+  // to a screen reader, off screen.
+  const instructions = page.locator("section.kiosk-checkout").getByText(
+    /^Tu pago se registró\. Pasa a caja con tu código K-\d+ para confirmar tu pedido\.$/,
+  );
+  await expect(instructions).toBeVisible({ timeout: 60_000 });
+  const label = /K-\d+/.exec(await instructions.innerText())![0];
   (state.kioskLabels as Record<string, string>)[o.id] = label;
   const next = page.getByRole("button", { name: "Nuevo pedido", exact: true });
   if (await next.count()) await tap(k, next.first());
