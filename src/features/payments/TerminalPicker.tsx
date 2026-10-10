@@ -1,11 +1,18 @@
 import type { Locale } from "../../../shared/domain";
-import type { TerminalOption } from "../../../shared/payments";
+import type { TerminalOption, TerminalStatus } from "../../../shared/payments";
 import { strings, type Key } from "../../i18n";
 
+const STATUS_KEYS: Record<TerminalStatus, Key> = {
+  online: "payTerminalOnline",
+  offline: "payTerminalOffline",
+  no_data: "payTerminalNoData",
+};
+
 /**
- * Payments (037): the named terminal of a card record. Every active terminal
- * is listed (an integrated one taken manually is the documented fallback,
- * "solo manual" until phase P2), then "Otra terminal" (no terminal named).
+ * Payments (037): the terminal of a card payment. Integrated terminals first, with their
+ * connectivity ("Conectada", "Sin conexión", "Sin datos" from the provider's last device report;
+ * "solo manual" when integrated charging is off or the device is offline), then manual ones,
+ * then "Otra terminal" (no terminal named).
  */
 export function TerminalPicker({
   terminals,
@@ -19,6 +26,7 @@ export function TerminalPicker({
   locale,
   disabled,
   describedBy,
+  online = true,
 }: {
   terminals: TerminalOption[];
   /** null = "Otra terminal". */
@@ -35,6 +43,8 @@ export function TerminalPicker({
   canSetDefault: boolean;
   locale: Locale;
   disabled?: boolean;
+  /** Offline, an integrated terminal can only be recorded manually. */
+  online?: boolean;
 }) {
   const t = (k: Key) => strings[locale][k];
   if (!terminals.length) return null;
@@ -60,15 +70,22 @@ export function TerminalPicker({
         aria-label={t("payTerminal")}
         aria-describedby={describedBy}
       >
-        {terminals.map((terminal) =>
-          chip(
-            terminal.id,
-            terminal.name,
-            terminal.kind !== "manual" && !terminal.integrated
-              ? t("payTerminalManualOnly")
-              : undefined,
-          ),
-        )}
+        {[...terminals]
+          .sort(
+            (a, b) =>
+              Number(b.integrated && online) - Number(a.integrated && online),
+          )
+          .map((terminal) =>
+            chip(
+              terminal.id,
+              terminal.name,
+              terminal.kind === "manual"
+                ? undefined
+                : !terminal.integrated || !online
+                  ? t("payTerminalManualOnly")
+                  : t(STATUS_KEYS[terminal.status ?? "no_data"]),
+            ),
+          )}
         {chip(null, t("payOtherTerminal"))}
       </div>
       {canSetDefault && value && value === defaultTerminalId && (

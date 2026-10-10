@@ -247,6 +247,14 @@ export const EXCEPTION_KINDS = [
   // payments (037, LD-75): a platform tender that is «Otra», on an order not rung at that
   // platform's price list, or offline evidence that broke an online platform rule.
   "platform_tender",
+  // payments (037 P2): terminal charges approved but unapplied, resolved by a manager, or
+  // still unknown after 10 minutes (critic R13: the kiosk reuses them); and a charge the
+  // provider reported paid after it was closed (P2V-FIXES-2: a dismissed «No se cobró», or a
+  // cancelled, declined or expired charge).
+  "terminal_attempt_review",
+  "terminal_attempt_dismissed",
+  "terminal_attempt_unknown_open",
+  "terminal_attempt_late_approval",
 ] as const;
 export type ExceptionKind = (typeof EXCEPTION_KINDS)[number];
 /**

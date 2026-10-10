@@ -108,6 +108,35 @@ export function cfdiFakePort(
   return port;
 }
 
+/**
+ * Branch P (payments spec §12.4, LD-80): the day-payments job's port for the payments fake
+ * (tests/fakes/payments-fake.ts, MP Point + Clip). Global setup starts the fake there and runs
+ * the worker with PAYMENTS_PROVIDERS and the fake's loopback API bases (APP_ENV=test, the only
+ * place server/payments/config.ts accepts them) and a per-run CREDENTIAL_ENCRYPTION_KEY. The run
+ * then plays Restaurant P alone; acceptance §3's env table governs the A/B job only (LD-80).
+ */
+export function paymentsFakePort(
+  env: NodeJS.ProcessEnv = process.env,
+): number | null {
+  const raw = env.RD_PAYMENTS_FAKE_PORT?.trim();
+  if (!raw) return null;
+  if (env.FACTURAPI_TEST_KEY?.trim() || env.RD_CFDI_FAKE_PORT?.trim())
+    throw Error(
+      "restaurant-day: branch P (RD_PAYMENTS_FAKE_PORT) runs without branch K's Facturapi key or fake",
+    );
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535)
+    throw Error("restaurant-day: RD_PAYMENTS_FAKE_PORT must be a port number");
+  return port;
+}
+
+/** The run's branch: P with the payments fake, else K or N (cfdiBranch). */
+export function runBranch(
+  env: NodeJS.ProcessEnv = process.env,
+): "N" | "K" | "P" {
+  return paymentsFakePort(env) ? "P" : cfdiBranch(env);
+}
+
 /** SUPPORT_DATABASE_URL from the operator file support:provision wrote. */
 export function supportDatabaseUrl(): string {
   if (!existsSync(SUPPORT_ENV_FILE))
@@ -122,7 +151,8 @@ export function supportDatabaseUrl(): string {
 
 export type RunState = {
   runId: string;
-  branch: "N" | "K";
+  /** N or K (the A/B day, acceptance §3.3), or P (branch P: Restaurant P alone, LD-80) */
+  branch: "N" | "K" | "P";
   startedAt: string;
   baseUrl: string;
   appUrl: string;
@@ -133,9 +163,15 @@ export type RunState = {
   businessDateA: string;
   businessDateB: string;
   businessDateL: string;
+  /** Restaurant P (branch P, payments spec §12.4): Mexico City, like A */
+  cutoffP: string;
+  businessDateP: string;
+  /** Branch P: the payments fake's base URL (scripted over HTTP, /__fake/…) */
+  paymentsFakeUrl?: string;
   tenantA?: string;
   tenantB?: string;
   tenantL?: string;
+  tenantP?: string;
   /** order-book id (A01…, B1…) → orders.id */
   orders: Record<string, string>;
   /** order-book id → order number shown on screen */

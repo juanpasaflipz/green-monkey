@@ -18,6 +18,7 @@ import {
   PLATFORMS,
   platformLabel,
   platformReferenceProblem,
+  saveTerminalInput,
   TENDER_METHODS,
 } from "../shared/payments";
 import { listPrice, orderInput, quote, type Product } from "../shared/domain";
@@ -162,6 +163,23 @@ describe("shared/payments constants and helpers", () => {
     expect(cancelOutcome({ state: "unknown" })).toBe("pending_cancel");
   });
 
+  it("an integrated device id is never a dot segment a URL path would collapse (P2-SECURITY-5)", () => {
+    const save = (providerDeviceId: string) =>
+      saveTerminalInput.safeParse({
+        operationId: "6f1c1a52-8d0e-4c1e-9b0a-3a3c1d2e4f50",
+        name: "Clip ficticio",
+        kind: "clip_pinpad",
+        providerDeviceId,
+        feeBp: null,
+      }).success;
+    expect(save("..")).toBe(false);
+    expect(save(".")).toBe(false);
+    expect(save("P8220724FAKE01")).toBe(true);
+    expect(save("NEWLAND_N950__FAKE0001")).toBe(true);
+    expect(save("a.b")).toBe(true);
+    expect(save("...")).toBe(true);
+  });
+
   it("every payments error code of the spec (§4.9, critic R11 names) has Spanish and English text", () => {
     const codes = [
       "payments_provider_unavailable",
@@ -206,6 +224,16 @@ describe("shared/payments constants and helpers", () => {
       "payments_device_mode_rejected",
       "payments_clip_create_outcome_unknown",
       "payments_refunded_before_settle",
+      // P2 fix round
+      "payments_card_declined",
+      "payments_terminal_not_linked",
+      "payments_provider_may_charge",
+      "payments_cancel_sent",
+      "payments_reference_taken",
+      "payments_charged_required",
+      "payments_charged_mismatch",
+      // P2 verification fix round (P2V-FIXES-3)
+      "payments_reader_attestation_required",
     ];
     for (const code of codes) {
       expect(errorText[code]?.[0]?.trim(), code).toBeTruthy();

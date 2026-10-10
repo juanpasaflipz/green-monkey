@@ -80,10 +80,14 @@ import {
   readPrintSettings,
 } from "../print";
 import { CartLine } from "./CartLine";
-import { PaymentDialog } from "./PaymentDialog";
+import { PaymentDialog, type TerminalChargeValues } from "./PaymentDialog";
 import { usePaymentOptions } from "./payments/options";
 import { PLATFORM_KEYS } from "./payments/PlatformFields";
-import type { PlatformCode } from "../../shared/payments";
+import { isLiveForOrder, type PlatformCode } from "../../shared/payments";
+import { useTerminalCharge } from "./payments/useTerminalCharge";
+import { ActiveCharges } from "./payments/ActiveCharges";
+import { ResolveDialog } from "./payments/ResolveDialog";
+import { cachedLiveOrders } from "./payments/charge-state";
 import { ReceiptModal, checkStateOf, noteEditableOf } from "./Receipt";
 import { NoteDialog } from "./OrderDetail";
 import {
@@ -170,6 +174,8 @@ export function Selling({
   const [cartOpen, setCartOpen] = useState(false);
   const [payment, setPayment] = useState(false);
   const [receipt, setReceipt] = useState<Order | null>(null);
+  // payments (037, P2): the manager's resolve dialog for the charge on screen.
+  const [resolvingCharge, setResolvingCharge] = useState(false);
   const [current, setCurrent] = useState<Order | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1107,6 +1113,16 @@ export function Selling({
       void api("/cash")
         .then(setCashSession)
         .catch(() => {});
+    // A live charge on this order started on another device (or before a relaunch): its waiting
+    // panel opens here too, with Cancelar and Cambiar de terminal (P2-UX-2).
+    const order = currentRef.current;
+    if (
+      online &&
+      order &&
+      !offline.isLocalOrder(order) &&
+      terminalCharge.attempt?.orderId !== order.id
+    )
+      void terminalCharge.attach(order.id).catch(() => undefined);
     setPayment(true);
     setError("");
     setNotice("");
@@ -1141,6 +1157,73 @@ export function Selling({
       )
         setNotice(text);
     });
+  }
+  /**
+   * payments (037, P2): a terminal charge settled (the sync, a retry or a manager record). The
+   * receipt replaces the cart only while it still shows that order; otherwise it is announced.
+   */
+  function settledFromTerminal(order: Order) {
+    // R18: the one exit. The cart's own order while the cart still shows it; otherwise the club
+    // only reconciles it and never links the cart's current member to it.
+    onPaymentSettled(order, currentRef.current?.id === order.id);
+    if (currentRef.current?.id === order.id) {
+      setPayment(false);
+      setCurrent(order);
+      setReceipt(order);
+      paymentKey.current = crypto.randomUUID();
+    } else
+      setNotice(t("servicePaidAfterSwitch").replace("{n}", numberText(order)));
+  }
+  const terminalCharge = useTerminalCharge({
+    session,
+    online,
+    onSettled: settledFromTerminal,
+  });
+  /** "Enviar a {terminal}": sends the cart first (as Cobrar does), then starts the charge. */
+  function startTerminalCharge(values: TerminalChargeValues) {
+    if (payingRef.current) return;
+    payingRef.current = true;
+    setPaying(true);
+    void navigator.locks
+      .request("green-monkey-session-transition", { mode: "shared" }, () =>
+        navigator.locks.request(
+          "green-monkey-payment:" + scope(session),
+          async () => {
+            setBusy(true);
+            setError("");
+            try {
+              if (!online) throw new Error("payments_provider_unavailable");
+              if (!drawerOpen) throw new Error("drawer_required");
+              await offline.guardOnlinePayment(current);
+              let o = current;
+              if (draft.lines.length)
+                o = await sendWith(current, draft, { keepBusy: true });
+              if (!o) throw new Error("invalid_input");
+              await terminalCharge.start(o.id, values);
+            } finally {
+              setBusy(false);
+            }
+          },
+        ),
+      )
+      .catch((e) => {
+        if (!(e instanceof HandledError)) setError(errorNotice(e, locale));
+      })
+      .finally(() => {
+        payingRef.current = false;
+        setPaying(false);
+      });
+  }
+  function terminalAction(action: string) {
+    setError("");
+    const run = (p: Promise<unknown>) =>
+      void p.catch((e) => setError(errorNotice(e, locale)));
+    if (action === "cancel") run(terminalCharge.cancel());
+    else if (action === "switch") run(terminalCharge.cancel(true));
+    else if (action === "recheck") run(terminalCharge.recheck());
+    else if (action === "retrySettle") run(terminalCharge.retrySettle());
+    else if (action === "resolve") setResolvingCharge(true);
+    else terminalCharge.dismiss();
   }
   /**
    * SVC-R2: the in-flight flag is set synchronously on the tap and cleared
@@ -1306,6 +1389,18 @@ export function Selling({
       // by the builders with the cart's own message (OFF-INT-4): `priced`
       // leaves the flagged line out, and no record holds a line it cannot price.
       if (!online || offline.isLocalOrder(current)) {
+        // payments (037, P2): money may already be on a terminal for this order.
+        // The remembered charge survives a reload or a restart while offline, and the last
+        // «Cobros en terminal» list covers a charge started on another device (P2-MONEY-6).
+        const charge = terminalCharge.attempt;
+        if (
+          current &&
+          ((charge &&
+            charge.orderId === current.id &&
+            isLiveForOrder(charge.state)) ||
+            cachedLiveOrders(session.tenantId).includes(current.id))
+        )
+          throw new Error("payments_order_attempt_live");
         const saved = await offline.collectOffline(
           {
             amount: values.amount,
@@ -1960,6 +2055,15 @@ export function Selling({
           <div>
             <span className="eyebrow">GREEN MONKEY / POS</span>
             <h1>{t("sell")}</h1>
+            <ActiveCharges
+              session={session}
+              locale={locale}
+              online={online}
+              money={money}
+              onRecorded={(order) => {
+                if (currentRef.current?.id === order.id) setCurrent(order);
+              }}
+            />
             {pendingPayment && (
               <div className="warning-panel" role="status">
                 <p>{t("pendingPaymentRecovery")}</p>
@@ -2175,10 +2279,37 @@ export function Selling({
                 setNotice(`${t("payDefaultFailed")} ${errorNotice(e, locale)}`),
               );
           }}
-          onClose={() => setPayment(false)}
+          attempt={
+            terminalCharge.attempt &&
+            current &&
+            terminalCharge.attempt.orderId === current.id
+              ? terminalCharge.attempt
+              : null
+          }
+          onSendToTerminal={startTerminalCharge}
+          onAttemptAction={terminalAction}
+          onClose={() => {
+            // A final outcome on screen is done with; a live charge keeps syncing (and shows in
+            // Cobros en terminal) until it confirms.
+            terminalCharge.dismiss();
+            setPayment(false);
+          }}
           onGoToCash={() => {
             setPayment(false);
             navigate("cash");
+          }}
+        />
+      )}
+      {resolvingCharge && terminalCharge.attempt && (
+        <ResolveDialog
+          attempt={terminalCharge.attempt}
+          locale={locale}
+          money={money}
+          manager={["owner", "manager"].includes(session.role)}
+          onClose={() => setResolvingCharge(false)}
+          onResolved={(r) => {
+            setResolvingCharge(false);
+            terminalCharge.apply(r);
           }}
         />
       )}

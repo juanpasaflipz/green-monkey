@@ -4,8 +4,9 @@
 //    server_draining meanwhile, ignores idle keep-alive sockets and exits 0
 //    well inside RAILWAY_DEPLOYMENT_DRAINING_SECONDS (OPS-6);
 //  - worker: with the jobs login (WORKER_DATABASE_URL, a gm_jobs_worker
-//    member) /healthz reports ready with jobs:true, and SIGTERM exits 0
-//    within RAILWAY_DEPLOYMENT_DRAINING_SECONDS.
+//    member) /healthz reports ready with jobs:true, POST /wake (payments)
+//    claims due jobs before the sweep, and SIGTERM exits 0 within
+//    RAILWAY_DEPLOYMENT_DRAINING_SECONDS.
 // Requires `npm run build` and the isolated local development fixture.
 import "dotenv/config";
 import assert from "node:assert/strict";
@@ -14,11 +15,13 @@ import { once } from "node:events";
 import net from "node:net";
 import http from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
+import { randomUUID } from "node:crypto";
+import postgres from "postgres";
 
 const target = new URL(process.env.DATABASE_URL ?? "");
 if (
   target.hostname !== "127.0.0.1" ||
-  !/^\/green_monkey(_[a-z]+)?_dev$/.test(target.pathname)
+  !/^\/green_monkey(_[a-z][a-z0-9]*)?_dev$/.test(target.pathname)
 )
   throw Error(
     "Drain qualification requires the isolated local development fixture",
@@ -197,6 +200,69 @@ try {
     /"message":"worker_ready"[^\n]*"jobs":true/,
     "worker_ready logs jobs:true",
   );
+
+  // ---- worker POST /wake (payments spec §4.7): the web's poke after a payments enqueue.
+  const wake = await fetch(origin + "/wake", { method: "POST" });
+  assert.equal(wake.status, 202);
+  assert.equal(wake.headers.get("cache-control"), "no-store");
+  assert.equal(await wake.text(), "", "a wake carries no data back");
+  const notWake = await fetch(origin + "/wake");
+  assert.equal(notWake.status, 404, "only POST wakes");
+  await notWake.text();
+  const burst = await Promise.all(
+    Array.from({ length: 25 }, () =>
+      fetch(origin + "/wake", { method: "POST" }),
+    ),
+  );
+  assert.deepEqual([...new Set(burst.map((r) => r.status))], [202]);
+  await Promise.all(burst.map((r) => r.text()));
+  assert.equal(
+    (await fetch(origin + "/healthz")).status,
+    200,
+    "a burst of wakes (coalesced by the runner) leaves the worker healthy",
+  );
+  // A wake claims a due payments job long before the 5 s discovery sweep: three times in a row,
+  // each within 1.5 s, which the sweep alone cannot do. payments_wipe for a provider the demo
+  // restaurant never connected is a no-op that finishes at once.
+  const app = postgres(target.href, { max: 1, onnotice: () => {} });
+  const demo = process.env.DEMO_TENANT_ID ?? "";
+  assert.match(
+    demo,
+    /^[0-9a-f-]{36}$/,
+    "the seeded demo restaurant (DEMO_TENANT_ID)",
+  );
+  try {
+    for (let i = 1; i <= 3; i++) {
+      const jobId = randomUUID();
+      await app.begin(async (tx) => {
+        await tx`select set_config('app.tenant_id', ${demo}, true)`;
+        await tx`insert into jobs(tenant_id,id,kind,dedupe_key,payload,state,next_at)
+          values(${demo},${jobId},'payments_wipe',${"drain-wake:" + jobId},
+            ${tx.json({ provider: "clip" })},'available',now())`;
+      });
+      const t0 = Date.now();
+      await (await fetch(origin + "/wake", { method: "POST" })).text();
+      let state = "available";
+      while (state !== "done" && Date.now() - t0 < 1500) {
+        await delay(25);
+        state = await app.begin(async (tx) => {
+          await tx`select set_config('app.tenant_id', ${demo}, true)`;
+          const [row] = await tx`select state from jobs where id=${jobId}`;
+          return row.state as string;
+        });
+      }
+      assert.equal(
+        state,
+        "done",
+        `wake ${i}: the due payments job ran within 1.5 s`,
+      );
+    }
+  } finally {
+    await app.end();
+  }
+  console.log(
+    "PASS worker POST /wake answers 202 no-store, survives a burst, and a due payments job runs within 1.5 s of each wake (three in a row; the sweep is 5 s)",
+  );
   const workerExit = once(worker, "exit");
   const workerSignalledAt = Date.now();
   worker.kill("SIGTERM");
@@ -249,7 +315,7 @@ try {
   assert.equal(badCode, 1, "checkWorkerRole failure exits 1");
   assert.match(output.join(""), /"message":"database_fatal"/);
   console.log("PASS a misconfigured jobs login stops the worker with exit 1");
-  console.log("Drain qualification passed: 4 process checks.");
+  console.log("Drain qualification passed: 5 process checks.");
 } catch (error) {
   console.error(output.join("").slice(-4000));
   throw error;

@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { expectedDay, oracleDay } from "./restaurant-day/self-check.js";
+import { EXPECTED_P } from "./restaurant-day/expected-p.js";
+import { estimatedFee, oracleP } from "./restaurant-day/oracle-p.js";
 import {
   allocate,
   businessDate,
@@ -19,9 +21,16 @@ describe("restaurant-day oracle (specs/acceptance.md §5)", () => {
     expect(oracleDay()).toEqual(expectedDay());
   });
 
+  it("branch P (payments §12.4, LD-80): the oracle reproduces its hand-typed table", () => {
+    expect(oracleP()).toEqual(EXPECTED_P);
+    // P-R2: half-up to the centavo.
+    expect(estimatedFee(11000, 175)).toBe(193);
+    expect(estimatedFee(13500, 360)).toBe(486);
+  });
+
   it("imports nothing from the application", () => {
     for (const file of readdirSync("tests/restaurant-day").filter((f) =>
-      /^(oracle|expected|scenario|self-check)\.ts$/.test(f),
+      /^(oracle|expected|scenario|self-check)(-p)?\.ts$/.test(f),
     )) {
       const source = readFileSync(`tests/restaurant-day/${file}`, "utf8");
       expect(source, file).not.toMatch(

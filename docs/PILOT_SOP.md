@@ -311,7 +311,7 @@ Todo el comportamiento está en [recuperación sin conexión](OFFLINE_RECOVERY.m
   no funcionan sin conexión.
 - **Qué se puede hacer sin conexión** (con la configuración de fábrica):
   - Órdenes nuevas **cobradas completas**. En «Cobrar», con «Efectivo», el botón dice
-    «Guardar cobro en este dispositivo»; con «Terminal externa», «Guardar cobro con
+    «Guardar cobro en este dispositivo»; con «Tarjeta», «Guardar cobro con
     terminal» (confirma la aprobación y escribe la referencia; no se verifica con el
     banco).
   - El recibo muestra un número provisional («Número provisional …» y «El número
@@ -455,7 +455,7 @@ una sucursal» y escribe el domicilio de este local. Sin esos datos, cada ticket
 ## 5. Moneda: solo pesos mexicanos (MXN)
 
 Esta versión cobra **solo en pesos**. No existe una forma de pago en dólares ni
-conversión de moneda: los métodos de cobro son «Efectivo» y «Terminal externa», en la
+conversión de moneda: los métodos de cobro son «Efectivo», «Tarjeta» y «Plataforma», en la
 moneda del restaurante.
 
 - La moneda del restaurante está en «Configuración» → «Datos del restaurante» →
@@ -485,7 +485,7 @@ cómo conservar la bitácora.
    de cambio, pesos escritos en «Efectivo recibido», cambio entregado e iniciales de
    quien cobró. Si el cliente deja propina en dólares y la registras en «Propina»,
    conviértela igual, escríbela en pesos y anótala.
-5. **No uses «Terminal externa»** para registrar dólares en efectivo. Este procedimiento
+5. **No uses «Tarjeta»** para registrar dólares en efectivo. Este procedimiento
    cubre solo efectivo en dólares.
 6. **Al cerrar caja** (sección 4.3): cuenta los pesos; cuenta los dólares del sobre y
    compáralos con el total de dólares de la bitácora; multiplica los dólares contados
@@ -505,7 +505,7 @@ cómo conservar la bitácora.
 | Reportes y cortes por forma de pago | Disponible (reportes, migración 029) | «Hoy» y «Finanzas» (propietario y gerentes); corte X, corte Z y corte del día impresos desde «Caja» o «Finanzas → Cortes». | [Reports](REPORTS.md#cortes) |
 | Cerrar una caja desde otro dispositivo | Disponible (reportes, migración 029) | «Finanzas → Cortes → Cerrar caja desde aquí» (gerente, con PIN) para una caja de un dispositivo desvinculado o que quedó abierta de un día anterior; si su tablet funciona, ciérrala ahí. | [Reports](REPORTS.md#cortes) |
 | Acceso Pro del piloto otorgado por soporte, aviso de privacidad, contacto de soporte dentro de la app | Disponible (cuenta, migración 031). La cuenta de operador de soporte ya existe en producción; los datos legales y de soporte aún no se publican | Soporte activa Pro para el piloto el día del alta (hasta 90 días, renovable antes de que termine); el propietario lo ve como «Pro otorgado por soporte» con su fecha de término, y la app avisa 7, 3 y 1 días antes. Antes de eso, en Free, un solo dispositivo vende (sección 2). | [Cuenta y aspectos legales](ACCOUNT_AND_LEGAL.md); [Operations, "Support"](OPERATIONS.md) |
-| Cobro con tarjeta integrado (Clip, Mercado Pago Point) | Llega antes del piloto (ola 4, fase 2 de pagos); no está en producción | «Terminal externa»: cobras en la terminal (banco, o Clip / MP en modo independiente), eliges la terminal por su nombre y registras su referencia (sección 8). Para cobrar a mano en Mercado Pago Point, la terminal debe estar en modo independiente ([lista de cambio](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos)). | [Payments](PAYMENTS.md) |
+| Cobro con tarjeta integrado (Clip, Mercado Pago Point) | Construido (ola 4, fase 2 de pagos); no está en producción. Pendiente del ensayo con terminales reales en staging; apagado hasta que el propietario conecta la cuenta del proveedor | Hasta el ensayo y la conexión: «Tarjeta» con registro manual: cobras en la terminal (banco, o Clip / MP en modo independiente), eliges la terminal por su nombre y registras su referencia (sección 8). Para cobrar a mano en Mercado Pago Point, la terminal debe estar en modo independiente ([lista de cambio](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos)). | [Payments](PAYMENTS.md) |
 | Pedidos de plataformas (Uber Eats, Rappi, DiDi): cobro pagado por plataforma y precios por plataforma | Disponible (pagos, migración 037) | «Plataforma» al cobrar; no cuenta como efectivo ni tarjeta (sección 8). Las plataformas vienen apagadas: el propietario las enciende y captura sus precios antes del piloto. El contador decide su tratamiento fiscal. | [Payments](PAYMENTS.md) |
 | Lealtad (sellos, miembros, recompensas) | Llega antes del piloto (ola 4), con la importación de los miembros de pos-lite; no está en producción | El programa de sellos sigue en pos-lite ([lista de cambio](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos)). | Esta guía, cuando llegue |
 | Kiosco con cobro con tarjeta, fotos y sugerencias | Llega antes del piloto (ola 4); no está en producción | No uses el kiosco de pos-lite junto con Green Monkey: serían dos sistemas de órdenes y dos colas de cocina. | [Public ordering](PUBLIC_ORDERING.md) |
@@ -552,7 +552,9 @@ plataformas»:
 
 1. Agrega cada terminal por su nombre («BBVA», «Clip Mostrador», «MP Caja») con su
    comisión con IVA (por ejemplo 3.6 % + IVA se escribe 4.18). Una terminal Clip o
-   Mercado Pago se registra por ahora como manual: cobras en ella en modo independiente.
+   Mercado Pago sin cuenta conectada se registra como manual: cobras en ella en modo
+   independiente. Con la cuenta conectada, agrégala desde «Terminales encontradas» (abajo,
+   «Cobro integrado»).
 2. En cada tablet de caja, elige su «Terminal predeterminada de este dispositivo». Sin
    predeterminada y con varias terminales, el cobro con tarjeta pide «Elige la terminal».
 3. Las plataformas vienen **desactivadas**: activa solo las que usa el restaurante (para
@@ -569,9 +571,67 @@ plataformas»:
 5. Con tu contador, revisa «Forma de pago SAT para pedidos pagados por plataforma» en
    la configuración de facturación (31 Intermediario pagos, recomendado).
 
-**Cobrar con tarjeta.** «Cobrar» → «Terminal externa» → elige la terminal → cobra en la
-terminal → escribe la referencia de aprobación → marca la confirmación → «Confirmar
+**Cobrar con tarjeta (registro manual).** «Cobrar» → «Tarjeta» → elige la terminal → cobra
+en la terminal → escribe la referencia de aprobación → marca la confirmación → «Confirmar
 cobro». El recibo dice «Tarjeta · {terminal}».
+
+**Cobro integrado con Mercado Pago Point o Clip.** La app envía el importe a la terminal y
+registra el cobro sola. Antes del piloto se ensaya en staging con las terminales reales
+(cobros reales de bajo importe, cancelados o reembolsados en la app del proveedor); hasta
+entonces usa el registro manual.
+
+1. Conectar (propietario, una vez por proveedor): «Configuración → Pagos con tarjeta y
+   plataformas → Mercado Pago y Clip integrados».
+   - «Conectar Mercado Pago»: pega el «Access Token de producción» y la «Clave secreta de
+     notificaciones» (Mercado Pago → Tus integraciones → tu aplicación → Credenciales de
+     producción). Copia la «URL de notificaciones» (se muestra una sola vez) y pégala en
+     Webhooks de la aplicación con el evento «Órdenes». La cuenta debe ser de México.
+   - «Conectar Clip»: «API key» y «Clave secreta» de dashboard.clip.mx → Desarrolladores.
+     El lector necesita la app Clip PinPad instalada por Clip.
+   - Espera «Conectado como …». Si dice «Error», revisa las credenciales y vuelve a
+     conectarlas. Las claves no se vuelven a mostrar; para cambiarlas usa «Reemplazar
+     credenciales» (da una nueva URL de notificaciones).
+2. Agregar las terminales (gerente): «Buscar terminales» (Mercado Pago) o «Buscar
+   lectores» (Clip) → «Agregar como terminal», con su nombre y comisión. Una terminal
+   Mercado Pago debe estar en modo «Integrado (PDV)»: cámbialo ahí y reinicia la terminal.
+3. «Cobro de prueba»: cobra una orden real de bajo importe (al menos $5.00 en Mercado Pago)
+   con «Enviar a {terminal}» y cancélala en la terminal o reembólsala en la app del
+   proveedor.
+4. Cobrar: «Cobrar» → «Tarjeta» → la terminal integrada (dice «Conectada», «Sin conexión» o
+   «Sin datos») → importe y propina → «Enviar a {terminal}». El cliente paga en la terminal;
+   la pantalla dice «Esperando el pago en {terminal}…» y el cobro queda registrado solo al
+   aprobarse. Mientras espera: «Cancelar cobro» o «Cambiar de terminal». Si la terminal lo
+   rechaza: «Reintentar» u «Otra forma de pago». Si la terminal está sin conexión o tiene
+   otro cobro en espera: «Cobrar sin integración» y lo registras a mano en la misma
+   terminal (Mercado Pago: un gerente la cambia a «Independiente» en Configuración y se
+   reinicia; Clip: cobra desde la app de Clip). Si el proveedor no contesta, el cobro
+   queda «sin confirmar» (paso 6) y bloquea esa orden hasta resolverlo: deja de enviar a
+   ese proveedor y cobra las siguientes órdenes sin integración. Sin internet, las
+   terminales integradas solo se registran a mano.
+5. Cerrar la ventana no cancela el cobro: sigue en «Cobros en terminal en curso» (en Vender
+   y Órdenes) y se registra solo al aprobarse.
+6. Cobro sin confirmar («No sabemos si el cobro se completó…» o «No pudimos confirmar el
+   envío a {terminal}…»): **nunca cobres otra vez a ciegas.** Revisa la pantalla de la
+   terminal y toca «Volver a consultar». Si sigue igual, un gerente abre «Resolver cobro»,
+   revisa el historial en la app del proveedor, marca «Revisé el historial del proveedor» y
+   elige «Sí se cobró: registrar en la orden» (con la referencia y el importe cobrado que
+   muestra el historial del proveedor), «No se cobró» o, en un cobro por revisar, «Se cobró
+   y se reembolsó en la terminal», con el motivo. «No se cobró» espera a que el proveedor ya
+   no pueda cobrarlo: en Mercado Pago, hasta que vence (unos 12 minutos desde el envío); en
+   Clip, cancela primero el cobro en el lector y toca «Volver a consultar» (si el lector lo
+   canceló, la orden queda libre sola). Si Clip no responde (caída de Clip o cuenta con
+   error), la orden sigue bloqueada hasta unos 20 minutos después del envío; entonces el
+   gerente puede elegir «No se cobró» marcando además «Cancelé la solicitud en la lectora
+   Clip y no muestra ningún cobro pendiente» (solo después de cancelarla en la lectora). El
+   sistema sigue consultando ese cobro 24 horas: si Clip o Mercado Pago lo reportan cobrado
+   después, avisa y aparece en Excepciones («Cobro en terminal aprobado después de
+   cerrarse»); el gerente reembolsa el cobro con tarjeta en la app del proveedor o devuelve
+   el efectivo. La caja no cierra mientras tenga un cobro en
+   terminal en curso o sin resolver. Si la cuenta del proveedor dice «Error» con cobros en
+   curso, el propietario la reconecta con «Reemplazar credenciales» (se permite con cobros
+   en curso) y los cobros se vuelven a consultar solos.
+7. Desconectar (propietario): «Desconectar», solo sin cobros en curso; las terminales
+   integradas quedan para registro manual.
 
 **Pedido de plataforma.** Al recibir el pedido en la tablet de la plataforma:
 
@@ -595,6 +655,10 @@ cierre no acepta solo algunas. Las diferencias aparecen en «Finanzas → Excepc
 lista los cobros con «Otra», los de una orden sin la lista de precios de esa plataforma y los
 registrados sin conexión fuera de las reglas, con quién los cobró y en qué caja. Compáralos
 con el pago de la plataforma: un pago en efectivo registrado como plataforma aparece aquí.
+Ahí mismo, «Cobro en terminal por revisar» (aprobado por la terminal pero sin poder
+registrarse en la orden), «Cobro en terminal resuelto por gerente» (con quién lo resolvió y
+el motivo) y «Cobro en terminal sin confirmar» (más de 10 minutos): compáralos con el
+historial del proveedor.
 
 ## 9. Club de lealtad
 

@@ -81,6 +81,8 @@ import { cfdiCapability } from "./cfdi/hooks.js";
 import * as accountRoutes from "./routes/account.js";
 import * as publicOrderingRoutes from "./routes/public-ordering.js";
 import * as paymentsRoutes from "./routes/payments.js";
+import { providerCapabilities } from "./payments/providers.js";
+import { configureWake } from "./payments/wake.js";
 import * as loyaltyRoutes from "./routes/loyalty.js";
 import { loyaltyCapability } from "./loyalty/settings.js";
 import {
@@ -111,6 +113,8 @@ const jobs = createJobRunner(sql, {
     }),
 });
 const app = express();
+// payments P2: the web wakes the worker after a charge enqueue (spec §4.7).
+configureWake(process.env.WORKER_URL);
 app.disable("x-powered-by");
 app.set("trust proxy", trustProxy(process.env));
 app.use(
@@ -120,6 +124,8 @@ app.use(
   }),
 );
 app.use("/api/billing/webhook", billing.webhook);
+// payments (037): the provider webhooks' own 16 KB parser, before the app's (P2-SECURITY-6).
+paymentsRoutes.registerWebhookBody(app);
 app.use(express.json({ limit: "256kb" }));
 app.use(cookieParser());
 app.use(
@@ -474,7 +480,8 @@ route("get", "/plan", async (tx) => entitlement(tx));
 route("get", "/capabilities", async (tx) => ({
   cash: { enabled: true },
   external: { enabled: true },
-  clip: { enabled: false, reason: "provider_contract_and_hardware_unverified" },
+  // payments P2 (critic R30): mercadopago and clip from payments_platform and the account.
+  ...(await providerCapabilities(tx)),
   stripe: { enabled: false, reason: "sandbox_and_merchant_required" },
   facturapi: await cfdiCapability(tx),
   printer: { enabled: false, reason: "device_not_paired" },

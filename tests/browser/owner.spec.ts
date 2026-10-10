@@ -22,7 +22,7 @@ test("verified-identity fixture: owner signup, responsive forms, entry and logou
     u.hostname !== m.hostname ||
     u.port !== m.port ||
     u.pathname !== m.pathname ||
-    !/^\/green_monkey(_[a-z]+)?_dev$/.test(u.pathname) ||
+    !/^\/green_monkey(_[a-z][a-z0-9]*)?_dev$/.test(u.pathname) ||
     !["localhost", "127.0.0.1"].includes(base.hostname)
   )
     throw Error(

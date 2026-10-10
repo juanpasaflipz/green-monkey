@@ -69,8 +69,17 @@ export function DataTable<T>({
       return sort.dir === "asc" ? order : -order;
     });
   })();
+  // A table with no sort button has nothing to focus, yet it scrolls sideways on a tablet: its
+  // wrapper is then a labelled, keyboard-reachable region (axe scrollable-region-focusable; the
+  // restaurant-day gate's branch P found it on Finanzas › Pagos at 1024 px).
+  const sortable = !!onSort && columns.some((c) => c.sortValue);
   return (
-    <div className="report-table-wrap">
+    <div
+      className="report-table-wrap"
+      {...(sortable
+        ? {}
+        : { role: "region", "aria-label": caption, tabIndex: 0 })}
+    >
       <table className="report-table">
         <caption className="sr-only">{caption}</caption>
         <thead>

@@ -2,7 +2,7 @@
 // financial history. LD-12 pattern: the named triggers are switched off by the owner inside the
 // one transaction that deletes the rows, so no other session ever sees them disabled and a failed
 // cleanup rolls the switch back. LD-16 L5 order: fiscal tables, then discounts, then reports, then
-// the wave-1 tables.
+// payments' attempts, then the wave-1 tables (payment terminals after the tenders that name them).
 import type postgres from "postgres";
 
 /** Delete order: children first (LD-16 L5). */
@@ -25,6 +25,9 @@ export const CLEANUP_TABLES = [
   // reports (029)
   "report_prints",
   "business_day_settings",
+  // payments (037): attempts before the orders, drawers and terminals they reference
+  "payment_attempt_events",
+  "payment_attempts",
   // wave 1
   "offline_kitchen_reviews",
   "offline_sync_records",
@@ -34,6 +37,7 @@ export const CLEANUP_TABLES = [
   "offline_recovery_tasks",
   "offline_recoveries",
   "tenders",
+  "payment_terminals",
   "rounds",
   "order_lines",
   "jobs",
@@ -74,6 +78,9 @@ export const IMMUTABILITY_TRIGGERS = [
   "report_prints_immutable",
   "business_day_settings_immutable",
   "stock_movements_immutable",
+  "payment_attempt_events_immutable",
+  "payment_attempts_transition",
+  "payment_terminals_guard",
 ] as const;
 
 /** Deletes every row of the fixture tenants, their restaurants and organizations. */

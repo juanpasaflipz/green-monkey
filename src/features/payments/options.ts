@@ -21,6 +21,39 @@ const key = (s: Pick<Session, "tenantId" | "deviceId">) =>
  * hidden, so it never asks: a 403 there is a console error on every KDS sign-in (restaurant-day G4).
  */
 export const readsPaymentOptions = (role: string) => role !== "kitchen";
+/**
+ * The terminal-charge reads are for operators too (server permit, P2 §5.1: GET
+ * /payments/terminal/active, /payments/terminal/charges/:id and its sync). Vender's «Cobros en
+ * terminal en curso» and a resumed charge never ask on a kitchen display, for the same reason.
+ */
+export const readsTerminalCharges = (role: string) => role !== "kitchen";
+/**
+ * Whether «Cobros en terminal en curso» keeps polling GET /payments/terminal/active every 10 s
+ * (P2V-GATE-8): an operator online, after a first look on every mount, only while this restaurant
+ * can charge through a provider or this device knows of a charge (listed, remembered from an
+ * earlier list, or its own live one). With integrated charging off (PAYMENTS_PROVIDERS unset) no
+ * new charge can start, so idle Vender and Órdenes screens stop asking.
+ */
+export function pollsActiveCharges(o: {
+  role: string;
+  online: boolean;
+  /** The first answer since this list mounted arrived. */
+  checked: boolean;
+  integratedAvailable: boolean;
+  /** Charges shown now, remembered from the last list, and this device's own live one. */
+  shown: number;
+  remembered: number;
+  ownLive: boolean;
+}): boolean {
+  if (!o.online || !readsTerminalCharges(o.role)) return false;
+  return (
+    !o.checked ||
+    o.integratedAvailable ||
+    o.shown > 0 ||
+    o.remembered > 0 ||
+    o.ownLive
+  );
+}
 
 /** The last good GET /payments/options; empty until the first answer. */
 export function usePaymentOptions(

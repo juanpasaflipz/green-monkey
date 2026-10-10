@@ -10,13 +10,30 @@ import {
 import { archivedDrawerAmounts } from "../src/features/offline/format";
 import { exceptionDetail } from "../src/features/reports/exception-text";
 import {
+  attemptStatus,
+  canRetrySettle,
+  resolveOptions,
+} from "../src/features/payments/attempt-text";
+import { referenceFromName, type AttemptView } from "../shared/payments";
+import {
+  cachedLiveOrders,
+  definiteAnswer,
+  loadLiveCharge,
+  nextStartKey,
+  reduceReply,
+  saveActiveCharges,
+  saveLiveCharge,
+  startSignature,
+} from "../src/features/payments/charge-state";
+import { ApiError } from "../src/api";
+import type { Order } from "../shared/domain";
+import {
   dayColumns,
   drawerColumns,
   tenderColumns,
   toCsv,
 } from "../src/features/reports/csv";
-import { money } from "../src/features/reports/format";
-import { referenceFromName } from "../shared/payments";
+import { exceptionKindLabel, money } from "../src/features/reports/format";
 import { refundParts } from "../src/features/RefundDialog";
 import {
   buildCorteDocument,
@@ -27,7 +44,11 @@ import {
   type ExceptionRow,
   type TenderReportRow,
 } from "../shared/reports";
-import { readsPaymentOptions } from "../src/features/payments/options";
+import {
+  pollsActiveCharges,
+  readsPaymentOptions,
+  readsTerminalCharges,
+} from "../src/features/payments/options";
 
 // options.ts caches the answer in the offline store.
 vi.mock("../src/offline", async () => ({
@@ -39,6 +60,11 @@ describe("payment options (restaurant-day G4)", () => {
     expect(readsPaymentOptions("kitchen")).toBe(false);
     for (const role of ["owner", "manager", "cashier", "server"])
       expect(readsPaymentOptions(role)).toBe(true);
+  });
+  it("a kitchen display never polls the terminal charges (Vender's Cobros en terminal en curso, a resumed charge): those reads are for operators", () => {
+    expect(readsTerminalCharges("kitchen")).toBe(false);
+    for (const role of ["owner", "manager", "cashier", "server"])
+      expect(readsTerminalCharges(role)).toBe(true);
   });
 });
 
@@ -233,6 +259,81 @@ describe("Excepciones and the tender CSV", () => {
     expect(referenceFromName("Mesa 4")).toBe("");
     expect(referenceFromName("DiDi")).toBe("");
     expect(referenceFromName("")).toBe("");
+  });
+  it("terminal charges in Excepciones (P2): the terminal, and a manager's resolution in words; the kinds are labelled in both languages", () => {
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_review", 4500, { terminal: "MP Caja" }),
+        "es",
+        m,
+      ),
+    ).toBe("MP Caja");
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_dismissed", 4500, {
+          terminal: "Clip Caja",
+          resolution: "refunded_at_provider",
+        }),
+        "es",
+        m,
+      ),
+    ).toBe("Clip Caja · reembolsado en el proveedor");
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_dismissed", 4500, {
+          terminal: "MP Caja",
+          resolution: "not_charged",
+        }),
+        "en",
+        m,
+      ),
+    ).toBe("MP Caja · not charged");
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_unknown_open", 4500, { terminal: null }),
+        "en",
+        m,
+      ),
+    ).toBe("");
+    expect(exceptionKindLabel("terminal_attempt_review", "es")).toBe(
+      "Cobro en terminal por revisar",
+    );
+    expect(exceptionKindLabel("terminal_attempt_dismissed", "en")).toBe(
+      "Terminal charge resolved by a manager",
+    );
+    expect(exceptionKindLabel("terminal_attempt_unknown_open", "es")).toBe(
+      "Cobro en terminal sin confirmar",
+    );
+  });
+  it("a late approval in Excepciones (P2V-FIXES-2): the terminal and how the charge had been closed, in both languages", () => {
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_late_approval", 4500, {
+          terminal: "Clip Caja",
+          state: "dismissed",
+          resolution: "not_charged",
+        }),
+        "es",
+        m,
+      ),
+    ).toBe("Clip Caja · no se cobró");
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_late_approval", 4500, {
+          terminal: "MP Caja",
+          state: "cancelled",
+          resolution: null,
+        }),
+        "en",
+        m,
+      ),
+    ).toBe("MP Caja · it was cancelled");
+    expect(exceptionKindLabel("terminal_attempt_late_approval", "es")).toBe(
+      "Cobro en terminal aprobado después de cerrarse",
+    );
+    expect(exceptionKindLabel("terminal_attempt_late_approval", "en")).toBe(
+      "Terminal charge approved after it was closed",
+    );
   });
   it("the tender CSV carries terminal, provider, card, platform and fee columns", () => {
     const tender: TenderReportRow = {
@@ -487,5 +588,305 @@ describe("a drawer with named terminals and platforms (corte X/Z)", () => {
     expect(cashier.platforms.every((x) => !("commission" in x))).toBe(true);
     // The day corte counts platform sales as collected by that day's drawers.
     expect(otherDayDrawerCollections(12_000, [row], "2026-10-09")).toBe(0);
+  });
+});
+
+describe("integrated charges (P2): what the waiting panel says and offers", () => {
+  const attempt = (o: Partial<AttemptView> = {}): AttemptView => ({
+    id: "a1",
+    state: "pending",
+    target: "order",
+    origin: "pos",
+    orderId: "o1",
+    holdId: null,
+    orderNumber: 12,
+    holdLabel: null,
+    terminalId: "t1",
+    terminalLabel: "MP Caja",
+    provider: "mercadopago",
+    amount: 9000,
+    tip: 0,
+    paidAmount: null,
+    providerReference: "ORD1",
+    providerStatus: "created",
+    cardType: null,
+    cardBrand: null,
+    cardLast4: null,
+    errorCode: null,
+    cancelRequested: false,
+    resolution: null,
+    createdAt: "2026-10-09T18:00:00.000Z",
+    decidedAt: null,
+    ...o,
+  });
+  const cashier = { manager: false, online: true };
+  const manager = { manager: true, online: true };
+  it("waiting: the terminal's name, Cancelar cobro and Cambiar de terminal; once a cancel is asked, only Volver a consultar", () => {
+    const s = attemptStatus(attempt(), "es", cashier);
+    expect(s.message).toBe("Esperando el pago en MP Caja…");
+    expect(s.actions).toEqual(["cancel", "switch"]);
+    expect(s.live).toBe(true);
+    expect(
+      attemptStatus(attempt({ cancelRequested: true }), "en", cashier),
+    ).toMatchObject({
+      message: expect.stringMatching(/^Cancelling/),
+      actions: ["recheck"],
+    });
+    expect(
+      attemptStatus(
+        attempt({ errorCode: "payments_cancel_on_terminal" }),
+        "es",
+        cashier,
+      ),
+    ).toMatchObject({
+      message: "La terminal ya tomó el cobro. Cancélalo en la terminal.",
+      actions: ["recheck"],
+    });
+  });
+  it("unknown never offers a blind retry: Volver a consultar for anyone, Resolver for managers", () => {
+    const unknown = attempt({ state: "unknown" });
+    expect(attemptStatus(unknown, "es", cashier).actions).toEqual(["recheck"]);
+    expect(attemptStatus(unknown, "es", manager).actions).toEqual([
+      "recheck",
+      "resolve",
+    ]);
+    expect(attemptStatus(unknown, "es", manager).message).toMatch(
+      /^No sabemos si el cobro se completó/,
+    );
+  });
+  it("a push that went dead (payments_push_failed) is unknown: it names the terminal, never offers a retry, and a manager resolves it as any unknown outcome", () => {
+    const dead = attempt({
+      state: "unknown",
+      errorCode: "payments_push_failed",
+      providerReference: null,
+      providerStatus: null,
+    });
+    expect(attemptStatus(dead, "es", cashier)).toEqual({
+      message:
+        "No pudimos confirmar el envío a MP Caja. Revisa la pantalla de la terminal antes de intentar otra vez; un gerente resuelve el cobro.",
+      tone: "warning",
+      live: true,
+      actions: ["recheck"],
+    });
+    expect(attemptStatus(dead, "en", manager)).toMatchObject({
+      message:
+        "We could not confirm the charge reached MP Caja. Check the terminal's screen before trying again; a manager resolves the charge.",
+      actions: ["recheck", "resolve"],
+    });
+    expect(resolveOptions(dead)).toEqual(["record", "not_charged"]);
+    // Offline it only waits, like any live charge.
+    expect(
+      attemptStatus(dead, "es", { manager: true, online: false }).actions,
+    ).toEqual([]);
+  });
+  it("a decline names its reason; «Cobrar sin integración» only when the integration itself failed", () => {
+    const refused = attemptStatus(
+      attempt({ state: "declined", errorCode: "payments_provider_rejected" }),
+      "es",
+      cashier,
+    );
+    expect(refused.message).toMatch(/^La terminal rechazó el cobro \(/);
+    // The whole sentence, translated (a raw code would pass the prefix check; P2-UX-15).
+    expect(refused.message).toBe(
+      "La terminal rechazó el cobro (El proveedor rechazó la solicitud.)",
+    );
+    expect(refused.actions).toEqual(["retry", "otherMethod"]);
+    expect(
+      attemptStatus(
+        attempt({ state: "declined", errorCode: "payments_terminal_offline" }),
+        "es",
+        cashier,
+      ).actions,
+    ).toEqual(["retry", "otherMethod", "manualFallback"]);
+  });
+  it("review: any operator records an approved charge that now fits (R13); a flagged approval is the manager's only", () => {
+    const fits = attempt({
+      state: "review",
+      paidAmount: 9000,
+      errorCode: "payments_settle_order_changed",
+    });
+    expect(canRetrySettle(fits)).toBe(true);
+    expect(attemptStatus(fits, "es", cashier).actions).toEqual(["retrySettle"]);
+    const flagged = { ...fits, errorCode: "payments_provider_mismatch" };
+    expect(canRetrySettle(flagged)).toBe(false);
+    expect(attemptStatus(flagged, "es", cashier).actions).toEqual([]);
+    expect(attemptStatus(flagged, "es", manager).actions).toEqual(["resolve"]);
+    expect(resolveOptions(flagged)).toEqual(["refunded_at_provider", "record"]);
+    expect(resolveOptions(attempt({ state: "unknown" }))).toEqual([
+      "record",
+      "not_charged",
+    ]);
+    expect(resolveOptions(attempt({ state: "settled" }))).toEqual([]);
+    // Refunded at the provider before it was recorded: only «se reembolsó» (P2-MONEY-5).
+    expect(
+      resolveOptions({ ...fits, errorCode: "payments_refunded_before_settle" }),
+    ).toEqual(["refunded_at_provider"]);
+  });
+  it("P2-UX-3: an unknown outcome says why (unreachable provider, no result in time, account unavailable); «Cobrar sin integración» follows an unusable account, never an unreachable provider (that charge is unknown)", () => {
+    const unknown = (errorCode: string) =>
+      attemptStatus(attempt({ state: "unknown", errorCode }), "es", cashier)
+        .message;
+    expect(unknown("payments_provider_unreachable")).toBe(
+      "No sabemos si el cobro se completó. Revisa la pantalla de la terminal antes de intentar otra vez. No pudimos confirmar el envío con el proveedor; lo seguimos consultando. Si no aparece, un gerente lo resuelve (la orden queda bloqueada mientras tanto).",
+    );
+    expect(unknown("payments_attempt_timeout")).toMatch(
+      /Un gerente lo resuelve después de revisar la terminal\.$/,
+    );
+    expect(unknown("payments_provider_not_configured")).toMatch(
+      /el propietario la reconecta en Configuración/,
+    );
+    expect(
+      attemptStatus(
+        attempt({
+          state: "declined",
+          errorCode: "payments_provider_not_configured",
+        }),
+        "es",
+        cashier,
+      ).actions,
+    ).toEqual(["retry", "otherMethod", "manualFallback"]);
+    expect(
+      attemptStatus(
+        attempt({
+          state: "declined",
+          errorCode: "payments_provider_unreachable",
+        }),
+        "es",
+        cashier,
+      ).actions,
+    ).toEqual(["retry", "otherMethod"]);
+  });
+  it("P2-UX-1: a re-tap replays the same start operation until a definite answer; new values are a new operation", () => {
+    let n = 0;
+    const fresh = () => `op-${++n}`;
+    const values = { terminalId: "t1", amount: 9000, tip: 500 };
+    const first = nextStartKey(null, startSignature("o1", values), fresh);
+    expect(nextStartKey(first, startSignature("o1", values), fresh)).toBe(
+      first,
+    );
+    expect(
+      nextStartKey(first, startSignature("o1", { ...values, tip: 0 }), fresh)
+        .id,
+    ).toBe("op-2");
+    expect(startSignature("o1", { ...values, items: ["b", "a"] })).toBe(
+      startSignature("o1", { ...values, items: ["a", "b"] }),
+    );
+    expect(definiteAnswer(new ApiError("payments_terminal_busy", 409))).toBe(
+      true,
+    );
+    expect(definiteAnswer(new ApiError("network", 0, "network"))).toBe(false);
+    expect(definiteAnswer(new ApiError("timeout", 0, "timeout"))).toBe(false);
+    expect(definiteAnswer(new ApiError("server_error", 503, "server"))).toBe(
+      false,
+    );
+  });
+  it("P2-UX-15: a settle is announced once; a confirmed cancel while switching returns to the picker; a decline stays on screen but is no longer remembered", () => {
+    const order = { id: "o1" } as Order;
+    const base = { attempt: null, switching: false, settledId: null };
+    const settled = reduceReply(base, {
+      attempt: attempt({ state: "settled" }),
+      order,
+    });
+    expect([settled.attempt, settled.settled?.order, settled.remember]).toEqual(
+      [null, order, false],
+    );
+    const again = reduceReply(settled, {
+      attempt: attempt({ state: "settled" }),
+      order,
+    });
+    expect(again.settled).toBeNull();
+    const switched = reduceReply(
+      { ...base, switching: true },
+      { attempt: attempt({ state: "cancelled" }) },
+    );
+    expect([switched.attempt, switched.switching]).toEqual([null, false]);
+    const stillLive = reduceReply(
+      { ...base, switching: true },
+      { attempt: attempt({ state: "pending", cancelRequested: true }) },
+    );
+    expect([
+      stillLive.attempt?.state,
+      stillLive.switching,
+      stillLive.remember,
+    ]).toEqual(["pending", true, true]);
+    const declined = reduceReply(base, {
+      attempt: attempt({ state: "declined" }),
+    });
+    expect([declined.attempt?.state, declined.remember]).toEqual([
+      "declined",
+      false,
+    ]);
+  });
+  it("P2-MONEY-6: the live charge and the last «Cobros en terminal» list survive a relaunch (localStorage), per restaurant and device", () => {
+    const map = new Map<string, string>();
+    const store = {
+      getItem: (k: string) => map.get(k) ?? null,
+      setItem: (k: string, v: string) => void map.set(k, v),
+      removeItem: (k: string) => void map.delete(k),
+    } as unknown as Storage;
+    saveLiveCharge("r1", "d1", attempt(), store);
+    expect(loadLiveCharge("r1", "d1", store)?.id).toBe("a1");
+    expect(loadLiveCharge("r1", "d2", store)).toBeNull();
+    saveLiveCharge("r1", "d1", attempt({ state: "declined" }), store);
+    expect(loadLiveCharge("r1", "d1", store)).toBeNull();
+    expect([...map.keys()], "a final charge is forgotten").toEqual([]);
+    saveActiveCharges(
+      "r1",
+      [
+        attempt(),
+        attempt({ id: "a2", orderId: "o2", state: "unknown" }),
+        attempt({ id: "a3", orderId: "o3", state: "cancelled" }),
+      ],
+      store,
+    );
+    expect(cachedLiveOrders("r1", store)).toEqual(["o1", "o2"]);
+    expect(cachedLiveOrders("r2", store)).toEqual([]);
+  });
+  it("offline, a live charge only waits (recording it another way could charge twice)", () => {
+    expect(
+      attemptStatus(attempt(), "es", { manager: true, online: false }),
+    ).toMatchObject({
+      message:
+        "Sin conexión: el cobro sigue en la terminal; se confirmará al reconectar.",
+      actions: [],
+    });
+  });
+});
+
+describe("«Cobros en terminal en curso» polling (P2V-GATE-8)", () => {
+  const base = {
+    role: "cashier",
+    online: true,
+    checked: true,
+    integratedAvailable: false,
+    shown: 0,
+    remembered: 0,
+    ownLive: false,
+  };
+  it("stops after its first look while integrated charging is off and no charge is known; polls while a provider can charge or a charge is known", () => {
+    expect(pollsActiveCharges(base), "providers off, nothing known").toBe(
+      false,
+    );
+    expect(pollsActiveCharges({ ...base, checked: false }), "first look").toBe(
+      true,
+    );
+    expect(pollsActiveCharges({ ...base, integratedAvailable: true })).toBe(
+      true,
+    );
+    expect(pollsActiveCharges({ ...base, shown: 1 })).toBe(true);
+    expect(pollsActiveCharges({ ...base, remembered: 1 })).toBe(true);
+    expect(pollsActiveCharges({ ...base, ownLive: true })).toBe(true);
+    // Never offline, never on a kitchen display (a 403 there, LD-81 addendum).
+    expect(
+      pollsActiveCharges({ ...base, integratedAvailable: true, online: false }),
+    ).toBe(false);
+    expect(
+      pollsActiveCharges({
+        ...base,
+        checked: false,
+        integratedAvailable: true,
+        role: "kitchen",
+      }),
+    ).toBe(false);
   });
 });

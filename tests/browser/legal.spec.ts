@@ -48,10 +48,20 @@ test("legal pages render the configured entity in es/en and pass axe", async ({
   await expect(main).toContainText(LEGAL_CI_ENV.LEGAL_ENTITY_NAME);
   await expect(main).toContainText(LEGAL_CI_ENV.LEGAL_ENTITY_ADDRESS);
   await expect(main).toContainText(LEGAL_CI_ENV.LEGAL_PRIVACY_CONTACT_EMAIL);
-  // The version and the day it took effect (LEGAL-3).
+  // The version and the day it took effect (LEGAL-3), or the day it will: a version whose
+  // effectiveFrom is still ahead (the payments version 2026-10-10 on a run of the 9th, P2V-GATE-2)
+  // says so, with the same exact date.
+  const effectiveFrom = LEGAL_DOCUMENTS.privacy.effectiveFrom;
+  const effectiveDay = new Intl.DateTimeFormat("es-MX", {
+    dateStyle: "long",
+  }).format(new Date(`${effectiveFrom}T12:00:00-06:00`));
   await expect(
     page.getByText(
-      `Versión ${LEGAL_DOCUMENTS.privacy.version} · Vigente desde el ${new Intl.DateTimeFormat("es-MX", { dateStyle: "long" }).format(new Date(`${LEGAL_DOCUMENTS.privacy.effectiveFrom}T12:00:00-06:00`))}`,
+      `Versión ${LEGAL_DOCUMENTS.privacy.version} · ${
+        Date.parse(`${effectiveFrom}T00:00:00-06:00`) > Date.now()
+          ? `Entra en vigor el ${effectiveDay}; hasta entonces sigue vigente la versión anterior.`
+          : `Vigente desde el ${effectiveDay}`
+      }`,
       { exact: true },
     ),
   ).toBeVisible();

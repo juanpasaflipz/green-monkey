@@ -29,21 +29,24 @@ import {
   SUPPORT_ENV_FILE,
   SUPPORT_OPERATOR,
   assertIsolatedRun,
-  cfdiBranch,
   cfdiFakePort,
   EDGE_HEADERS,
+  paymentsFakePort,
+  runBranch,
   type RunState,
 } from "./env.js";
 import { LEGAL_CI_ENV } from "../../server/legal-ci.js";
 import { legalConfig } from "../../server/legal.js";
 import { businessDate, minutesUntilLocal, dstChangeWithin } from "./oracle.js";
 import { waivedIds } from "./ui.js";
+import { PAYMENTS_P } from "./scenario-p.js";
 
 export const PIDS_FILE = resolve(OUT, ".pids.json");
 const LOGS = {
   server: resolve(OUT, "server.log"),
   worker: resolve(OUT, "worker.log"),
   facturapi: resolve(OUT, "facturapi-fake.log"),
+  payments: resolve(OUT, "payments-fake.log"),
 };
 
 /** Forbidden for each process kind (server/config-rules.ts forbiddenCredentials) plus the demo switch. */
@@ -249,16 +252,25 @@ export default async function globalSetup() {
       "restaurant-day setup: LEGAL_UNPUBLISHED_SIGNUP must not be allow (§3.3)",
     );
   const fakePort = cfdiFakePort();
-  for (const port of [u.port, u.workerPort, ...(fakePort ? [fakePort] : [])])
+  // Branch P (LD-80): the payments fake (MP Point + Clip) the worker charges against.
+  const payPort = paymentsFakePort();
+  for (const port of [
+    u.port,
+    u.workerPort,
+    ...(fakePort ? [fakePort] : []),
+    ...(payPort ? [payPort] : []),
+  ])
     if (!(await portFree(port)))
       throw Error(`restaurant-day setup: port ${port} is busy`);
 
-  const branch = cfdiBranch();
+  const branch = runBranch();
   const now = new Date();
   const cutoffA = cutoffFor("America/Mexico_City", now);
   const cutoffB = cutoffFor("America/Tijuana", now);
   // Branch L's restaurant (loyalty spec §9.4) is in Mexico City, like A.
   const cutoffL = cutoffFor("America/Mexico_City", now);
+  // Branch P's restaurant (payments spec §12.4) too.
+  const cutoffP = cutoffFor("America/Mexico_City", now);
 
   // Output folder: everything but Playwright's own artifacts dir.
   mkdirSync(OUT, { recursive: true });
@@ -377,6 +389,21 @@ export default async function globalSetup() {
           FACTURAPI_BASE_URL: `http://127.0.0.1:${fakePort}/v2`,
         }
       : {}),
+    // Branch P (LD-80): both providers against the payments fake. A loopback API base is
+    // accepted only in development and test (server/payments/config.ts), so the worker runs as
+    // APP_ENV=test, as branch K's local triage does; the web stays production. The credential
+    // keyring is generated here per run and held in memory only, like SIGNING_KEYS (§3.3): the
+    // vault seals the restaurant's (fictional) provider credentials under it.
+    ...(payPort
+      ? {
+          APP_ENV: "test",
+          RAILWAY_ENVIRONMENT_NAME: "",
+          PAYMENTS_PROVIDERS: "mercadopago,clip",
+          MERCADOPAGO_API_URL: `http://127.0.0.1:${payPort}/mp`,
+          CLIP_API_URL: `http://127.0.0.1:${payPort}/clip`,
+          CREDENTIAL_ENCRYPTION_KEY: `rdp${day}:${randomBytes(32).toString("base64url")}`,
+        }
+      : {}),
   };
   const web = [
     "--import",
@@ -440,7 +467,7 @@ export default async function globalSetup() {
 
   const pids: Record<string, number> = {};
   const start = (
-    name: "server" | "worker" | "facturapi",
+    name: "server" | "worker" | "facturapi" | "payments",
     args: string[],
     env: Record<string, string>,
   ) => {
@@ -467,6 +494,29 @@ export default async function globalSetup() {
       async () =>
         (await fetch(`http://127.0.0.1:${fakePort}/v2/organizations`)).status >
         0,
+      30_000,
+      fake,
+    ).catch((error) => {
+      fake.kill();
+      throw error;
+    });
+  }
+  if (payPort) {
+    const fake = start(
+      "payments",
+      ["--import", "tsx", "tests/fakes/payments-fake.ts"],
+      {
+        ...baseEnv(),
+        PAYMENTS_FAKE_PORT: String(payPort),
+        // The fictional MP token Restaurant P's owner types (scenario-p.ts).
+        PAYMENTS_FAKE_MP_TOKEN: PAYMENTS_P.credentials.mercadopago.token,
+      },
+    );
+    await waitFor(
+      "the payments fake",
+      async () =>
+        (await fetch(`http://127.0.0.1:${payPort}/__fake/charges`)).status ===
+        200,
       30_000,
       fake,
     ).catch((error) => {
@@ -525,9 +575,12 @@ export default async function globalSetup() {
     cutoffA,
     cutoffB,
     cutoffL,
+    cutoffP,
     businessDateA: businessDate(now, "America/Mexico_City", cutoffA),
     businessDateB: businessDate(now, "America/Tijuana", cutoffB),
     businessDateL: businessDate(now, "America/Mexico_City", cutoffL),
+    businessDateP: businessDate(now, "America/Mexico_City", cutoffP),
+    ...(payPort ? { paymentsFakeUrl: `http://127.0.0.1:${payPort}` } : {}),
     orders: {},
     numbers: {},
     realSoldAt: {},

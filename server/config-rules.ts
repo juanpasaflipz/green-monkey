@@ -29,6 +29,7 @@ import { cfdiWebConfig, cfdiWorkerConfig } from "./cfdi/config.js";
 import { isProductionEnv } from "./production.js";
 import { fiscalWebConfig } from "./fiscal-config.js";
 import { accountWebConfig, accountWorkerConfig } from "./account-config.js";
+import { paymentsWorkerConfig } from "./payments/config.js";
 
 export { ConfigError };
 
@@ -311,6 +312,7 @@ export function loadConfig(
   // >>> area config checks: worker (one pure call per area: fn(env, appEnv), throws ConfigError)
   cfdiWorkerConfig(env, appEnv);
   accountWorkerConfig(env, appEnv);
+  paymentsWorkerConfig(env, appEnv);
   // <<< area config checks: worker
   // PROCESS_KIND=worker (Railway, containers) means PORT belongs to this
   // process. A local `npm run worker` shares .env with the web server, so it

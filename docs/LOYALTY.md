@@ -190,15 +190,20 @@ call to payments, and payments adds none to loyalty (critic R16):
   (link the cart's member if needed, reconcile) and shows the text in the receipt status. For an
   order the cart moved on from (an empty new cart showing a recovered receipt included) it only
   calls `POST /api/loyalty/orders/:id/reconcile` (`reconcileOnly`) and never links the cart's
-  current member to it. A charge that settles after its dialog closed (P2's integrated terminals)
-  takes no exit and shows no toast; the settle hook's job still stamps.
+  current member to it. P2's integrated terminals take the same exit when TerminalWait's sync,
+  a retry or a manager record settles the charge on this device (`settledFromTerminal`): the
+  cart's own order while the cart still shows it, otherwise reconcile only. A charge settled by the
+  worker's `payments_settle` job with no device waiting takes no exit and shows no toast; the settle
+  hook's job still stamps.
 - **The live-attempt guard** (R17): P1's `assertNoLiveAttempt` sits in `recordDiscount` right
   after the order lock, so a reward redemption, like a staff discount, is refused with
   `payments_order_attempt_live` while a terminal charge for the order is in flight (DB check L10).
 
 The settle hooks reach every payment path through `refreshCheckState`, including payments'
-`settleAttempt` (row 43, phase P2). Once P2 is in, L16 adds `payments_settle` (job and sync) to its
-lock-order burst; payments' DB 15 adds loyalty-linked orders to its own (R16).
+`settleAttempt` (row 43, phase P2). With P2 in, L16's lock-order burst races the `payments_settle`
+job and the sync route on approved charges of two linked orders (one tender and one `earn` each),
+and payments' DB 15 runs a member link, a reward redemption and the after-payment reconcile of a
+linked order whose charge settles in its burst (R16).
 
 ## Restaurant-day branch L (spec §9.4)
 

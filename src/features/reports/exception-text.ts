@@ -171,6 +171,37 @@ export function exceptionDetail(
         .filter(Boolean)
         .join(" · ");
     }
+    case "terminal_attempt_review":
+    case "terminal_attempt_unknown_open":
+      // payments (037 P2): the terminal of the charge (a provider code never shows raw).
+      return typeof d.terminal === "string" ? d.terminal : "";
+    case "terminal_attempt_late_approval":
+      // payments (P2V-FIXES-2): the terminal, and how the charge had been closed.
+      return [
+        typeof d.terminal === "string" ? d.terminal : "",
+        d.resolution === "not_charged"
+          ? t.payResolutionNotCharged
+          : d.state === "cancelled"
+            ? t.payLateWasCancelled
+            : d.state === "declined" || d.state === "expired"
+              ? t.payLateWasDeclined
+              : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    case "terminal_attempt_dismissed":
+      return [
+        typeof d.terminal === "string" ? d.terminal : "",
+        d.resolution === "recorded"
+          ? t.payResolutionRecorded
+          : d.resolution === "not_charged"
+            ? t.payResolutionNotCharged
+            : d.resolution === "refunded_at_provider"
+              ? t.payResolutionRefunded
+              : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
     default:
       return "";
   }

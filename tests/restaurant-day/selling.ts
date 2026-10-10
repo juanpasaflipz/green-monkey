@@ -413,7 +413,7 @@ export async function payDialog(
     methods.getByRole("button", { name: "Efectivo", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
   await expect(
-    methods.getByRole("button", { name: "Terminal externa", exact: true }),
+    methods.getByRole("button", { name: "Tarjeta", exact: true }),
   ).toHaveAttribute("aria-pressed", "false");
   await expect(dialog.getByLabel("Propina", { exact: true })).toHaveValue("");
   await expect(
@@ -468,7 +468,7 @@ export async function payDialog(
   } else {
     await tap(
       d,
-      methods.getByRole("button", { name: "Terminal externa", exact: true }),
+      methods.getByRole("button", { name: "Tarjeta", exact: true }),
     );
     await expect(
       dialog.getByText(

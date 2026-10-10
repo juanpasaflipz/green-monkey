@@ -49,6 +49,14 @@ acknowledged a critical alert within 15 minutes during service hours
 | `cfdi_csd_expiring:*` (info) | ntfy, from the worker | a restaurant's CSD expires within 30 days: the owner uploads a new one |
 | `public_order_limited` (log, warn) | web logs | a public QR/kiosk order hit a durable cap (`code`: `public_order_limit`, `public_ordering_busy` or `public_order_churn`); the line names the code's `ref` (the "Ref. 7A3F" staff see in Mesas or Configuración), its kind and the client's `ipHash`, never a token or a path. Repeated lines for one `ref` from one `ipHash`: "Online ordering abuse" below |
 | `rate_limited` with `limiter: public-*` (log, warn) | web logs | a client hit a public ordering per-IP or per-link limit (in memory, per replica); one diner retrying is normal, a steady stream from one `ipHash` is abuse |
+| `payments_attempt_unknown_<tenant>` (warning) | ntfy, from the worker | a terminal charge's outcome is unknown (`reason`: `create` = the provider did not answer the create (MP: one identical re-send follows to learn the order), `clip_create` = Clip's create answer was lost, `push_failed` = the push job went dead with the attempt sending (a recovery follows), `no_final_status` = no final status by the deadline (MP: expiry + 2 min; Clip: its own deadline, after a refused withdrawal), `account_unusable` = the deadline passed while the account could not be used, `paid_amount_unknown` = paid without an amount). Its terminal and order stay blocked: "Payments: unknown outcomes" below |
+| `payments_late_approval_<tenant>` (critical) | ntfy, from the worker | the provider reported paid a terminal charge the POS had already closed: a manager's «No se cobró» (the worker reads a dismissed charge with a provider id every 5 minutes for 24 h, and a provider notification about any «No se cobró» of the last 24 h is read too), or a charge the worker had cancelled, declined or expired. The attempt stays closed (final rows never change); its `late_approval` event is listed in Reportes → Excepciones («Cobro en terminal aprobado después de cerrarse»). The diner may have paid twice: a manager checks the order and refunds the card payment in the MP or Clip app, or records the card payment and returns the cash ("Payments: unknown outcomes" below) |
+| `payments_account_failed_<tenant>` (warning) | ntfy, from the worker | MP's or Clip's own verification call refused the restaurant's credentials (a token rotated in the provider's panel): the account is `failed`, live charges keep polling until their deadline. The owner reconnects (**Reemplazar credenciales**, allowed with charges live) and the worker re-reads every live charge |
+| `jobs_dead_payments_*` (warning) | ntfy, from the worker | a payments job used up its attempts. `payments_push`: the attempt becomes «Sin confirmar» (`payments_push_failed`, or declined `payments_provider_unavailable` if it was never sent) and a recovery follows; a manager resolves it ("Payments: unknown outcomes"). `payments_credentials`: its upload is wiped and a still-verifying account fails (`payments_provider_unreachable`); the owner saves again. `payments_devices`: the device list stays as it was. See "Payments: provider outage" below |
+| `job_dead_hook_failed` (log, error) | worker logs | a kind's dead hook (P2: payments_push, payments_credentials) threw inside the dead write's transaction, so the dead write rolled back with it: the job stays running and is not dead yet, and the runner's lease-expiry pass writes both again (`stage`: `fail` = the last claim, retried once its lease expires; `expiry` = the expiry pass, retried at the next one, every 5 s in the worker). Nothing to do for one line. The same job id repeating means its hook cannot complete (a statement timeout, a constraint): the attempt or account stays as it was («Enviando», «Verificando»), so report the job id and the error to engineering |
+| `payments_webhook_dropped` (log, info) | web logs | a provider notification was screened out (`reason`: `format`, `rate_ip`, `rate_hook`, `body_size`, `topic`, `no_match`, `coalesced` = another notification for that charge is already waiting); always answered 200. A steady `no_match` stream for one restaurant means the URL in MP or Clip is from an older connect: "Payments: notification failures" |
+| `webhook_rejected` (attempt event) | operator SQL on `payment_attempt_events` (attempt id, `kind='webhook_rejected'`; the POS does not show events) | an MP notification whose `x-signature` did not verify with the sealed secret; nothing changed and the provider was not read (polling continues). Many in a row: the secret in MP and the one entered in Configuración differ |
+| `payments_worker_disabled` (log, info) | worker startup | `PAYMENTS_PROVIDERS` is empty: integrated charging is off (`/capabilities` says `worker_not_configured`); manual terminals keep working |
 | `jobs_dead_cfdi_*` (warning) | ntfy, from the worker | a cfdi job used up its attempts. The global tick's recovery sweep re-enqueues what the document needs within a day (or a manager presses **Reintentar** on it); a dead `cfdi_global` tick already scheduled the next one, and the chain also restarts at the next worker deploy and operator sign-in ([CFDI](CFDI.md) "Jobs") |
 
 Alerts carry codes and counts only, never personal or tenant data. Logs are
@@ -345,7 +353,17 @@ code before the change, visible in `GET /api/audit`:
   job: it goes dead with `error_code` `cancelled`, a running holder loses its
   lease (its later writes match no row) and nothing claims it again. Use it
   for a job that keeps killing its process before its last attempt; requeue
-  it after the fix.
+  it after the fix. A kind with a dead hook (`payments_push`,
+  `payments_credentials`) is cancelled by its runner, never without the hook
+  (P2-CONCURRENCY-6): the job shows `running` with `error_code`
+  `job_cancel_requested` (a second cancel is refused, nothing claims it) until
+  the worker's next lease-expiry pass, within seconds, writes it dead
+  (`cancelled`) together with the hook. A push's attempt still «Enviando»
+  then becomes «Sin confirmar» (`payments_push_failed`) and its recovery runs
+  (MP: the identical create is re-sent, so the charge may still reach the
+  terminal; the cashier cancels it from the POS); a credentials job's upload
+  is wiped and a still-verifying account fails. With the worker down it
+  waits for the worker.
 
 A job whose process dies on its last allowed claim goes dead by itself
 (`lease_expired`) and alerts `jobs_dead_<kind>`; earlier crashes are retried
@@ -453,11 +471,207 @@ Other secrets:
   `GOOGLE_CLIENT_SECRET`, deploy, then disable the old secret.
 - R2 token, Railway project token, ntfy topic: create the new one, update the
   GitHub environment secret/variable, delete the old one.
-- cfdi `CREDENTIAL_ENCRYPTION_KEY` (worker only): prepend a new kid, redeploy
-  the worker, run `npm run cfdi:rekey`, then drop the old kid
-  ([CFDI](CFDI.md) "Credential key rotation"). The Facturapi User key: create a
-  new one in Facturapi, set `FACTURAPI_API_KEY` on `worker`, deploy, revoke the
-  old one.
+- `CREDENTIAL_ENCRYPTION_KEY` (worker only; CFDI and payments share it): prepend a
+  new kid, redeploy the worker, run `npm run vault:rekey` in the worker environment
+  (`cfdi:rekey` is an alias), then drop the old kid ([CFDI](CFDI.md) "Credential key
+  rotation"). For payments the script lists every restaurant with sealed provider
+  credentials through 037's worker listing policy (`payment_provider_accounts_rekey_list`,
+  as CFDI's `cfdi_organizations_rekey_list`; LD-76 deviation 1) and re-seals each one in
+  its own tenant transaction, so drop the old kid once it reports `failed: 0`
+  ([PAYMENTS](PAYMENTS.md)). The output is counts only. The Facturapi User key: create a new one in Facturapi, set
+  `FACTURAPI_API_KEY` on `worker`, deploy, revoke the old one.
+- A restaurant's Mercado Pago or Clip credentials (and its notification URL) are the
+  owner's: Configuración → **Reemplazar credenciales** seals the new ones and shows a new
+  notification URL once; the owner pastes it in MP's Webhooks (event Órdenes) or nothing
+  (Clip takes it per payment), then revokes the old token or keys at the provider. Support
+  never sees or copies them.
+
+## Payments terminals (Mercado Pago Point, Clip)
+
+Background in [PAYMENTS](PAYMENTS.md) "Phase P2". The web never calls a provider; the worker
+does, with each restaurant's sealed credentials. Every answer below is something a manager or
+the owner does in the POS, except where it says "operator".
+
+**Payments: unknown outcomes** (`payments_attempt_unknown_<tenant>`, «No sabemos si el cobro se
+completó»). Money may or may not have been taken. Nothing retries on its own.
+
+1. At the terminal: look at the device's screen and its last transactions (MP Point: the
+   activity list; Clip: the reader's history or the Clip app). Any operator can press
+   **Volver a consultar** (Cobros en terminal → the charge): the worker reads the provider
+   again, and a found approval settles by itself. With no provider reference (the create's
+   answer was lost, or the push died), MP re-sends the identical create under the same
+   idempotency key to learn the order (only while the order could still be live) and Clip
+   withdraws the reader's request by serial number (never a second Clip create). A Clip
+   request the reader held at its deadline stays «Sin confirmar» and is still read every
+   minute: a payment or a cancel on the reader ends it by itself.
+2. Still unknown: a manager presses **Resolver cobro** and chooses, with a note and the
+   confirmation that they checked the provider's history (PIN asked):
+   - **Sí se cobró: registrar en la orden**: records the tender with what the provider
+     reported (a review keeps its amount, tip, card and fee); from an unknown outcome, type the
+     provider's reference when there is none and the amount charged its history shows, which
+     must be the amount + tip sent (no card data; the terminal's estimated fee). A reference
+     already on another charge is refused («Esa referencia ya está registrada…»);
+   - **No se cobró**: the order is free to be charged again. Refused if the provider last said
+     paid, and while it may still take the charge («La terminal todavía puede cobrar este
+     cargo…»): MP until its order expires plus 2 minutes, counted from the last send; Clip with
+     a request id until a cancel or a read ends it (cancel it on the reader, then **Volver a
+     consultar**); Clip without one until a delete by serial number sent at least 90 seconds
+     after the send found nothing of it on the reader (an earlier one proves nothing: Clip keeps
+     a create trying to reach the reader for up to 60 s after our 15 s timeout; the worker
+     repeats the delete 90 seconds after the send by itself).
+   - Clip with a request id while Clip's API does not answer (an outage, or a Clip account
+     that cannot be used): no read can end it, so **No se cobró** is accepted once 10 minutes
+     have passed after the charge's deadline (about 20 minutes after the send) and either the
+     worker's last 3 reads of it all failed or the account cannot be used, and only with the
+     manager's second confirmation «Cancelé la solicitud en la lectora Clip y no muestra
+     ningún cobro pendiente» (otherwise «Clip no responde: … cancela la solicitud en la lectora
+     y confírmalo»). The event and the audit row record `attested: reader_cleared`. While Clip
+     reads the request as waiting on the reader it is never accepted.
+   - After any **No se cobró** of a charge with a provider reference, the worker keeps reading
+     it every 5 minutes for 24 hours, and a provider notification about a «No se cobró» of the
+     last 24 hours is read too: a payment the provider took after all raises
+     `payments_late_approval_<tenant>` (critical) and is listed in Excepciones («Cobro en
+     terminal aprobado después de cerrarse»); the attempt stays closed. The manager refunds the
+     card payment in the provider's app, or returns the cash the cashier took instead.
+3. `review` («El cobro se aprobó pero la orden cambió»): the customer paid but the order no
+   longer takes it (paid another way, changed, or the approval was flagged). If the order can
+   take it now, anyone presses **Registrar el cobro aprobado**; otherwise a manager refunds it in
+   the MP or Clip app and chooses **Se cobró y se reembolsó en la terminal**, naming the refund in
+   the note. There are no partial refunds through the POS in v1.
+4. Every outcome is in Reportes → Excepciones (`terminal_attempt_*` kinds), and the drawer
+   cannot close while a charge is live or in review.
+
+**Payments: provider outage** (the provider's status page, charges going «Sin confirmar» with
+`payments_provider_unreachable`, `jobs_dead_payments_*`). The POS keeps selling:
+
+1. An unreachable provider never declines: the create may have reached it, so the charge is
+   **unknown** («No sabemos si el cobro se completó… No pudimos confirmar el envío con el
+   proveedor»), its order and terminal stay blocked, and the worker re-sends MP's identical
+   create once (same idempotency key) to learn whether the order exists. The floor stops
+   sending to that provider and records the next orders manually: **Cobrar sin integración**
+   (shown after a decline for an offline terminal, a queued order or an unusable account, and
+   always offline) or «Tarjeta» with a manual terminal. Switch the device to standalone mode
+   first (MP Point: a manager uses Configuración → Mercado Pago → **Cambiar modo** to
+   «Independiente», then restarts the terminal; Clip: charge from the Clip app), charge on the
+   device, type its approval reference and confirm.
+2. Each blocked order is resolved as an unknown outcome (above): «No se cobró» is accepted once
+   MP's order has expired (about 12 minutes after the last send). For Clip, cancel the request
+   on the reader. **Volver a consultar** frees the order by itself only once Clip answers
+   again; while Clip's API is down, a Clip charge with a request id stays blocked until about
+   20 minutes after its send (its deadline plus 10 minutes, with the worker's reads failing),
+   and then a manager's «No se cobró» with the second confirmation «Cancelé la solicitud en la
+   lectora Clip…» frees it; the worker keeps reading it for 24 hours and alerts if Clip
+   reports it paid after all. Meanwhile the floor charges that order another way only after
+   that dismissal, never while it is blocked.
+3. When the provider is back: switch MP devices back to «Integrado (PDV)» (restart), and
+   charge one small order per terminal (**Cobro de prueba**) before relying on it.
+4. MP rate limiting is not this kind of outage (P2-PROVIDERS-8): a create answered 429 on
+   every try made no order (the restaurant's access token spent its request budget), so after
+   about 30 s of back-off the charge is declined `payments_provider_unavailable` and the
+   cashier is offered the manual fallback at once; nothing stays blocked. The attempt's events
+   show one `rate_limited` per try. Many in a row for one restaurant: fewer MP terminals
+   charging at once, and check that nothing else uses the same access token.
+4. Operator: a worker-wide problem (`/capabilities` shows `worker_not_configured`, the worker
+   log has `payments_worker_disabled`, or every restaurant fails) is the worker's
+   `PAYMENTS_PROVIDERS` / `CREDENTIAL_ENCRYPTION_KEY` or the provider; one restaurant failing
+   is its account (Configuración shows «Error: …»): the owner reconnects with **Reemplazar
+   credenciales** (allowed while charges are live; they keep polling meanwhile and are
+   re-read once the account is active). A single 401/403 on an order never fails an account:
+   only the provider's own verification call refusing the same credentials does.
+5. Switching integrated charging off (`PAYMENTS_PROVIDERS` unset or emptied on the worker,
+   P2V-GATE-4): first let «Cobros en terminal en curso» empty on every register and disconnect
+   the restaurants' accounts. A charge still live when the worker restarts without providers
+   is never stranded: its poll chain keeps running (one link a minute) and at its deadline
+   it becomes «Sin confirmar» (`payments_provider_unavailable`, alert
+   `payments_attempt_unknown_<tenant>` from the operations sink), resolved like any unknown
+   outcome above. Nothing reaches the provider meanwhile, so for Clip cancel the request on
+   the reader.
+
+**Payments: notification failures.** Notifications only make the worker read sooner: charges
+still settle by polling (every 5 s on Mercado Pago and 2 s on Clip for 3 minutes, then every
+10 s), so a broken notification costs seconds, not money.
+
+- `webhook_rejected` events (MP): the notification secret in MP («Webhooks → Clave secreta»)
+  differs from the one entered in Configuración. The owner enters both credentials again
+  (**Reemplazar credenciales**) and pastes the new notification URL in MP.
+- `payments_webhook_dropped` `no_match` for a restaurant's charges: the URL in MP is from an
+  older connect (each connect makes a new one; the old one stops matching). Same fix.
+- MP shows deliveries failing: the URL must be the one shown once, on HTTPS, with the event
+  **Órdenes**; MP retries non-200 answers, and ours are always 200.
+- MP error 2205 «queued intent» on a terminal: another integration (pos-lite) or an earlier
+  order is still queued on that device. Cancel it on the device (or from the integration that
+  sent it), then send again. Never let two systems drive one PDV terminal.
+
+**Payments: rekey.** See "Credential rotation" above (`npm run vault:rekey`).
+
+**Payments: real-device rehearsal** (critic R44a, acceptance 11; staging, a scheduled window,
+LD-72). With one MP Point in PDV mode and one Clip reader on the restaurant's accounts (or a
+test merchant), charges are real and low-value:
+
+1. Staging worker: `PAYMENTS_PROVIDERS=mercadopago,clip` comes from `.railway/railway.ts`
+   (declared for every environment but production, P2V-GATE-1), so CD applies it: never set it
+   by hand. Production API bases (the defaults: `MERCADOPAGO_API_URL` and `CLIP_API_URL` are
+   never declared), `CREDENTIAL_ENCRYPTION_KEY` set (the worker refuses to start with
+   providers and no key); web `WORKER_URL` (declared in `railway.ts`). Check `/capabilities`.
+2. The owner connects both accounts in Configuración, pastes the MP notification URL (event
+   Órdenes), finds the devices and adds them as terminals with their fee rates.
+3. For each terminal, from a cashier's tablet, and timing tap → terminal prompt (≤ 3 s p95):
+   approve (a tender with provider, terminal, reference, card type, brand, last 4 and fee —
+   MP's real fee, Clip's estimate; the fiscal ticket at zero balance); decline (a declined
+   card); cancel before pickup («Cancelar cobro»); cancel on the device (MP) or a taken charge
+   («Cancélalo en la terminal», Clip); one notification delivery (an attempt event
+   `webhook` with `source` mercadopago or clip).
+4. Verify MP's `reference_id` and the last-4 source against the receipt (LD-76 deviation 8),
+   and that every rehearsal charge is refunded in the provider's app (Clip is production
+   only).
+4b. Provider facts the code assumes that no source verified (P2-PROVIDERS-11; record each
+   observed answer, ids and codes only, and encode every confirmed shape in
+   `tests/fakes/payments-fake.ts`):
+   a. MP idempotency replay: re-POST an order create with the same X-Idempotency-Key and the
+      identical body (for example by forcing a lost answer): the status code and that the
+      body is the original order (its current status, or the one at creation).
+   b. MP `409 already_queued_order_for_terminal` with an order of our own waiting, and its
+      body shape (`errors[0].code`).
+   c. MP `403 forbidden_checking_terminal_owner` for a device of another account (body shape).
+   d. MP cancel of an order still `created` (200 `canceled`) and of one `at_terminal` with
+      `x-allow-cancelable-status: at_terminal` (202, then the device confirms: how long until
+      the read says `canceled`); a cancel the device refuses; `409 order_already_canceled`.
+   e. MP cancel keys: two cancel operations on one order with two UUID keys.
+   f. MP order webhook body: whether `data.external_reference` is present on order.processed.
+   g. MP declined card: the payment `status_detail` of a refused card (e.g. insufficient_amount).
+   h. MP expiration: an order left on the device past `expiration_time` reads `expired`.
+   i. Clip with a tip: `amount`, `amount_paid` and `tip_amount` when the POS sends tip_amount
+      (and that the reader shows no tip screen).
+   j. Clip preferences: that `is_mci_enabled`, `is_dcc_enabled` and `is_retry_enabled` false are
+      accepted, and the owner's choice for `is_msi_enabled` (left to the account).
+   k. Clip request lifetime: a request left on the reader for 15 minutes: its status, and that
+      DELETE /payment/{id} withdraws it before the reader takes it and answers 400
+      PAYMENT_REQUEST_ISSUE after.
+   l. Clip DELETE /payment/serial-number/{serial}: the 200 body (pinpad_request_id,
+      reference) with a request waiting, 400 PAYMENT_PENDING with one taken, and the answer
+      with nothing on the reader.
+   m. Clip decline then retry on the reader: the status sequence of one request.
+   n. Clip notification: the body (`id`, `origin`, `event_type`) for an approval and a cancel.
+   o. Clip `GET /payment` 404 timing for a fresh pinpad_request_id (right after the create).
+   p. Account defaults on Juanberto's MP and Clip accounts for installments and DCC.
+   q. Clip create with the reader off: developer.clip.mx post_payment documents a 60 s wait
+      for the terminal, then 504 PINPAD_TERMINAL_TIMEOUT_EXCEPTION (the fake answers 400; the
+      worker treats a 5xx as an unknown outcome and withdraws by serial). Record the status,
+      the time it took, and whether a delete by serial during those 60 s finds the request.
+5. Evidence (timings, screenshots, attempt events with ids only) stays local under the LD-67
+   evidence-directory pattern; nothing with a token, a key or a card beyond the last 4.
+6. Afterwards: disconnect both accounts in Configuración (the worker wipes the credentials)
+   and archive the rehearsal terminals.
+7. Switching production on (only after this rehearsal passes, LD-84/LD-85): one reviewed
+   change to `.railway/railway.ts` that declares `PAYMENTS_PROVIDERS: "mercadopago,clip"` for
+   production too (replace the line `...(production ? {} : { PAYMENTS_PROVIDERS: … })` with the
+   plain declaration, and update the PAYMENTS_PROVIDERS assertion in `tests/workflows.test.ts`
+   in the same pull request), merged to main; then the production deploy (dispatch, outside
+   service hours) applies it: `railway config plan` shows one added variable on `worker`, no
+   deletion. Confirm the production worker has `CREDENTIAL_ENCRYPTION_KEY` first. Never set the
+   variable by hand in production: an undeclared value is planned as a deletion and stops CD.
+   Switching it off again is the reverse change (see "Payments: provider outage" step 5 for
+   charges still live).
 
 ## Signing keys
 

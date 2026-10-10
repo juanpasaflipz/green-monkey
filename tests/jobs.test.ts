@@ -3,12 +3,23 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 // The web entry's registration side effect (server/index.ts); the runner no
 // longer imports it (Wave 2.0, P-1).
 import "../server/jobs/handlers/index.js";
-import { backoffMs, failureState, jobErrorCode } from "../server/jobs/queue.js";
+import {
+  backoffMs,
+  CANCEL_REQUESTED,
+  failureState,
+  jobErrorCode,
+} from "../server/jobs/queue.js";
 import { createJobRunner, resolveOutcome } from "../server/jobs/runner.js";
+import {
+  createWorkerRunners,
+  WORKER_LANES,
+} from "../server/jobs/worker-lanes.js";
+import { PAYMENTS_JOB_OPTIONS } from "../server/payments/worker/job-options.js";
 import {
   clearJobHandlers,
   enqueueJob,
   handlers,
+  hasDeadHook,
   jobRegistration,
   JOB_KIND,
   MAX_ATTEMPTS,
@@ -239,6 +250,28 @@ describe("jobs API (Wave 2.0)", () => {
     }
   });
 
+  it("a worker kind registers an onDead hook exactly when WORKER_DEAD_HOOK_KINDS lists it (the web's staff cancel reads the list, P2-CONCURRENCY-6); a handler cannot forge the cancel marker", () => {
+    const hook = async () => {};
+    try {
+      expect(() =>
+        registerWorkerJobHandler("opsworker_hooked", noop, { onDead: hook }),
+      ).toThrow(/WORKER_DEAD_HOOK_KINDS/);
+      expect(() => registerWorkerJobHandler("payments_push", noop)).toThrow(
+        /WORKER_DEAD_HOOK_KINDS/,
+      );
+      registerWorkerJobHandler("payments_push", noop, { onDead: hook });
+      expect(workerHandlers().get("payments_push")?.onDead).toBe(hook);
+      expect(hasDeadHook("payments_push")).toBe(true);
+      expect(hasDeadHook("payments_credentials")).toBe(true);
+      expect(hasDeadHook("payments_poll")).toBe(false);
+      expect(hasDeadHook("kitchen_dispatch")).toBe(false);
+    } finally {
+      clearWorkerJobHandlers();
+    }
+    expect(jobErrorCode(CANCEL_REQUESTED)).toBe("handler_error");
+    expect(jobErrorCode("provider_down")).toBe("provider_down");
+  });
+
   it("web and worker kinds are disjoint", () => {
     // Every web kind is registered by server/jobs/handlers/index.ts (imported
     // above); worker kinds are registered by the modules between
@@ -317,6 +350,58 @@ describe("jobs API (Wave 2.0)", () => {
       expect(polls).toBe(3);
       expect(drained).toEqual([]);
       await runner.stop(100);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("poke() runs discovery now instead of at the next sweep, coalesces a burst into one discovery, queues one more behind a running discovery, and is a no-op without discover (payments /wake)", async () => {
+    vi.useFakeTimers();
+    try {
+      const drained: string[] = [];
+      let polls = 0;
+      let release: (ids: string[]) => void = () => {};
+      const only = new Map<string, RegisteredHandler>([
+        ["opsworker_probe", jobRegistration("opsworker_probe", noop)],
+      ]);
+      const runner = createJobRunner(fakeSql(drained), {
+        handlers: () => only,
+        sweepMs: 5000,
+        debounceMs: 10,
+        discover: () => {
+          polls++;
+          return polls === 1
+            ? Promise.resolve([])
+            : new Promise<string[]>((r) => (release = r));
+        },
+      });
+      runner.start();
+      await vi.advanceTimersByTimeAsync(20);
+      expect(polls).toBe(1);
+      for (let i = 0; i < 5; i++) runner.poke();
+      await vi.advanceTimersByTimeAsync(20);
+      expect(polls, "five pokes, one discovery, long before sweepMs").toBe(2);
+      runner.poke();
+      runner.poke();
+      await vi.advanceTimersByTimeAsync(20);
+      expect(polls, "a discovery is running: the pokes wait for it").toBe(2);
+      release(["t-1"]);
+      await vi.advanceTimersByTimeAsync(40);
+      expect(polls, "exactly one more discovery after the running one").toBe(3);
+      expect(drained).toContain("t-1");
+      release([]);
+      await runner.stop(100);
+      runner.poke();
+      await vi.advanceTimersByTimeAsync(300);
+      expect(polls, "no discovery after stop").toBe(3);
+      const web = createJobRunner(fakeSql(drained), {
+        handlers: () => only,
+        sweepMs: 5000,
+      });
+      web.start();
+      web.poke();
+      await vi.advanceTimersByTimeAsync(300);
+      await web.stop(100);
     } finally {
       vi.useRealTimers();
     }
@@ -503,6 +588,131 @@ describe("runner limits and liveness (PLATFORM-OPS-1, OPS-3, OPS-5, OPS-6)", () 
     }).toEqual({ claimed: 200, ran: 200, left: 0 });
     await runner.stop(100);
   }, 30_000);
+
+  it("worker lanes (P2-CONCURRENCY-3): four long cfdi calls hold the general lane while a payments_push is claimed in the same drain", async () => {
+    const queues = new Map([
+      [
+        "t-1",
+        [
+          ...[1, 2, 3, 4].map((n) => ({
+            kind: "cfdi_stamp",
+            id: `stamp-${n}`,
+          })),
+          { kind: "payments_push", id: "push" },
+        ],
+      ],
+    ]);
+    let release!: () => void;
+    const facturapi = new Promise<void>((r) => (release = r));
+    const ran: string[] = [];
+    // cfdi registers first (server/worker.ts imports its register before payments').
+    const registry = new Map<string, RegisteredHandler>([
+      [
+        "cfdi_stamp",
+        jobRegistration(
+          "cfdi_stamp",
+          (async ({ job }: { job: { id: string } }) => {
+            ran.push(job.id);
+            await facturapi; // a slow Facturapi call
+          }) as never,
+          { concurrency: 4, leaseSeconds: 60 },
+        ),
+      ],
+      [
+        "payments_push",
+        jobRegistration(
+          "payments_push",
+          (async ({ job }: { job: { id: string } }) => {
+            ran.push(job.id);
+          }) as never,
+          { concurrency: 4 },
+        ),
+      ],
+    ]);
+    const runners = createWorkerRunners(queueSql({ queues }) as never, {
+      handlers: () => registry,
+      discover: async () => [],
+      sweepMs: 1000,
+    });
+    const drain = runners.drainTenant("t-1");
+    for (let i = 0; i < 100 && !ran.includes("push"); i++)
+      await new Promise((r) => setTimeout(r, 5));
+    expect(ran.filter((id) => id.startsWith("stamp-")).length).toBe(4);
+    expect(
+      ran,
+      "the charge reached the provider while cfdi held 4 slots",
+    ).toContain("push");
+    release();
+    await drain;
+    await runners.stop(100);
+  });
+
+  it("payments lane (P2V-JOBS-2): reads that never finish (8 polls and 4 re-reads, a provider timing out) leave slots for a payments_push and a payments_cancel in the same drain", async () => {
+    const queues = new Map([
+      [
+        "t-1",
+        [
+          ...Array.from({ length: 8 }, (_, n) => ({
+            kind: "payments_poll",
+            id: `poll-${n}`,
+          })),
+          ...Array.from({ length: 4 }, (_, n) => ({
+            kind: "payments_webhook",
+            id: `hook-${n}`,
+          })),
+          { kind: "payments_push", id: "push" },
+          { kind: "payments_cancel", id: "cancel" },
+        ],
+      ],
+    ]);
+    let release!: () => void;
+    const provider = new Promise<void>((r) => (release = r));
+    const ran: string[] = [];
+    const stub = (slow: boolean) =>
+      (async ({ job }: { job: { id: string } }) => {
+        ran.push(job.id);
+        if (slow) await provider; // a read that hangs until its timeout
+      }) as never;
+    // The real limits server/payments/worker/register.ts registers, polls first (they are the
+    // kinds that pile up).
+    const registry = new Map<string, RegisteredHandler>(
+      (
+        [
+          "payments_poll",
+          "payments_webhook",
+          "payments_push",
+          "payments_cancel",
+        ] as const
+      ).map((kind) => [
+        kind,
+        jobRegistration(
+          kind,
+          stub(kind === "payments_poll" || kind === "payments_webhook"),
+          PAYMENTS_JOB_OPTIONS[kind],
+        ),
+      ]),
+    );
+    const runners = createWorkerRunners(queueSql({ queues }) as never, {
+      handlers: () => registry,
+      discover: async () => [],
+      sweepMs: 1000,
+    });
+    const drain = runners.drainTenant("t-1");
+    for (
+      let i = 0;
+      i < 100 && !(ran.includes("push") && ran.includes("cancel"));
+      i++
+    )
+      await new Promise((r) => setTimeout(r, 5));
+    expect(
+      ran.filter((id) => !id.startsWith("poll-") && !id.startsWith("hook-")),
+      "the cashier's push and cancel got a slot while the reads hung",
+    ).toEqual(expect.arrayContaining(["push", "cancel"]));
+    expect(runners.running()).toBeLessThanOrEqual(WORKER_LANES.payments);
+    release();
+    await drain;
+    await runners.stop(100);
+  });
 
   it("a handler that ignores its abort signal stops counting at lease expiry; the tenant's drain finishes and its next job runs", async () => {
     vi.useFakeTimers();

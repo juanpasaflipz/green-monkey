@@ -19,11 +19,14 @@ import { billingWorker } from "./billing-runtime.js";
 import { configureAlerts, sendAlert } from "./ops/alerts.js";
 import { createWatchdog } from "./ops/watchdog.js";
 import { checkWorkerRole, connectWorker, waitForDatabase } from "./db.js";
-import { createJobRunner, type JobRunner } from "./jobs/runner.js";
+import type { JobRunner } from "./jobs/runner.js";
+import { createWorkerRunners } from "./jobs/worker-lanes.js";
 import { discoverTenants, workerHandlers } from "./jobs/worker-registry.js";
 // >>> worker areas: imports (one line per area module; e.g. cfdi's register and boot modules)
 import "./cfdi/worker/register.js";
 import { cfdiWorkerBoot } from "./cfdi/worker/boot.js";
+import "./payments/worker/register.js";
+import { paymentsWorkerBoot } from "./payments/worker/boot.js";
 // <<< worker areas: imports
 
 const LOOP_STALE_MS = 120_000;
@@ -70,6 +73,17 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify(body));
     return;
   }
+  // Payments (spec §4.7): the web wakes the worker after a start, cancel, sync or webhook
+  // enqueue so a charge reaches the terminal without waiting for the 5 s sweep. No auth and no
+  // body: it carries no data and only advances discovery (runner.poke() coalesces bursts to one
+  // discovery per 250 ms); the port is reachable on the private network only.
+  if (req.method === "POST" && req.url === "/wake") {
+    req.resume();
+    jobs?.poke();
+    res.writeHead(202, { "Cache-Control": "no-store" });
+    res.end();
+    return;
+  }
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "not_found" }));
 });
@@ -114,13 +128,13 @@ if (config.workerDatabaseUrl) {
   // A misconfigured login (not a gm_jobs_worker member, or more privileged)
   // is fatal: Railway keeps the previous deployment.
   await waitForDatabase(sql, { check: checkWorkerRole });
-  jobs = createJobRunner(sql, {
+  // Two lanes (server/jobs/worker-lanes.ts): payments_* kinds have their own slots, so a cfdi
+  // backlog never delays a charge reaching the terminal (P2-CONCURRENCY-3).
+  jobs = createWorkerRunners(sql, {
     handlers: workerHandlers,
-    concurrency: 4,
     sweepMs: 5000,
     log: log.child({ loop: "worker-jobs" }),
-    discover: async () => {
-      const kinds = [...workerHandlers().keys()];
+    discover: async (kinds) => {
       // With no worker kind registered discovery sends no query, so prove the
       // jobs login still reaches the database before ticking (LD-14 OQ-6):
       // losing it turns /healthz 503 and /api/ops/status worker "stale".
@@ -145,6 +159,7 @@ if (config.workerDatabaseUrl) {
 // WORKER_DATABASE_URL is unset, and process.env; a throw is fatal, so hooks
 // handle provider outages themselves)
 await cfdiWorkerBoot(workerSql, process.env);
+await paymentsWorkerBoot(workerSql, process.env);
 // <<< worker areas: boot hooks
 if (jobs) {
   tickNow("jobs");

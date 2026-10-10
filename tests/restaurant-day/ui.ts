@@ -50,6 +50,8 @@ export type DeviceName =
   | "cocinaB"
   | "ownerL"
   | "cajaL"
+  | "ownerP"
+  | "cajaP"
   | "probe"
   | "probe2";
 
@@ -84,6 +86,9 @@ export const DEVICE_SPECS: Record<DeviceName, Spec> = {
   // Branch L (loyalty spec §9.4): the owner's computer and the one register.
   ownerL: { width: 1440, height: 900, tz: "America/Mexico_City" },
   cajaL: { width: 1024, height: 768, tz: "America/Mexico_City" },
+  // Branch P (payments spec §12.4): the owner's computer and the one register.
+  ownerP: { width: 1440, height: 900, tz: "America/Mexico_City" },
+  cajaP: { width: 1024, height: 768, tz: "America/Mexico_City" },
   probe: { width: 1024, height: 768, tz: "America/Mexico_City" },
   probe2: { width: 1024, height: 768, tz: "America/Mexico_City" },
 };
@@ -136,8 +141,13 @@ export const run = {
   seenKds: { A: new Set<string>(), B: new Set<string>() },
   /** RD_SOFT findings so far */
   soft: 0,
-  /** CFDI branch of this run (§3.3): N without a Facturapi test key, K with one */
-  branch: "N" as "N" | "K",
+  /** CFDI branch of this run (§3.3): N without a Facturapi test key, K with one; P: branch P */
+  branch: "N" as "N" | "K" | "P",
+  /**
+   * Worker alert keys the scenario provokes on purpose (G4 logs): branch P's unknown outcome
+   * raises payments_attempt_unknown_<tenant> by design (payments spec §8).
+   */
+  expectedAlerts: [] as RegExp[],
 };
 
 /** Boot refusals every signed-out or unpaired device makes (§4.4). */
@@ -402,7 +412,7 @@ const GENERIC_ERROR = "No se pudo completar la acción.";
 export async function scanText(
   page: Page,
   id: string,
-  branch: "N" | "K" = run.branch,
+  branch: "N" | "K" | "P" = run.branch,
 ) {
   const found = await page.evaluate(() => {
     const parts: string[] = [document.body.innerText, document.title];
@@ -473,7 +483,7 @@ export async function checkpoint(
   id: string,
   opts: {
     axe?: boolean;
-    branch?: "N" | "K";
+    branch?: "N" | "K" | "P";
     sizes?: Array<[number, number]>;
     settle?: Locator;
   } = {},
@@ -743,7 +753,8 @@ export function assertLogs() {
     if (entry.level === "error") problems.push(`worker error: ${line}`);
     if (
       entry.message === "alert" &&
-      !["web_down", "web_recovered"].includes(String(entry.key))
+      !["web_down", "web_recovered"].includes(String(entry.key)) &&
+      !run.expectedAlerts.some((re) => re.test(String(entry.key)))
     )
       problems.push(`worker alert: ${line}`);
   }
