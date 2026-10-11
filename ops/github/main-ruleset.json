@@ -29,7 +29,8 @@
           { "context": "qualify" },
           { "context": "security" },
           { "context": "restaurant-day" },
-          { "context": "restaurant-day-cfdi" }
+          { "context": "restaurant-day-cfdi" },
+          { "context": "restaurant-day-payments" }
         ]
       }
     }

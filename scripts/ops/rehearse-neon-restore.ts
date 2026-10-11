@@ -30,6 +30,7 @@ import { controlTotals } from "./control-totals.js";
 import { provisionRoles } from "./provision-roles.js";
 import { verifyRestore } from "./restore-verify.js";
 import { libpqUrl } from "./libpq-url.js";
+import { branchBackupUrl } from "./branch-url.js";
 import { dirname } from "node:path";
 import { main as migrate } from "../migrate.js";
 
@@ -150,11 +151,25 @@ const branch = await timed("pitr_branch_ready_ms", () =>
 );
 let pitrTotals: unknown = null;
 if (!dryRun) {
-  const source = new URL(process.env.SOURCE_BACKUP_URL ?? "");
-  const branchHost = branch.endpoints?.[0]?.host;
-  if (!branchHost)
-    throw Error("branch endpoint host missing from neonctl output");
-  source.hostname = branchHost;
+  const backup = new URL(process.env.SOURCE_BACKUP_URL ?? "");
+  const branchId = branch.branch?.id;
+  if (!branchId) throw Error("branch id missing from neonctl output");
+  // A branch of a protected parent gets its own role passwords, so ask Neon for this
+  // branch's password for the backup login (scripts/ops/branch-url.ts).
+  const source = branchBackupUrl(
+    backup,
+    sh([
+      ...neonctl,
+      "connection-string",
+      branchId,
+      "--project-id",
+      project,
+      "--role-name",
+      decodeURIComponent(backup.username),
+      "--database-name",
+      decodeURIComponent(backup.pathname.slice(1)),
+    ]),
+  );
   const sql = postgres(withoutParams(source).href, {
     max: 1,
     ssl: databaseTls(source),

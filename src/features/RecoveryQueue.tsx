@@ -1,4 +1,3 @@
-import { liveQuery } from "dexie";
 import { useCallback, useEffect, useState } from "react";
 import {
   currencyExponent,
@@ -17,6 +16,7 @@ import {
   clearPaymentAttempt,
   db,
   isAttemptKey,
+  liveRead,
   scope,
   type Pending,
 } from "../offline";
@@ -113,9 +113,11 @@ export function RecoveryQueue({
   // (OFF-12). The pending store is read whole so that any change to any row
   // re-runs it (it holds a week of rows at most); of the cache, only this
   // tenant's keys are listed and only attempt values are read, never every
-  // catalog and open-orders snapshot (OUTAGE-011).
+  // catalog and open-orders snapshot (OUTAGE-011). liveRead adds one catch-up
+  // read, so a sale that syncs while the first read runs (as this screen
+  // opens) does not stay "Sincronizando" here.
   useEffect(() => {
-    const subscription = liveQuery(async () => ({
+    const read = async () => ({
       rows: await db.pending.filter(visible).toArray(),
       attempts: (
         await db.cache.bulkGet(
@@ -143,8 +145,10 @@ export function RecoveryQueue({
               (row.attempt.employeeId === session.employeeId &&
                 row.attempt.deviceId === session.deviceId)),
         ),
-    })).subscribe({
-      next: (value) => {
+    });
+    return liveRead(
+      read,
+      (value) => {
         setRows(
           value.rows.sort(
             (a, b) =>
@@ -153,9 +157,8 @@ export function RecoveryQueue({
         );
         setAttempts(value.attempts);
       },
-      error: (e: Error) => setError(errorNotice(e, locale)),
-    });
-    return () => subscription.unsubscribe();
+      (e) => setError(errorNotice(e, locale)),
+    );
   }, [visible]);
   const loadServer = useCallback(async () => {
     if (!manager) return;
