@@ -435,6 +435,11 @@ export type InboxHold = {
    */
   kiosk?: null | {
     paymentChoice: "card" | "counter" | null;
+    /**
+     * Staff claimed it for the counter («Cobrar y enviar a cocina» opened; KF-MONEY-1): it stays
+     * pay-first until collected, unlike the guest's own «Pagar en caja».
+     */
+    claimed: boolean;
     /** The latest attempt (payments' charge), when one was started. */
     attemptId: string | null;
     charging: boolean;
@@ -523,15 +528,17 @@ export function holdActions(
  * their own block. "counter": the guest chose «Pagar en caja» (or the kiosk could not take cards),
  * a normal card. "at_kiosk": the guest has not chosen yet. "card_unpaid": the guest chose card and
  * it never paid (a decline, a walk-away, a review refunded at the provider): an abandoned card
- * checkout.
+ * checkout. "claimed": staff claimed it for the counter and have not collected it yet
+ * («Reclamado en caja», KF-MONEY-1): the kiosk can no longer cancel it, so staff collect or
+ * reject it.
  */
 export type KioskInboxState =
-  "charging" | "review" | "counter" | "at_kiosk" | "card_unpaid";
+  "charging" | "review" | "counter" | "claimed" | "at_kiosk" | "card_unpaid";
 export function kioskInboxState(k: InboxHold["kiosk"]): KioskInboxState | null {
   if (!k) return null;
   if (k.review) return "review";
   if (k.charging) return "charging";
-  if (k.paymentChoice === "counter") return "counter";
+  if (k.paymentChoice === "counter") return k.claimed ? "claimed" : "counter";
   return k.paymentChoice === "card" ? "card_unpaid" : "at_kiosk";
 }
 
@@ -554,8 +561,9 @@ export function kioskChargingExits(
 
 /**
  * The inbox actions of a hold: holdActions, except that a kiosk hold the guest has not sent to the
- * counter is pay-first whatever the counter policy (no «Aceptar y enviar a cocina»; «Cobrar y
- * enviar a cocina», «Rechazar» and a manager's exception stay). The server enforces the same rule.
+ * counter, or one staff claimed and have not collected (KF-MONEY-1), is pay-first whatever the
+ * counter policy (no «Aceptar y enviar a cocina»; «Cobrar y enviar a cocina», «Rechazar» and a
+ * manager's exception stay). The server enforces the same rule.
  */
 export function inboxActions(
   hold: Pick<InboxHold, "policy" | "kiosk">,
@@ -564,7 +572,9 @@ export function inboxActions(
 ): ReturnType<typeof holdActions> {
   const k = kioskInboxState(hold.kiosk);
   return holdActions(
-    k === "at_kiosk" || k === "card_unpaid" ? "pay_first" : hold.policy,
+    k === "at_kiosk" || k === "card_unpaid" || k === "claimed"
+      ? "pay_first"
+      : hold.policy,
     role,
     currentTotal,
   );
@@ -574,9 +584,15 @@ export function inboxActions(
  * Whether «Cobrar y enviar a cocina» claims the hold for the counter before the payment dialog
  * opens (KV-FIXES-1; pure, tests/kiosk.test.ts): a kiosk hold the guest has not sent to the counter
  * («En el kiosco», «Cobro con tarjeta abandonado»). The kiosk's idle reset or «Cancelar pedido»
- * would otherwise cancel the hold while the cashier charges the guest.
+ * would otherwise cancel the hold while the cashier charges the guest. Only when this device's
+ * drawer is open (KF-MONEY-1): without it the dialog can only send the cashier to «Ir a caja», and
+ * a claim then would take the hold from the kiosk with no collection to follow.
  */
-export function claimsForCounter(k: InboxHold["kiosk"]): boolean {
+export function claimsForCounter(
+  k: InboxHold["kiosk"],
+  drawerOpen: boolean,
+): boolean {
+  if (!drawerOpen) return false;
   const state = kioskInboxState(k);
   return state === "at_kiosk" || state === "card_unpaid";
 }

@@ -139,7 +139,9 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
     await tx`select h.id,h.number,h.channel,h.table_id,h.policy,h.name,h.note,
       h.lines,h.priced,h.quoted_total,h.created_at,h.expires_at,
       l.kind,l.label as link_label,l.revoke_reason as link_revoked,t.name as table_name,
-      k.hold_id as checkout_hold,k.payment_choice,a.id as attempt_id,a.state as attempt_state,a.error_code as attempt_code,
+      k.hold_id as checkout_hold,k.payment_choice,
+      case when k.hold_id is not null then ${staffClaimedSql(tx)} else false end as staff_claimed,
+      a.id as attempt_id,a.state as attempt_state,a.error_code as attempt_code,
       a.amount as attempt_amount,a.terminal_label as attempt_terminal,a.provider as attempt_provider
     from (
       -- The live holds: an index range of public_order_holds_pending (GAP-4).
@@ -228,6 +230,7 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
         r.channel === "kiosk" && r.checkout_hold
           ? {
               paymentChoice: r.payment_choice ?? null,
+              claimed: r.staff_claimed === true,
               attemptId: r.attempt_id ?? null,
               charging: [
                 "created",
@@ -477,13 +480,27 @@ async function lockReviewAttempt(
  * walk-away, a review refunded at the provider). Staff take it pay-first whatever the counter
  * policy: «Cobrar y enviar a cocina», or a manager's exception, never a plain accept that fires
  * an unpaid order. Only «Pagar en caja» (or a kiosk that could not take cards) makes it a normal
- * card. A plain read after LO-2b (lockHold locked the checkout).
+ * card. A hold staff claimed for the counter (claimHold) stays pay-first until it is collected
+ * (KF-MONEY-1): a claim whose dialog was dismissed collected nothing, and the kiosk can no longer
+ * cancel it. A plain read after LO-2b (lockHold locked the checkout).
  */
 async function kioskNotAtCounter(tx: Tx, h: HoldDecisionRow) {
   if (h.channel !== "kiosk") return false;
-  const [c] =
-    await tx`select payment_choice from kiosk_checkouts where hold_id=${h.id}`;
-  return !!c && c.payment_choice !== "counter";
+  const [c] = await tx`select c.payment_choice,${staffClaimedSql(tx)} as claimed
+    from kiosk_checkouts c join public_order_holds h on h.tenant_id=c.tenant_id and h.id=c.hold_id
+    where c.hold_id=${h.id}`;
+  return !!c && (c.payment_choice !== "counter" || c.claimed === true);
+}
+
+/**
+ * Whether staff claimed the kiosk hold `h` for the counter (KF-MONEY-1): claimHold's audit row.
+ * Read through audit_tenant_id_created_at from the hold's creation on (a claim always follows
+ * it), so the range is the hold's own lifetime, never the tenant's whole audit.
+ */
+export function staffClaimedSql(tx: Tx) {
+  return tx`exists(select 1 from audit au where au.tenant_id=h.tenant_id
+    and au.created_at>=h.created_at and au.operation='kiosk.hold_claimed'
+    and au.entity_id=h.id::text)`;
 }
 
 /**
@@ -505,6 +522,10 @@ export async function assertNoKioskCharge(tx: Tx, h: HoldDecisionRow) {
  * hold on the kiosk), and the kiosk can no longer start a card (kioskStartCharge). Refused while
  * payments may still take, or has taken, the hold's card, and once the hold expired (no grace:
  * nothing was collected yet). Locks: 1 → 2 → 2b (hold → checkout). A counter hold stays one.
+ * KF-MONEY-1: a claim that moved the hold to the counter writes 'kiosk.hold_claimed', so the
+ * hold stays pay-first until staff collect it («Cobrar y enviar a cocina») or a manager records
+ * the exception: a claim whose dialog closed without a payment never becomes a plain accept. The
+ * guest's own «Pagar en caja» (already 'counter') is not a claim and keeps the counter policy.
  */
 export async function claimHold(
   tx: Tx,
@@ -524,8 +545,13 @@ export async function claimHold(
       const h = await lockHold(tx, holdId);
       if (h.channel !== "kiosk") throw new DomainError("invalid_input");
       await assertNoKioskCharge(tx, h);
-      await tx`update kiosk_checkouts set payment_choice='counter',updated_at=now()
-      where hold_id=${h.id} and payment_choice is distinct from 'counter'`;
+      const [moved] =
+        await tx`update kiosk_checkouts set payment_choice='counter',updated_at=now()
+      where hold_id=${h.id} and payment_choice is distinct from 'counter' returning payment_choice`;
+      if (moved)
+        await audit(tx, s, "kiosk.hold_claimed", h.id, {
+          label: holdLabel(h.channel, h.number),
+        });
       return {
         hold: {
           id: h.id,

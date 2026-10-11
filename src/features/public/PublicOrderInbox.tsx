@@ -241,29 +241,32 @@ export function PublicOrderInbox({
     due: number,
     charge?: KioskCharge,
   ) {
-    // A kiosk hold the guest has not sent to the counter is claimed for it first, so the kiosk's
-    // idle reset cannot cancel the hold while the cashier charges the guest (KV-FIXES-1).
-    if (!charge && claimsForCounter(hold.kiosk)) {
-      setBusy(hold.id);
-      try {
-        await api(`/ordering/holds/${hold.id}/claim`, {
-          operationId: crypto.randomUUID(),
-        });
-      } catch (e) {
-        failed(hold, e);
-        return;
-      } finally {
-        setBusy(null);
-      }
-      refresh();
-    }
-    // This device's drawer (id and closed_at stay visible to every role).
+    setBusy(hold.id);
+    // This device's drawer first (id and closed_at stay visible to every role): without it the
+    // dialog only offers «Ir a caja», so nothing is claimed (KF-MONEY-1).
     const drawerOpen = await api<{
       id?: string;
       closed_at?: string | null;
     } | null>("/cash")
       .then((d) => !!d?.id && !d.closed_at)
       .catch(() => false);
+    // A kiosk hold the guest has not sent to the counter is claimed for it before the cashier
+    // collects, so the kiosk's idle reset cannot cancel the hold meanwhile (KV-FIXES-1). The
+    // claim keeps it pay-first until collected («Reclamado en caja»), so a dialog closed without
+    // a payment leaves no hold a plain accept could send to the kitchen (KF-MONEY-1).
+    if (!charge && claimsForCounter(hold.kiosk, drawerOpen)) {
+      try {
+        await api(`/ordering/holds/${hold.id}/claim`, {
+          operationId: crypto.randomUUID(),
+        });
+      } catch (e) {
+        setBusy(null);
+        failed(hold, e);
+        return;
+      }
+      refresh();
+    }
+    setBusy(null);
     setPaying({ hold, body, due, drawerOpen, error: "", charge });
   }
   async function pay(values: PaymentValues | null) {

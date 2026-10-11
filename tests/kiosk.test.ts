@@ -707,6 +707,7 @@ describe("a kiosk hold in the staff inbox (KIOSK-UX-04, KIOSK-MONEY-3)", () => {
     o: Partial<NonNullable<InboxHold["kiosk"]>>,
   ): NonNullable<InboxHold["kiosk"]> => ({
     paymentChoice: null,
+    claimed: false,
     attemptId: null,
     charging: false,
     unknown: false,
@@ -802,18 +803,49 @@ describe("a kiosk hold in the staff inbox (KIOSK-UX-04, KIOSK-MONEY-3)", () => {
     expect(holdActions("accept", "cashier", 4500).accept).toBe(true);
   });
   it("KV-FIXES-1: «Cobrar y enviar a cocina» first claims, for the counter, a hold still at the kiosk or an abandoned card checkout, and nothing else", () => {
-    expect(claimsForCounter(kiosk({}))).toBe(true);
-    expect(claimsForCounter(kiosk({ paymentChoice: "card" }))).toBe(true);
-    expect(claimsForCounter(null)).toBe(false);
-    expect(claimsForCounter(kiosk({ paymentChoice: "counter" }))).toBe(false);
+    expect(claimsForCounter(kiosk({}), true)).toBe(true);
+    expect(claimsForCounter(kiosk({ paymentChoice: "card" }), true)).toBe(true);
+    expect(claimsForCounter(null, true)).toBe(false);
+    expect(claimsForCounter(kiosk({ paymentChoice: "counter" }), true)).toBe(
+      false,
+    );
     expect(
       claimsForCounter(
         kiosk({ paymentChoice: "card", attemptId: "a", charging: true }),
+        true,
       ),
     ).toBe(false);
-    expect(claimsForCounter(kiosk({ paymentChoice: "card", review }))).toBe(
-      false,
-    );
+    expect(
+      claimsForCounter(kiosk({ paymentChoice: "card", review }), true),
+    ).toBe(false);
+  });
+  it("KF-MONEY-1: no claim without this device's open drawer (the dialog only offers «Ir a caja»); a claimed, uncollected hold is «Reclamado en caja», pay-first under either policy, and not claimed again", () => {
+    // The drawer is read first: closed, nothing is claimed whatever the hold.
+    for (const k of [kiosk({}), kiosk({ paymentChoice: "card" })])
+      expect(claimsForCounter(k, false)).toBe(false);
+    const claimed = kiosk({ paymentChoice: "counter", claimed: true });
+    expect(kioskInboxState(claimed)).toBe("claimed");
+    expect(claimsForCounter(claimed, true)).toBe(false);
+    for (const policy of ["accept", "pay_first"] as const) {
+      // No plain «Aceptar y enviar a cocina»: «Cobrar y enviar» and the manager's exception.
+      expect(
+        inboxActions({ policy, kiosk: claimed }, "cashier", 4500),
+      ).toEqual({ accept: false, payAndSend: true, override: false });
+      expect(
+        inboxActions({ policy, kiosk: claimed }, "manager", 4500),
+      ).toEqual({ accept: false, payAndSend: true, override: true });
+    }
+    // The guest's own «Pagar en caja» keeps the counter policy.
+    expect(
+      inboxActions(
+        { policy: "accept", kiosk: kiosk({ paymentChoice: "counter" }) },
+        "cashier",
+        4500,
+      ).accept,
+    ).toBe(true);
+    // A live charge or a review keeps its own block over the claim.
+    expect(kioskInboxState({ ...claimed, charging: true })).toBe("charging");
+    expect(kioskInboxState({ ...claimed, review })).toBe("review");
   });
 });
 

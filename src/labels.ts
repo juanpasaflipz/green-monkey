@@ -171,6 +171,7 @@ const operations: Record<string, Key> = {
   "kiosk.device_revoked": "kioskOpRevoked",
   "kiosk.charge_started": "kioskOpCharge",
   "kiosk.settle_refused": "kioskOpRefused",
+  "kiosk.hold_claimed": "kioskOpClaimed",
   "menu.media.attached": "kioskOpMediaAttached",
   "menu.media.removed": "kioskOpMediaRemoved",
   "menu.media.import": "kioskOpMediaImport",

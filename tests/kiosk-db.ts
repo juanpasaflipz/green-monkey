@@ -88,7 +88,12 @@ import { groupBreakdown } from "../server/reports/breakdowns.js";
 import { kioskSubmit } from "../server/kiosk-diner.js";
 import { exceptionRows } from "../server/reports/exceptions.js";
 import { sellingCatalog } from "../server/menu-read.js";
-import { LINK_HEADER, STATUS_HEADER } from "../shared/public-ordering.js";
+import {
+  LINK_HEADER,
+  STATUS_HEADER,
+  inboxActions,
+  kioskInboxState,
+} from "../shared/public-ordering.js";
 import { KIOSK_COOKIE, type KioskCheckoutView } from "../shared/kiosk.js";
 // The kiosk screen's own step rule, fed the server's views (KIOSK-UX-22).
 import { stepFor } from "../src/features/public/kiosk/KioskCheckout.js";
@@ -3428,6 +3433,8 @@ try {
     const h4 = await holdOf(o4.key);
     assert.equal(h4.payment_choice, "counter");
     assert.equal((await inboxCard(h4.id))!.kiosk!.paymentChoice, "counter");
+    // The guest's own «Pagar en caja» is not a staff claim (KF-MONEY-1).
+    assert.equal((await inboxCard(h4.id))!.kiosk!.claimed, false);
     const normal = await plain(cashier, h4.id);
     assert.equal(normal.hold.state, "accepted");
     assert.equal((await holdOf(o4.key)).policy_override, false);
@@ -3456,6 +3463,26 @@ try {
     assert.equal((await inboxCard(h5.id))!.kiosk!.paymentChoice, "counter");
     // A second claim (the dialog opened again) leaves it at the counter.
     assert.equal((await claim(h5.id)).hold.state, "pending");
+    // KF-MONEY-1: the claim is recorded (once), and a claimed hold nobody collected yet («Ir a
+    // caja», or the dialog closed) is «Reclamado en caja»: still pay-first under the 'accept'
+    // policy, so the inbox offers no plain accept and the server refuses one.
+    const claims: { actor_id: string }[] = await asOwner(
+      A,
+      (tx) => tx`select actor_id from audit where tenant_id=${A}
+        and operation='kiosk.hold_claimed' and entity_id=${h5.id}`,
+    );
+    assert.equal(claims.length, 1);
+    assert.equal(claims[0].actor_id, ids.cashier);
+    const claimedCard = (await inboxCard(h5.id))!;
+    assert.equal(claimedCard.kiosk!.claimed, true);
+    assert.equal(kioskInboxState(claimedCard.kiosk), "claimed");
+    assert.deepEqual(inboxActions(claimedCard, "cashier", 4500), {
+      accept: false,
+      payAndSend: true,
+      override: false,
+    });
+    await rejects(plain(cashier, h5.id), "public_payment_required");
+    assert.equal((await holdOf(o5.key)).state, "pending");
     const reset = await call("POST", "/kiosk/cancel", {
       link: k.link,
       tablet: k.tablet,
@@ -3478,6 +3505,16 @@ try {
     assert.equal(collected.order.paid, 4500);
     // A decided hold is not claimed.
     await rejects(claim(h5.id), "public_order_not_pending");
+    // KF-MONEY-1: a claimed hold the cashier walked away from: only a manager's recorded
+    // exception (fresh PIN) sends it without a payment.
+    const o8 = await order(k, [line(ids.taco)], 4500);
+    const h8 = await holdOf(o8.key);
+    await claim(h8.id);
+    await rejects(plain(cashier, h8.id), "public_payment_required");
+    const excepted = await plain(freshManager, h8.id);
+    assert.equal(excepted.hold.state, "accepted");
+    assert.equal(excepted.order.paid, 0);
+    assert.equal((await holdOf(o8.key)).policy_override, true);
     // KV-FIXES-3: a hold claimed in time and collected after it expired gets the paid accept's
     // grace (the cashier charged before confirming); a claim after the expiry is refused.
     const age = (holdId: string, ago: string) =>

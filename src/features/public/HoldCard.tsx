@@ -300,9 +300,17 @@ export function HoldCard({
           {error}
         </p>
       )}
-      {(kioskState === "at_kiosk" || kioskState === "card_unpaid") && (
+      {(kioskState === "at_kiosk" ||
+        kioskState === "card_unpaid" ||
+        kioskState === "claimed") && (
         <p className="hold-kiosk" role="status">
-          {t(kioskState === "at_kiosk" ? "kioskAtKiosk" : "kioskCardUnpaid")}
+          {t(
+            kioskState === "at_kiosk"
+              ? "kioskAtKiosk"
+              : kioskState === "claimed"
+                ? "kioskClaimed"
+                : "kioskCardUnpaid",
+          )}
         </p>
       )}
       {kioskState === "charging" || kioskState === "review" ? (

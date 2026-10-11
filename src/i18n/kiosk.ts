@@ -145,6 +145,8 @@ export default defineArea({
       "En el kiosco · aún no paga. Si pasa a caja, cóbrale antes de enviar a cocina.",
     kioskCardUnpaid:
       "Cobro con tarjeta abandonado: eligió pagar en el kiosco y no pagó. Si pasa a caja, cóbrale antes de enviar a cocina.",
+    kioskClaimed:
+      "Reclamado en caja · aún no paga. El kiosco ya no lo cancela: cóbralo antes de enviar a cocina, o recházalo si el cliente se fue.",
     kioskSettleErrorCard:
       "{label} pagó {amount} con tarjeta ({terminal}) y no se pudo enviar a cocina: {reason}.",
     kioskResolve: "Resolver cobro del kiosco",
@@ -176,6 +178,7 @@ export default defineArea({
     kioskOpRevoked: "Kiosco: tableta desvinculada",
     kioskOpCharge: "Kiosco: cobro con tarjeta iniciado",
     kioskOpRefused: "Kiosco: cobro aprobado sin pedido",
+    kioskOpClaimed: "Kiosco: pedido reclamado en caja",
     kioskOpMediaAttached: "Menú: foto guardada",
     kioskOpMediaRemoved: "Menú: foto quitada",
     kioskOpMediaImport: "Menú: importación de fotos",
@@ -319,6 +322,8 @@ export default defineArea({
       "At the kiosk · not paid yet. If they come to the counter, charge before sending to the kitchen.",
     kioskCardUnpaid:
       "Abandoned card payment: they chose to pay at the kiosk and didn't. If they come to the counter, charge before sending to the kitchen.",
+    kioskClaimed:
+      "Claimed at the counter · not paid yet. The kiosk no longer cancels it: charge before sending to the kitchen, or reject it if the guest left.",
     kioskSettleErrorCard:
       "{label} paid {amount} by card ({terminal}) but could not be sent to the kitchen: {reason}.",
     kioskResolve: "Resolve kiosk payment",
@@ -349,6 +354,7 @@ export default defineArea({
     kioskOpRevoked: "Kiosk: tablet unpaired",
     kioskOpCharge: "Kiosk: card payment started",
     kioskOpRefused: "Kiosk: approved payment without an order",
+    kioskOpClaimed: "Kiosk: order claimed at the counter",
     kioskOpMediaAttached: "Menu: photo saved",
     kioskOpMediaRemoved: "Menu: photo removed",
     kioskOpMediaImport: "Menu: photo import",
