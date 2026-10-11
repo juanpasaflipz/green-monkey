@@ -821,19 +821,110 @@ try {
     );
     assert.match(byHold, /"Index Name":"payment_attempts_hold"/);
     // KV-FIXES-5: the inbox's two sets (server/public-holds.ts inbox) are index reads: the live
-    // holds' 2-hour range, and the holds with a live or review attempt.
-    const shown = await plan(
-      (tx) =>
-        tx`explain (format json) select h.id from public_order_holds h
+    // holds' 2-hour range, and the holds with a live or review attempt. Which index reads the
+    // holds is the planner's choice by statistics: on a small or mostly pending table the partial
+    // index and the primary key (tenant_id, id) cost about the same, and CI's PostgreSQL 18 took
+    // the primary key with a Filter on state, the read of every hold the restaurant ever had that
+    // KV-FIXES-5 forbids. So the plan is taken against the statistics of a restaurant with a
+    // history: decided holds of the last two hours are inserted and ANALYZEd in one transaction
+    // that is rolled back, and the EXPLAIN runs in it as the runtime role (SET LOCAL ROLE: the
+    // admin connection is a superuser that bypasses RLS, and RLS adds the tenant predicate the
+    // indexes lead with). With that history only the partial index avoids the decided holds, on
+    // PostgreSQL 16 and 18 alike.
+    const history = 5000;
+    const runtimeRole = new URL(target.runtime).username;
+    assert.match(runtimeRole, /^[a-z_][a-z0-9_]*$/);
+    const indexLink = await write(manager, (tx) =>
+      createLink(tx, manager, { kind: "counter", label: "Índice " + run }),
+    );
+    class Rollback {
+      constructor(readonly plan: any) {}
+    }
+    const shownPlan = await admin
+      .begin(async (tx) => {
+        await tx`select set_config('app.tenant_id', ${A}, true)`;
+        await tx`insert into public_order_holds(tenant_id,id,link_id,operation_id,request_hash,
+            status_key_hash,business_date,number,channel,mode,table_id,policy,lines,priced,
+            quoted_total,menu_revision,order_operation_id,state,created_at,expires_at,decided_at)
+          select ${A},gen_random_uuid(),${indexLink.id},gen_random_uuid(),repeat('a',64),
+            md5('kidx-a'||g)||md5('kidx-b'||g),date '2001-01-01',g,'qr','takeaway',null,'accept',
+            '[{}]'::jsonb,'[]'::jsonb,4500,1,gen_random_uuid(),'cancelled',
+            now()-make_interval(mins=>g%100),now()-make_interval(mins=>g%100)+interval '30 minutes',
+            now()-make_interval(mins=>g%100)+interval '1 minute'
+          from generate_series(1,${history}::int) g`;
+        await tx`analyze public_order_holds`;
+        // The statistics include the history (ANALYZE counts its own transaction's rows).
+        const [rel] =
+          await tx`select reltuples from pg_class where oid='public_order_holds'::regclass`;
+        assert.ok(Number(rel.reltuples) >= history, String(rel.reltuples));
+        await tx.unsafe(`set local role ${runtimeRole}`);
+        await tx`set local enable_seqscan = off`;
+        const rows = await tx`explain (format json) select h.id from public_order_holds h
           where h.state='pending' and h.created_at>now()-interval '2 hours' and h.expires_at>now()
           union
           select a.hold_id from payment_attempts a
           where a.hold_id is not null
-            and a.state in ('created','sending','pending','unknown','approved','review')`,
-    );
+            and a.state in ('created','sending','pending','unknown','approved','review')`;
+        throw new Rollback(rows[0]["QUERY PLAN"]);
+      })
+      .then(
+        () => assert.fail("the history must be rolled back"),
+        (e) => {
+          if (e instanceof Rollback) return e.plan;
+          throw e;
+        },
+      );
+    // ANALYZE writes pg_class.reltuples in place, outside the rollback: re-ANALYZE so the later
+    // legs and suites plan against the table's real rows, not the rolled-back history.
+    await admin`analyze public_order_holds`;
+    const [after] =
+      await admin`select reltuples from pg_class where oid='public_order_holds'::regclass`;
+    assert.ok(Number(after.reltuples) < history, String(after.reltuples));
+    const shown = JSON.stringify(shownPlan);
     assert.match(shown, /"Index Name":"public_order_holds_pending"/);
     assert.match(shown, /"Index Name":"payment_attempts_hold_live"/);
     assert.doesNotMatch(shown, /Seq Scan/);
+    // Structurally: each of the union's two branches (the Append's members) is an index read of
+    // the partial index whose predicate is its set's own (state='pending'; a live or review
+    // attempt), not a scan of another index with a Filter; and the live holds' read is the
+    // 2-hour range (created_at in its Index Cond), not every pending hold the restaurant had.
+    const members: any[] = [];
+    const walk = (n: any) => {
+      if (n["Node Type"] === "Append")
+        members.push(
+          ...n.Plans.filter((c: any) => c["Parent Relationship"] === "Member"),
+        );
+      else for (const c of n.Plans ?? []) walk(c);
+    };
+    walk(shownPlan[0].Plan);
+    const read = (m: any) =>
+      /^Index (Only )?Scan$/.test(m["Node Type"])
+        ? m
+        : m["Node Type"] === "Bitmap Heap Scan"
+          ? m.Plans?.find((c: any) => c["Node Type"] === "Bitmap Index Scan")
+          : undefined;
+    assert.deepEqual(
+      members.map((m) => [m["Relation Name"], read(m)?.["Index Name"]]),
+      [
+        ["public_order_holds", "public_order_holds_pending"],
+        ["payment_attempts", "payment_attempts_hold_live"],
+      ],
+      shown,
+    );
+    assert.match(read(members[0])["Index Cond"], /created_at > /, shown);
+    assert.equal(
+      (
+        await one(
+          A,
+          (tx) =>
+            tx`select count(*)::int as n from public_order_holds where link_id=${indexLink.id}`,
+        )
+      ).n,
+      0,
+    );
+    await write(manager, (tx) =>
+      revokeLink(tx, manager, indexLink.id, { operationId: randomUUID() }),
+    );
   });
 
   await test("K2. holds: a kiosk hold may be dine-in without a table; a counter QR hold may not; decision_source 'kiosk' only on an accepted kiosk hold", async () => {
