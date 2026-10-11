@@ -149,9 +149,10 @@ export function MenuMediaImport({
           );
           return { outcome: "imported", assetId: r.image?.id };
         } catch (e) {
-          // Another upload in flight on the server (KV-SECURITY-1): a short wait, the same upload.
+          // Another upload in flight on the server (KV-SECURITY-1), or the server's upload slots
+          // full (KF-SECURITY-1): a short wait, the same upload.
           if (
-            (e as Error).message === "media_busy" &&
+            ["media_busy", "media_server_busy"].includes((e as Error).message) &&
             busy < MEDIA_IMPORT_LIMITS.busyRetries
           ) {
             busy += 1;

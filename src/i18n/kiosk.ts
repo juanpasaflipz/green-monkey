@@ -473,5 +473,9 @@ export default defineArea({
       "Se está subiendo otra foto. Intenta de nuevo en unos segundos.",
       "Another photo is uploading. Try again in a few seconds.",
     ],
+    media_server_busy: [
+      "El servidor está ocupado con otras fotos. Intenta de nuevo en unos segundos.",
+      "The server is busy with other photos. Try again in a few seconds.",
+    ],
   },
 });

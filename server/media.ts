@@ -122,18 +122,21 @@ function mediaError(e: unknown): DomainError {
 }
 
 /**
- * Upload admission before the body is read (R8, KV-SECURITY-1): one upload in flight per
- * restaurant and MEDIA_LIMITS.uploadSlots in the process. A refused request answers 429
- * media_busy without its body being buffered or parsed, so concurrent bodies never pile up in
- * memory behind serial(). The returned release runs once, when the response finishes or the
- * connection closes.
+ * Upload admission before the body is read (R8, KV-SECURITY-1, KF-SECURITY-1): one upload in
+ * flight per restaurant (else media_busy) and MEDIA_LIMITS.uploadSlots in the process (else
+ * media_server_busy, so a restaurant is never told one of its own photos is uploading). A refused
+ * request is answered without its body being buffered or parsed, so concurrent bodies never pile
+ * up in memory behind serial(). The returned release runs once: the route calls it when the
+ * upload's processing ends, or when its body never arrived (KF-SECURITY-4).
  */
 const uploading = new Set<string>();
 /** Uploads admitted and not finished (the kiosk DB suite waits on it). */
 export const uploadsInFlight = () => uploading.size;
-export function admitUpload(tenantId: string): (() => void) | null {
-  if (uploading.has(tenantId) || uploading.size >= MEDIA_LIMITS.uploadSlots)
-    return null;
+export function admitUpload(
+  tenantId: string,
+): (() => void) | "media_busy" | "media_server_busy" {
+  if (uploading.has(tenantId)) return "media_busy";
+  if (uploading.size >= MEDIA_LIMITS.uploadSlots) return "media_server_busy";
   uploading.add(tenantId);
   let held = true;
   return () => {
@@ -144,11 +147,19 @@ export function admitUpload(tenantId: string): (() => void) | null {
 
 /** One upload at a time per process (R8: bounded CPU and memory on the web replica). */
 let queue: Promise<unknown> = Promise.resolve();
+let queued = 0;
 function serial<T>(fn: () => Promise<T>): Promise<T> {
+  queued += 1;
   const next = queue.then(fn, fn);
   queue = next.catch(() => undefined);
+  void queue.then(() => (queued -= 1));
   return next;
 }
+/**
+ * The upload queue, for the kiosk DB suite: it holds the queue to see an upload's slot outlive a
+ * client that left after its body arrived (KF-SECURITY-4), and reads its depth.
+ */
+export const mediaQueue = { hold: serial, depth: () => queued };
 
 type ImageResult = {
   productId: string;

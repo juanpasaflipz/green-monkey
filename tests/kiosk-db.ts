@@ -72,6 +72,8 @@ import type { LoyaltySettingsView } from "../shared/loyalty.js";
 import { runRetention } from "../server/ops/retention.js";
 import {
   MEDIA_ROUTE,
+  admitUpload,
+  mediaQueue,
   mediaRoute,
   recordMediaImport,
   removeProductImage,
@@ -79,6 +81,7 @@ import {
   uploadsInFlight,
 } from "../server/media.js";
 import { uploadRoute } from "../server/routes/kiosk.js";
+import { MEDIA_LIMITS } from "../shared/media.js";
 import { loadDrawers } from "../server/reports/drawers.js";
 import { restaurantOf } from "../server/reports/restaurant.js";
 import { riff, uploadBody, vp8l } from "./fixtures/webp.js";
@@ -323,7 +326,9 @@ app.use("/api/menu", (req, _res, next) => {
     who === "ownerB" ? ownerB : who === "cashier" ? cashier : owner;
   next();
 });
-uploadRoute(app, sql);
+// KF-SECURITY-1: the suite's body deadline is short enough for K17c to wait for it.
+const BODY_DEADLINE_MS = 4_000;
+uploadRoute(app, sql, { bodyDeadlineMs: BODY_DEADLINE_MS });
 app.use(
   (
     error: unknown,
@@ -2483,7 +2488,7 @@ try {
     );
   });
 
-  await test("K17c. photo upload admission (KV-SECURITY-1): one upload in flight per restaurant, decided before the body is read; a cashier is refused before it too; the slot frees when the request ends, also when it is aborted", async () => {
+  await test("K17c. photo upload admission (KV-SECURITY-1, KF-SECURITY-1/4): one upload in flight per restaurant, decided before the body is read; a cashier is refused before it too; one restaurant's stalled body never blocks another's, the process cap answers media_server_busy; a body that does not arrive in time is cut and frees its slot; the slot frees when the request ends, also when it is aborted, but not while a body that arrived still waits to be processed", async () => {
     const { request } = await import("node:http");
     const path = (productId: string) => `/api/menu/products/${productId}/image`;
     const post = async (who: string, productId: string, body: Buffer) => {
@@ -2538,11 +2543,91 @@ try {
     const b = await post("ownerB", randomUUID(), Buffer.from("not an image"));
     assert.equal(b.status, 404, JSON.stringify(b.body));
     await until(1);
+    // KF-SECURITY-1: the process cap is the other restaurants' slots, answered with its own code.
+    const others = Array.from({ length: MEDIA_LIMITS.uploadSlots - 1 }, () =>
+      admitUpload(randomUUID()),
+    );
+    assert.ok(others.every((r) => typeof r === "function"));
+    await until(MEDIA_LIMITS.uploadSlots);
+    const full = await fetch(origin + path(randomUUID()), {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        "x-gm-operation-id": randomUUID(),
+        "x-test-session": "ownerB",
+      },
+      body: Buffer.from("not an image"),
+    });
+    assert.equal(full.status, 503);
+    assert.equal(((await full.json()) as { error: string }).error, "media_server_busy");
+    assert.equal(full.headers.get("retry-after"), "5");
+    for (const r of others) (r as () => void)();
+    await until(1);
     // The aborted upload frees A's slot: the next one is admitted and parsed.
     slow.destroy();
     await until(0);
     const parsed = await post("owner", ids.taco, Buffer.from("not an image"));
     assert.match(String(parsed.body.error), /^media_(invalid|type_unsupported)$/);
+    await until(0);
+    // KF-SECURITY-1: a body that has not arrived by the deadline is cut, and its slot freed.
+    const stalled = request(origin + path(ids.taco), {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": "1000000",
+        "x-gm-operation-id": randomUUID(),
+        "x-test-session": "owner",
+      },
+    });
+    const cut = new Promise<void>((r) => {
+      stalled.on("error", () => r());
+      stalled.on("close", () => r());
+    });
+    stalled.write(Buffer.alloc(1000));
+    const admitted = Date.now();
+    await until(1);
+    assert.equal(
+      await Promise.race([
+        cut.then(() => "cut"),
+        sleep(BODY_DEADLINE_MS + 5_000).then(() => "still open"),
+      ]),
+      "cut",
+    );
+    const waited = Date.now() - admitted;
+    assert.ok(waited >= BODY_DEADLINE_MS - 200, `cut after ${waited} ms`);
+    await until(0);
+    // KF-SECURITY-4: a client that leaves after its body arrived does not free the slot while that
+    // body still waits in the upload queue; it frees when the queued work settles.
+    let open!: () => void;
+    const gate = mediaQueue.hold(() => new Promise<void>((r) => (open = r)));
+    for (let i = 0; mediaQueue.depth() !== 1; i++) {
+      assert.ok(i < 500, `queue depth ${mediaQueue.depth()}`);
+      await sleep(10);
+    }
+    const body = Buffer.from("not an image");
+    const queuedUpload = request(origin + path(ids.taco), {
+      method: "POST",
+      headers: {
+        "content-type": "application/octet-stream",
+        "content-length": String(body.length),
+        "x-gm-operation-id": randomUUID(),
+        "x-test-session": "owner",
+      },
+    });
+    queuedUpload.on("error", () => {});
+    queuedUpload.end(body);
+    for (let i = 0; mediaQueue.depth() !== 2; i++) {
+      assert.ok(i < 500, `queue depth ${mediaQueue.depth()}`);
+      await sleep(10);
+    }
+    assert.equal(uploadsInFlight(), 1);
+    queuedUpload.destroy();
+    await sleep(200);
+    assert.equal(uploadsInFlight(), 1, "the queued body keeps its slot");
+    const refused = await post("owner", ids.taco, Buffer.from("not an image"));
+    assert.equal(refused.body.error, "media_busy");
+    open();
+    await gate;
     await until(0);
   });
 

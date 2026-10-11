@@ -647,28 +647,39 @@ describe("an upload with no media store (KIOSK-OPS-1, LD-95)", () => {
   });
 });
 
-describe("photo upload admission before the body is read (KV-SECURITY-1, R8)", () => {
-  it("one upload in flight per restaurant and MEDIA_LIMITS.uploadSlots in the process; each release frees its slot once", () => {
-    expect(MEDIA_LIMITS.uploadSlots).toBe(2);
+describe("photo upload admission before the body is read (KV-SECURITY-1, R8, KF-SECURITY-1)", () => {
+  it("one upload in flight per restaurant (media_busy) and MEDIA_LIMITS.uploadSlots in the process (media_server_busy); each release frees its slot once", () => {
+    // One restaurant holds at most one slot, so it never fills the process alone; the cap bounds
+    // the bodies in memory (8 × 4 MB).
+    expect(MEDIA_LIMITS.uploadSlots).toBe(8);
+    expect(MEDIA_LIMITS.uploadSlots * MEDIA_LIMITS.maxUploadBytes).toBeLessThanOrEqual(
+      32 * 1024 * 1024,
+    );
+    expect(MEDIA_LIMITS.bodyDeadlineMs).toBe(30_000);
     expect(uploadsInFlight()).toBe(0);
     const a = admitUpload("A");
     expect(a).toBeTypeOf("function");
-    expect(admitUpload("A")).toBeNull();
-    const b = admitUpload("B");
-    expect(b).toBeTypeOf("function");
-    expect(admitUpload("C")).toBeNull();
-    expect(uploadsInFlight()).toBe(2);
-    a!();
-    a!();
+    expect(admitUpload("A")).toBe("media_busy");
     expect(uploadsInFlight()).toBe(1);
+    const others = Array.from({ length: MEDIA_LIMITS.uploadSlots - 1 }, (_, i) =>
+      admitUpload("T" + i),
+    );
+    for (const o of others) expect(o).toBeTypeOf("function");
+    expect(uploadsInFlight()).toBe(MEDIA_LIMITS.uploadSlots);
+    expect(admitUpload("C")).toBe("media_server_busy");
+    // Its own slot taken, A is media_busy whatever the process holds.
+    expect(admitUpload("A")).toBe("media_busy");
+    (a as () => void)();
+    (a as () => void)();
+    expect(uploadsInFlight()).toBe(MEDIA_LIMITS.uploadSlots - 1);
     const c = admitUpload("C");
     expect(c).toBeTypeOf("function");
     // The process is full again: A waits even though its own upload ended.
-    expect(admitUpload("A")).toBeNull();
-    b!();
-    c!();
+    expect(admitUpload("A")).toBe("media_server_busy");
+    for (const o of others) (o as () => void)();
+    (c as () => void)();
     expect(uploadsInFlight()).toBe(0);
-    admitUpload("A")!();
+    (admitUpload("A") as () => void)();
     expect(uploadsInFlight()).toBe(0);
   });
 });

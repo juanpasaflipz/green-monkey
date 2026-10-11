@@ -16,6 +16,8 @@ import {
   saveStation,
   saveSuggestions,
 } from "../kiosk-settings.js";
+import { menuPhotosEnabled } from "../kiosk-config.js";
+import { mediaStore } from "../media-store.js";
 import {
   admitUpload,
   recordMediaImport,
@@ -27,11 +29,22 @@ import { snapshotTenant } from "../reports/snapshot.js";
 
 /**
  * POST /api/menu/products/:id/image. Admission runs before express.raw (KV-SECURITY-1): an
- * owner or manager, and a free upload slot (admitUpload: one per restaurant, MEDIA_LIMITS
- * .uploadSlots per process), else the body is never read (403, 429 media_busy). Exported for the
- * kiosk DB suite, which mounts it behind its own session.
+ * owner or manager, photos on and a store configured, and a free upload slot (admitUpload: one
+ * per restaurant, MEDIA_LIMITS.uploadSlots per process), else the body is never read (403, 404
+ * media_disabled, 503 media_store_not_configured, 429 media_busy, 503 media_server_busy).
+ * KF-SECURITY-1: the body has bodyDeadlineMs to arrive, else the request is cut and its slot
+ * freed. KF-SECURITY-4: the slot is held until the upload's processing ends (the last handler),
+ * so a client that leaves after its body arrived never frees it while that body still waits in
+ * serial(); a response that ends first (a refusal before processing) and a connection closed
+ * before the body arrived free it too. Exported for the kiosk DB suite, which mounts it behind
+ * its own session (and a shorter deadline).
  */
-export function uploadRoute(app: express.Express, sql: postgres.Sql) {
+export function uploadRoute(
+  app: express.Express,
+  sql: postgres.Sql,
+  o: { bodyDeadlineMs?: number } = {},
+) {
+  const deadlineMs = o.bodyDeadlineMs ?? MEDIA_LIMITS.bodyDeadlineMs;
   const raw = express.raw({
     type: ["application/octet-stream", "image/webp"],
     limit: MEDIA_LIMITS.maxUploadBytes,
@@ -42,10 +55,31 @@ export function uploadRoute(app: express.Express, sql: postgres.Sql) {
       try {
         const s = (req as unknown as AuthRequest).session;
         permit(s, managers);
-        const release = admitUpload(s.tenantId);
-        if (!release) throw new DomainError("media_busy", 429);
-        res.on("finish", release);
-        res.on("close", release);
+        // A server that cannot store photos never reads a body or takes a slot (KF-SECURITY-1).
+        if (!menuPhotosEnabled()) throw new DomainError("media_disabled", 404);
+        if (!mediaStore())
+          throw new DomainError("media_store_not_configured", 503);
+        const admitted = admitUpload(s.tenantId);
+        if (admitted === "media_busy") throw new DomainError(admitted, 429);
+        if (admitted === "media_server_busy") {
+          res.set("Retry-After", "5");
+          throw new DomainError(admitted, 503);
+        }
+        const deadline = setTimeout(() => {
+          if (req.complete) return;
+          admitted();
+          req.destroy();
+        }, deadlineMs);
+        const release = () => {
+          clearTimeout(deadline);
+          admitted();
+        };
+        res.locals.releaseUpload = release;
+        req.once("end", () => clearTimeout(deadline));
+        res.once("finish", release);
+        res.once("close", () => {
+          if (!req.complete) release();
+        });
         next();
       } catch (e) {
         res.set("Cache-Control", "no-store");
@@ -86,6 +120,8 @@ export function uploadRoute(app: express.Express, sql: postgres.Sql) {
         );
       } catch (e) {
         next(e);
+      } finally {
+        (res.locals.releaseUpload as () => void)();
       }
     },
   );

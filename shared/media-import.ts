@@ -12,7 +12,8 @@ export const MEDIA_IMPORT_LIMITS = {
   /** After a media_rate_limited answer the import waits, then retries the same item. */
   rateLimitWaitMs: 60_000,
   rateLimitRetries: 11,
-  /** After a media_busy answer (another upload in flight, KV-SECURITY-1): a short wait, then the same item. */
+  /** After a media_busy or media_server_busy answer (another upload in flight, KV-SECURITY-1,
+   * KF-SECURITY-1): a short wait, then the same item. */
   busyWaitMs: 3_000,
   busyRetries: 20,
 } as const;

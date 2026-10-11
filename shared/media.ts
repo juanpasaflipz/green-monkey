@@ -15,10 +15,14 @@ export const MEDIA_LIMITS = {
   /** Uploads per tenant per 10 minutes (R8). */
   uploadsPerWindow: 30,
   /**
-   * Uploads in flight in one process, one per restaurant; more answer 429 media_busy before the
-   * body is read (R8, KV-SECURITY-1).
+   * Uploads in flight in one process, one per restaurant (R8, KV-SECURITY-1, KF-SECURITY-1): a
+   * restaurant's second upload answers 429 media_busy before its body is read, and an upload past
+   * the process cap 503 media_server_busy. A restaurant holds at most one slot, so its slow upload
+   * never blocks another's; 8 bodies of maxUploadBytes bound the memory.
    */
-  uploadSlots: 2,
+  uploadSlots: 8,
+  /** A body not fully arrived this long after admission is cut and frees its slot (KF-SECURITY-1). */
+  bodyDeadlineMs: 30_000,
   /** The upload body (three variants). */
   maxUploadBytes: 4 * 1024 * 1024,
   /** Removed assets are purged 7 days later; an upload left half-done is swept after 1 hour. */
