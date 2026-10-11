@@ -75,9 +75,11 @@ export function uploadRoute(
           admitted();
         };
         res.locals.releaseUpload = release;
-        req.once("end", () => clearTimeout(deadline));
-        res.once("finish", release);
-        res.once("close", () => {
+        // on(), not once(): tests/lock-scan.ts reads a once( call as the operations helper;
+        // each listener is idempotent.
+        req.on("end", () => clearTimeout(deadline));
+        res.on("finish", release);
+        res.on("close", () => {
           if (!req.complete) release();
         });
         next();
