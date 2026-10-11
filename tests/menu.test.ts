@@ -1056,3 +1056,22 @@ describe("LD-28: the fiscal product rate rule a restore reuses (restore wiring: 
     );
   });
 });
+
+describe("the product editor after a photo change (KF-SECURITY-2, KF-SECURITY-3)", () => {
+  it("adopts the photo's version only when the photo was the one change since the editor opened; otherwise keeps its own, so «Guardar» and «Archivar» meet menu_changed", async () => {
+    const { versionAfterPhoto } = await import(
+      "../src/features/menu/ProductEditor"
+    );
+    // 7 → the photo → 8: the editor's form is the product but for the photo.
+    expect(versionAfterPhoto(7, 8)).toEqual({ version: 8, changed: false });
+    // Another device saved 7 → 8, then the photo 8 → 9: the form still holds 7's fields.
+    expect(versionAfterPhoto(7, 9)).toEqual({ version: 7, changed: true });
+    expect(versionAfterPhoto(7, 12)).toEqual({ version: 7, changed: true });
+    // Two photo changes in one editor: each is one step from the version the editor follows.
+    const first = versionAfterPhoto(7, 8);
+    expect(versionAfterPhoto(first.version, 9)).toEqual({
+      version: 9,
+      changed: false,
+    });
+  });
+});

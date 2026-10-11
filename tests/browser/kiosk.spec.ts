@@ -698,6 +698,124 @@ test("menu photos @cross: the owner uploads through «Subir foto» (no EXIF reac
   ).toBe(404);
 });
 
+test("menu photos and concurrent edits (KF-SECURITY-2, KF-SECURITY-3): «Archivar» right after «Subir foto» archives; a photo uploaded after another device saved the product leaves the editor on its version, so «Guardar» says «El menú cambió» and never overwrites that save", async ({
+  page,
+}) => {
+  test.setTimeout(150_000);
+  await login(page);
+  const caps = await call(page, "/capabilities");
+  test.skip(!photosReady(caps), "needs MEDIA_STORE (fs in local runs and CI)");
+  const menu = await call(page, "/menu");
+  const category = menu.categories.find((c: any) => !c.archived);
+  const name = "Foto concurrente " + tag();
+  const fields = {
+    name: { es: name, en: name },
+    categoryId: category.id,
+    kind: "item",
+    openAmount: false,
+    openMax: null,
+    station: "kitchen",
+    available: true,
+    groupIds: [],
+    recipe: [],
+    cost: null,
+  };
+  const id = uuid();
+  await call(page, "/menu/products/save", {
+    operationId: uuid(),
+    id,
+    expectedVersion: 0,
+    price: 4000,
+    ...fields,
+  });
+  const current = async () =>
+    (await call(page, "/menu")).products.find((x: any) => x.id === id);
+  const openEditor = async () => {
+    await page
+      .getByRole("button", { name: "Menú e inventario", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: `Editar ${name}`, exact: true })
+      .click();
+    const editor = page.getByRole("dialog", { name: "Editar producto" });
+    await expect(editor).toBeVisible();
+    return editor;
+  };
+  const upload = async (editor: ReturnType<Page["getByRole"]>) => {
+    const before = await current();
+    await editor.getByLabel(/^(Subir|Cambiar) foto$/).setInputFiles({
+      name: "foto.png",
+      mimeType: "image/png",
+      buffer: pngWithExif(640, 480),
+    });
+    await expect
+      .poll(async () => (await current()).version, { timeout: 60_000 })
+      .toBe(before.version + 1);
+    await expect(editor.locator("img.menu-photo-preview")).toHaveAttribute(
+      "src",
+      /^\/media\/[0-9a-f-]{36}\/card\.(webp|jpg)$/,
+      { timeout: 60_000 },
+    );
+  };
+  try {
+    // KF-SECURITY-3: the photo moved the version; «Archivar» sends the one the editor follows.
+    let editor = await openEditor();
+    await upload(editor);
+    await editor.getByRole("button", { name: "Archivar", exact: true }).click();
+    await page
+      .getByRole("dialog", { name: `Archivar ${name}` })
+      .getByRole("button", { name: "Archivar", exact: true })
+      .click();
+    await expect(editor).toHaveCount(0);
+    let product = await current();
+    expect(product.archived).toBe(true);
+    await call(page, "/menu/products/archive", {
+      operationId: uuid(),
+      id,
+      expectedVersion: product.version,
+      archived: false,
+    });
+    // KF-SECURITY-2: the editor opens; another device raises the price; then a photo here.
+    await page.reload();
+    editor = await openEditor();
+    product = await current();
+    await call(page, "/menu/products/save", {
+      operationId: uuid(),
+      id,
+      expectedVersion: product.version,
+      price: 4500,
+      ...fields,
+    });
+    await upload(editor);
+    const alert = editor.getByRole("alert");
+    await expect(alert).toContainText("Alguien más cambió este elemento");
+    await expect(
+      alert.getByRole("button", { name: "Recargar", exact: true }),
+    ).toBeVisible();
+    await editor.getByRole("button", { name: "Guardar", exact: true }).click();
+    await expect(alert).toContainText("Alguien más cambió este elemento");
+    await expect(editor).toBeVisible();
+    expect((await current()).price).toBe(4500);
+    await alert.getByRole("button", { name: "Recargar", exact: true }).click();
+    await expect(editor).toHaveCount(0);
+  } finally {
+    const p = await current();
+    if (p?.image)
+      await call(page, `/menu/products/${id}/image/remove`, {
+        operationId: uuid(),
+        expectedVersion: p.version,
+      });
+    const q = await current();
+    if (q && !q.archived)
+      await call(page, "/menu/products/archive", {
+        operationId: uuid(),
+        id,
+        expectedVersion: q.version,
+        archived: true,
+      });
+  }
+});
+
 test("Importar fotos: the owner picks a manifest and generated photos, reviews the proposed products (an unmatched item and a missing file are reported), imports through the normal upload, and a second run imports nothing new", async ({
   page,
 }) => {

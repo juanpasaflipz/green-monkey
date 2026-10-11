@@ -47,6 +47,23 @@ export type ProductPreset = {
 };
 
 /**
+ * The version the editor follows after a photo upload or removal (KF-SECURITY-2; pure,
+ * tests/menu.test.ts). The photo's command bumps the product's version by one; the
+ * editor's form, opened at `editing`, still holds the rest of the product as it was then. Only
+ * when the photo was the one change since then (`after` is `editing` + 1) does the editor adopt
+ * `after`. Otherwise someone else saved the product meanwhile: the editor keeps `editing`, so
+ * «Guardar» and «Archivar» meet menu_changed (and «Recargar») instead of overwriting that save.
+ */
+export function versionAfterPhoto(
+  editing: number,
+  after: number,
+): { version: number; changed: boolean } {
+  return after === editing + 1
+    ? { version: after, changed: false }
+    : { version: editing, changed: true };
+}
+
+/**
  * Wide product editor. One operationId per open dialog, reused for retries, so
  * a save whose response was lost replays instead of saving twice.
  */
@@ -283,7 +300,8 @@ export function ProductEditor({
   async function archive(archived: boolean) {
     if (!product) return;
     setError("");
-    let current: Product | null = product;
+    // The version the editor follows, also after a photo change (KF-SECURITY-3).
+    let current: Product | null = { ...product, image, version };
     // Restoring into an archived category: save the newly chosen one first.
     if (!archived && categoryId !== product.categoryId) current = await save();
     if (!current) return;
@@ -693,7 +711,13 @@ export function ProductEditor({
                 disabled={!online || busy}
                 onChanged={(r) => {
                   setImage(r.image ?? null);
-                  setVersion(r.version);
+                  // KF-SECURITY-2: the version only with the base it belongs to.
+                  const next = versionAfterPhoto(version, r.version);
+                  setVersion(next.version);
+                  if (next.changed) {
+                    setStale(true);
+                    setError(translateError("menu_changed", locale));
+                  }
                   onPhoto?.();
                 }}
               />
