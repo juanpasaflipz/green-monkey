@@ -59,6 +59,48 @@ export function stepFor(
 export const CHARGE_REPLAYS = 2;
 
 /**
+ * Whether a failed request says nothing of what the server did (KF-MONEY-2; pure,
+ * tests/kiosk.test.ts): the network, a timeout, a 5xx, or a limiter's 429, which answers before
+ * the handler, so the first request may well have started the charge. Never a refusal.
+ */
+export function transientAnswer(e: unknown): boolean {
+  return (
+    e instanceof ApiError && (e.transient || e.message === "rate_limited")
+  );
+}
+
+/**
+ * The charging poll's replays (KF-MONEY-2; pure, tests/kiosk.test.ts): one at a time, at most
+ * every KIOSK_IDLE.chargeReplayMs, which fits the per-link charge limiter. A replay's answer counts
+ * only while it still speaks for the charge the kiosk follows: the start is unconfirmed and its
+ * operation id is the current one (a later tick or a new «Pagar con tarjeta» may have moved on).
+ */
+export function replayDue(inFlight: boolean, sinceLastMs: number): boolean {
+  return !inFlight && sinceLastMs >= KIOSK_IDLE.chargeReplayMs;
+}
+export function replayCurrent(
+  sentOp: string,
+  currentOp: string | null,
+  unconfirmed: boolean,
+): boolean {
+  return unconfirmed && sentOp === currentOp;
+}
+
+/**
+ * What the walk-away reset does when its cancel is refused (KF-MONEY-2; pure, tests/kiosk.test.ts):
+ * like the exits, a charge that may still be taken is followed on the terminal screen, never left
+ * armed behind a reset; anything else (a lost answer too: the hold expires) resets.
+ */
+export function idleResetRefusal(
+  code: string,
+  transient: boolean,
+): "follow" | "reset" {
+  return exitRefusal("cancel", code, transient) === "follow"
+    ? "follow"
+    : "reset";
+}
+
+/**
  * What the kiosk does with a failed POST /kiosk/charge (KV-FIXES-2; pure, tests/kiosk.test.ts).
  * A transient failure (network, timeout, 5xx) may have started the charge and armed the reader:
  * the same operation id is sent again (the server answers a replay with that attempt), and after
@@ -70,7 +112,8 @@ export function chargeFailure(
   transient: boolean,
   replays: number,
 ): "replay" | "follow" | "refused" | "expired" | "unavailable" {
-  if (transient) return replays < CHARGE_REPLAYS ? "replay" : "follow";
+  if (transient || code === "rate_limited")
+    return replays < CHARGE_REPLAYS ? "replay" : "follow";
   if (code === "kiosk_charge_pending") return "follow";
   if (code === "public_price_changed" || code === "unavailable")
     return "refused";
@@ -90,7 +133,8 @@ export function exitRefusal(
   code: string,
   transient: boolean,
 ): "follow" | "counter" | "expired" | "stay" | "reset" {
-  if (transient) return "stay";
+  // A limiter's 429 answers before the handler: like a lost answer (KF-MONEY-2).
+  if (transient || code === "rate_limited") return "stay";
   if (code === "kiosk_charge_pending" || code === "kiosk_charge_in_progress")
     return "follow";
   if (code === "kiosk_hold_at_counter") return "counter";
@@ -343,7 +387,7 @@ export function KioskCheckout(p: Props) {
       } else setStep("pay");
     } catch (e) {
       const code = (e as Error).message;
-      if (e instanceof ApiError && e.transient) {
+      if (transientAnswer(e)) {
         // The order may have arrived: the same keys are sent again on retry.
         setError(guestError(code, p.locale));
         setStep(p.kiosk.askFulfillment ? "fulfillment" : "submitting");
@@ -372,11 +416,7 @@ export function KioskCheckout(p: Props) {
   /** «Pagar en caja» or «Cancelar pedido» refused (exitRefusal). */
   function exitRefused(action: "counter" | "cancel", e: unknown) {
     const code = (e as Error).message;
-    const next = exitRefusal(
-      action,
-      code,
-      e instanceof ApiError && e.transient,
-    );
+    const next = exitRefusal(action, code, transientAnswer(e));
     if (next === "follow") followCharge();
     else if (next === "counter") toCounterScreen(hold!);
     else if (next === "expired") p.onRefused(t.kioskOrderExpired, code);
@@ -482,7 +522,7 @@ export function KioskCheckout(p: Props) {
           return;
         } catch (e) {
           const code = (e as Error).message;
-          const transient = e instanceof ApiError && e.transient;
+          const transient = transientAnswer(e);
           const next = chargeFailure(code, transient, replays);
           if (next === "replay") {
             // The answer was lost, not the charge: the same operation id again (KV-FIXES-2).
@@ -511,6 +551,11 @@ export function KioskCheckout(p: Props) {
     const started = Date.now();
     let failures = 0;
     let cancelled = false;
+    // KF-MONEY-2: one replay in flight at a time, spaced to fit the charge limiter (replayDue);
+    // a replay's answer from a screen the kiosk has left is dropped.
+    let stopped = false;
+    let replaying = false;
+    let lastReplay = -Infinity;
     const timer = setInterval(async () => {
       // A start whose answer was lost replays its own operation id until the server answers
       // (KV-FIXES-2); never once the kiosk asked to cancel, so a late replay arms no reader.
@@ -519,37 +564,50 @@ export function KioskCheckout(p: Props) {
           ? chargeOp.current
           : null;
       if (!replay) unconfirmed.current = false;
-      try {
-        const v = replay
-          ? await kioskApi.charge(p.token, keys.current.statusKey, replay)
-          : await kioskApi.sync(p.token, keys.current.statusKey);
-        if (!live.current) return;
-        if (replay) unconfirmed.current = false;
-        failures = 0;
-        setOffline(false);
-        setView(v);
-        const next = stepFor(v, step);
-        if (next) {
-          if (next === "declined") {
-            setFailedOnce(true);
-            say(t.kioskDeclined);
-          }
-          if (next === "paid") say(fill(t.kioskPaid, { label: v.label }));
-          setStep(next);
-          return;
-        }
-      } catch (e) {
-        if (!live.current) return;
-        if (replay && !(e instanceof ApiError && e.transient)) {
-          // The server's own answer to the start: it refused, so no charge was taken.
-          unconfirmed.current = false;
-          void chargeRefused((e as Error).message);
-          return;
-        }
-        failures += 1;
-        if (failures >= 2) setOffline(true);
+      const send = !replay || replayDue(replaying, Date.now() - lastReplay);
+      if (replay && send) {
+        replaying = true;
+        lastReplay = Date.now();
       }
-      if (!live.current) return;
+      // A replay's answer counts only while it speaks for the charge the kiosk follows.
+      const stale = () =>
+        stopped ||
+        (replay !== null &&
+          !replayCurrent(replay, chargeOp.current, unconfirmed.current));
+      if (send)
+        try {
+          const v = replay
+            ? await kioskApi.charge(p.token, keys.current.statusKey, replay)
+            : await kioskApi.sync(p.token, keys.current.statusKey);
+          if (!live.current || stale()) return;
+          if (replay) unconfirmed.current = false;
+          failures = 0;
+          setOffline(false);
+          setView(v);
+          const next = stepFor(v, step);
+          if (next) {
+            if (next === "declined") {
+              setFailedOnce(true);
+              say(t.kioskDeclined);
+            }
+            if (next === "paid") say(fill(t.kioskPaid, { label: v.label }));
+            setStep(next);
+            return;
+          }
+        } catch (e) {
+          if (!live.current || stale()) return;
+          if (replay && !transientAnswer(e)) {
+            // The server's own answer to the start: it refused, so no charge was taken.
+            unconfirmed.current = false;
+            void chargeRefused((e as Error).message);
+            return;
+          }
+          failures += 1;
+          if (failures >= 2) setOffline(true);
+        } finally {
+          if (replay) replaying = false;
+        }
+      if (!live.current || stopped) return;
       // The clock runs whether the sync answered or not (KIOSK-UX-22).
       const action = terminalWaitAction(step, Date.now() - started, cancelled);
       if (action === "cancel") {
@@ -561,7 +619,10 @@ export function KioskCheckout(p: Props) {
         else setStep("still");
       } else if (action === "askCounter") setStep("askCounter");
     }, KIOSK_IDLE.pollMs);
-    return () => clearInterval(timer);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
   }, [step]);
 
   // «Cancelar cobro» after a while on the charging screen (KIOSK-UX-03).
@@ -580,10 +641,24 @@ export function KioskCheckout(p: Props) {
     if (resetAt === null) return;
     // The guest walked away from the card checkout: the hold is cancelled, so staff never see an
     // unpaid order to send to the kitchen (KIOSK-MONEY-3). Best effort: one that stays expires.
+    // A cancel refused because a charge may still be taken follows it on the terminal screen,
+    // like the exits (KF-MONEY-2): the reset never leaves a reader armed behind the start screen.
     const onReset = () => {
-      if (cancelsOnReset(step, latest.current))
-        void kioskApi.cancel(p.token, keys.current.statusKey).catch(() => {});
-      p.onDone();
+      if (!cancelsOnReset(step, latest.current)) return p.onDone();
+      kioskApi.cancel(p.token, keys.current.statusKey).then(
+        () => {
+          if (live.current) p.onDone();
+        },
+        (e: unknown) => {
+          if (!live.current) return;
+          const next = idleResetRefusal(
+            (e as Error).message,
+            transientAnswer(e),
+          );
+          if (next === "follow") followCharge();
+          else p.onDone();
+        },
+      );
     };
     const c = createIdleController({
       warnAfterMs: warnAt,

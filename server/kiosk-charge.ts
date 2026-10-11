@@ -67,6 +67,28 @@ export function dinerChargeError(e: unknown): unknown {
 }
 
 /**
+ * KF-MONEY-2: whether a POST /kiosk/charge replays an operation id that already started an attempt
+ * for a hold of this link. The charge limiter lets such a replay through (it starts nothing): the
+ * kiosk gets its attempt back, never a 429 it could take for the server's refusal. One read of
+ * payment_attempts_kiosk_operation, asked only once a request is over the per-link limit.
+ */
+export async function kioskChargeReplay(
+  sql: postgres.Sql,
+  tenantId: string,
+  linkId: string,
+  raw: unknown,
+): Promise<boolean> {
+  const p = kioskChargeInput.safeParse(raw);
+  if (!p.success) return false;
+  return tenant(sql, tenantId, async (tx) => {
+    const [r] = await tx`select 1 from payment_attempts a
+        join public_order_holds h on h.tenant_id=a.tenant_id and h.id=a.hold_id
+      where a.operation_id=${p.data.operationId} and a.origin='kiosk' and h.link_id=${linkId}`;
+    return Boolean(r);
+  });
+}
+
+/**
  * POST /api/public/kiosk/charge: "Pagar aquí con tarjeta". Re-quotes the hold against the menu
  * now (public_price_changed / unavailable: the kiosk refreshes and marks the lines), then starts
  * one payments attempt for the exact quote on the station's terminal, bound to the hold. A replay
@@ -82,17 +104,27 @@ export async function kioskStartCharge(
   const p = kioskChargeInput.parse(raw);
   // LO-1: the diner's attempt key (disjoint from staff once() keys).
   await tx`select pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id')||':public-op:'||${p.operationId},0))`;
-  const { station, device, state } = await requireDevice(tx, linkId, secret);
+  // KF-MONEY-2: a replay gets its attempt back before the device and the link are judged, so a
+  // replay after «Desvincular» or a link rotation reads the charge it started, never a refusal
+  // (what it returns, the status key's checkout, GET /kiosk/checkout gives without a device).
   const [prior] =
     await tx`select hold_id from payment_attempts where operation_id=${p.operationId} and origin='kiosk'`;
-  // LO-2 then LO-2b: the restaurant row, the hold, then its checkout.
-  await tx`select id from restaurants where id=current_setting('app.tenant_id')::uuid for share`;
-  const { h, c } = await lockKioskHold(tx, linkId, p.statusKey);
   if (prior) {
+    // LO-2 then LO-2b: the restaurant row, the hold, then its checkout.
+    await tx`select id from restaurants where id=current_setting('app.tenant_id')::uuid for share`;
+    const { h, c } = await lockKioskHold(tx, linkId, p.statusKey);
     if (prior.hold_id !== h.id)
       throw new DomainError("operation_conflict", 409);
     return checkoutView(tx, h, c);
   }
+  // A new charge: only on the active link (the route resolves revoked ones for the replay above).
+  const [active] =
+    await tx`select 1 from public_links where id=${linkId} and revoked_at is null`;
+  if (!active) throw new DomainError("public_link_invalid", 404);
+  const { station, device, state } = await requireDevice(tx, linkId, secret);
+  // LO-2 then LO-2b: the restaurant row, the hold, then its checkout.
+  await tx`select id from restaurants where id=current_setting('app.tenant_id')::uuid for share`;
+  const { h, c } = await lockKioskHold(tx, linkId, p.statusKey);
   if (c.station_id !== station.id || (c.device_id && c.device_id !== device.id))
     throw new DomainError("kiosk_device_required", 403);
   if (!state.card || !state.terminal)

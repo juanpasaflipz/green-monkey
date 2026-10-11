@@ -94,7 +94,11 @@ import {
   inboxActions,
   kioskInboxState,
 } from "../shared/public-ordering.js";
-import { KIOSK_COOKIE, type KioskCheckoutView } from "../shared/kiosk.js";
+import {
+  KIOSK_COOKIE,
+  KIOSK_RATES,
+  type KioskCheckoutView,
+} from "../shared/kiosk.js";
 // The kiosk screen's own step rule, fed the server's views (KIOSK-UX-22).
 import { stepFor } from "../src/features/public/kiosk/KioskCheckout.js";
 import type { SessionAccess } from "../shared/access.js";
@@ -1347,6 +1351,79 @@ try {
     assert.equal(
       (h.lines as any[]).filter((l) => l.origin === "suggestion").length,
       1,
+    );
+  });
+
+  await test("K9b. a replay always gets its attempt back (KF-MONEY-2): past the per-link charge limit, after a link rotation and after «Desvincular»; a new operation id is still limited, needs the active link and the paired tablet", async () => {
+    const k = await newKiosk("Replays " + run);
+    await configure(k, terminals.clip);
+    await pair(k);
+    const o = await order(k, [line(ids.taco)], 4500);
+    const op = randomUUID();
+    // One network, as a kiosk on the restaurant's Wi-Fi: the per-link limit applies to it.
+    const net = "198.18.9.9";
+    const start = (link: string, operationId: string, ip = net) =>
+      call("POST", "/kiosk/charge", {
+        link,
+        tablet: k.tablet,
+        body: { operationId, statusKey: o.key },
+        ip,
+      });
+    const first = await start(k.link, op);
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    // The limiter answers before the handler; a replay of a started charge passes it.
+    for (let i = 0; i < KIOSK_RATES.chargePerIpLink + 2; i += 1) {
+      const r = await start(k.link, op);
+      assert.equal(r.status, 200, `replay ${i}: ${JSON.stringify(r.body)}`);
+      assert.equal(r.body.payment.state, "pending");
+      assert.equal(r.body.payment.attempts, 1);
+    }
+    // A new start over the limit is still refused by it, and starts nothing.
+    const over = await start(k.link, randomUUID());
+    assert.equal(over.status, 429, JSON.stringify(over.body));
+    assert.equal(over.body.error, "rate_limited");
+    assert.equal((await holdOf(o.key)).attempt_count, 1);
+    // A rotation revokes the kiosk's token: its replay still reads the attempt; a new start is
+    // public_link_invalid as before.
+    const rotated = await write(manager, (tx) =>
+      rotateLink(tx, manager, k.linkId),
+    );
+    const afterRotation = await start(k.link, op, "198.18.9.10");
+    assert.equal(
+      afterRotation.status,
+      200,
+      JSON.stringify(afterRotation.body),
+    );
+    assert.equal(afterRotation.body.payment.attempts, 1);
+    assert.equal(
+      (await start(k.link, randomUUID(), "198.18.9.11")).body.error,
+      "public_link_invalid",
+    );
+    // «Desvincular»: the tablet's binding is gone; the replay still reads the attempt, a new
+    // start needs the paired tablet.
+    const device = await one(
+      A,
+      (tx) =>
+        tx`select id from kiosk_devices where station_id=${k.stationId} and revoked_at is null`,
+    );
+    await write(manager, (tx) =>
+      revokeKioskDevice(tx, manager, device.id, { operationId: randomUUID() }),
+    );
+    const afterUnpair = await start(k.link, op, "198.18.9.12");
+    assert.equal(afterUnpair.status, 200, JSON.stringify(afterUnpair.body));
+    assert.equal(afterUnpair.body.payment.attempts, 1);
+    assert.equal(
+      (await start(rotated.token, randomUUID(), "198.18.9.13")).body.error,
+      "kiosk_device_required",
+    );
+    assert.equal((await holdOf(o.key)).attempt_count, 1);
+    // The terminal is free for the next legs.
+    const a = await attemptOf(o.key);
+    await drive(a.id, ["pending"]);
+    fake.decline(fake.chargeFor(a.id)!.id);
+    await drive(a.id, ["declined"]);
+    await write(manager, (tx) =>
+      revokeLink(tx, manager, rotated.id, { operationId: randomUUID() }),
     );
   });
 

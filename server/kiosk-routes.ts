@@ -29,6 +29,7 @@ import {
 import { kioskAccept } from "./kiosk-accept.js";
 import {
   kioskCancelCharge,
+  kioskChargeReplay,
   kioskStartCharge,
   kioskSync,
 } from "./kiosk-charge.js";
@@ -96,6 +97,13 @@ export function kioskDinerRouter(sql: postgres.Sql) {
   const chargeLink = publicLimiter("kiosk-charge", {
     limit: KIOSK_RATES.chargePerIpLink,
     scope: link,
+    // KF-MONEY-2: a replay of a charge the kiosk already started (POST /charge, not its cancel)
+    // passes once over the limit and gets its attempt back. chargeIp still bounds every request.
+    pass: async (req) => {
+      if (req.path !== "/charge") return false;
+      const l = await kioskLink(sql, req, true);
+      return kioskChargeReplay(sql, l.tenantId, l.linkId, req.body);
+    },
   });
   const counterIp = publicLimiter("kiosk-counter-ip", {
     limit: KIOSK_RATES.counterPerIp,
@@ -216,7 +224,9 @@ export function kioskDinerRouter(sql: postgres.Sql) {
     chargeIp,
     chargeLink,
     run(async (req) => {
-      const l = await kioskLink(sql, req);
+      // Any link: a replay gets its attempt back after a rotation; a new charge needs the active
+      // one (kioskStartCharge, KF-MONEY-2).
+      const l = await kioskLink(sql, req, true);
       const out = await tenant(sql, l.tenantId, (tx) =>
         kioskStartCharge(tx, l.linkId, req.body, secretOf(req)),
       );

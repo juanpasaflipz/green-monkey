@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   KIOSK_IDLE,
   KIOSK_LIMITS,
+  KIOSK_RATES,
   KIOSK_SETTLE_CODES,
   idleDeadline,
   kioskLineInput,
@@ -53,7 +54,11 @@ import {
   chargeFailure,
   checkoutIdle,
   exitRefusal,
+  idleResetRefusal,
   memberLookupOpen,
+  replayCurrent,
+  replayDue,
+  transientAnswer,
   stepAnnouncement,
   stepFor,
   terminalWaitAction,
@@ -66,6 +71,7 @@ import {
   pickedLine,
 } from "../src/features/public/DinerApp";
 import { createIdleController } from "../src/features/public/kioskIdle";
+import { ApiError } from "../src/api";
 import { priceCart } from "../shared/service";
 import {
   heartbeatBuild,
@@ -372,6 +378,50 @@ describe("the checkout's next step while charging", () => {
       "kiosk_till_closed",
     ])
       expect(chargeFailure(code, false, 0), code).toBe("unavailable");
+  });
+
+  it("KF-MONEY-2: a limiter's 429 is never the server's refusal; replays go one at a time within the charge limit; stale replay answers and the walk-away reset never drop a live charge", () => {
+    // The limiter answers before the handler: the start may have been taken.
+    for (let replays = 0; replays < CHARGE_REPLAYS; replays += 1)
+      expect(chargeFailure("rate_limited", false, replays)).toBe("replay");
+    expect(chargeFailure("rate_limited", false, CHARGE_REPLAYS)).toBe("follow");
+    for (const action of ["counter", "cancel"] as const)
+      expect(exitRefusal(action, "rate_limited", false)).toBe("stay");
+    expect(transientAnswer(new ApiError("rate_limited", 429, "domain"))).toBe(
+      true,
+    );
+    expect(
+      transientAnswer(new ApiError("request_timeout", 0, "timeout")),
+    ).toBe(true);
+    expect(
+      transientAnswer(new ApiError("kiosk_terminal_busy", 409, "domain")),
+    ).toBe(false);
+    expect(transientAnswer(new Error("rate_limited"))).toBe(false);
+    // One replay in flight at a time, spaced so a minute of them fits the per-link limit.
+    expect(replayDue(false, Infinity)).toBe(true);
+    expect(replayDue(true, Infinity)).toBe(false);
+    expect(replayDue(false, KIOSK_IDLE.chargeReplayMs - 1)).toBe(false);
+    expect(replayDue(false, KIOSK_IDLE.chargeReplayMs)).toBe(true);
+    expect(
+      KIOSK_IDLE.chargeReplayMs * KIOSK_RATES.chargePerIpLink,
+    ).toBeGreaterThanOrEqual(60_000);
+    expect(KIOSK_IDLE.chargeReplayMs).toBeGreaterThan(KIOSK_IDLE.pollMs);
+    // A replay's answer counts only for the charge the kiosk still follows.
+    expect(replayCurrent("op-1", "op-1", true)).toBe(true);
+    expect(replayCurrent("op-1", "op-1", false)).toBe(false);
+    expect(replayCurrent("op-1", "op-2", true)).toBe(false);
+    expect(replayCurrent("op-1", null, true)).toBe(false);
+    // The walk-away reset follows a charge the server says may still be taken, like the exits.
+    expect(idleResetRefusal("kiosk_charge_in_progress", false)).toBe("follow");
+    expect(idleResetRefusal("kiosk_charge_pending", false)).toBe("follow");
+    for (const [code, transient] of [
+      ["network_unavailable", true],
+      ["rate_limited", false],
+      ["public_order_not_pending", false],
+      ["kiosk_hold_at_counter", false],
+      ["public_order_expired", false],
+    ] as const)
+      expect(idleResetRefusal(code, transient), code).toBe("reset");
   });
 
   it("KV-FIXES-2, KV-FIXES-1, KV-FIXES-7: «Pagar en caja» and «Cancelar pedido» follow a live charge, never reset over it", () => {

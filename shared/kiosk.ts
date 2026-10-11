@@ -62,6 +62,9 @@ export const KIOSK_IDLE = {
   chargeSuspendMaxMs: 300_000,
   /** The kiosk polls its checkout every 2 s while charging. */
   pollMs: 2_000,
+  /** A charge start whose answer was lost is replayed one at a time, at most every 10 s: 6 a
+   * minute, within KIOSK_RATES.chargePerIpLink (KF-MONEY-2; tests/kiosk.test.ts). */
+  chargeReplayMs: 10_000,
   /** «Cancelar cobro» appears on «Sigue las instrucciones en la terminal» after 20 s (KIOSK-UX-03). */
   cancelOfferMs: 20_000,
   /** No final status after 3 minutes: the kiosk asks payments to cancel. */
