@@ -17,6 +17,7 @@ import {
   URL_NAMESPACE,
 } from "./scenario.js";
 import { RESTAURANT_P } from "./scenario-p.js";
+import { RESTAURANT_S } from "./scenario-s.js";
 import {
   allowing,
   checkpoint,
@@ -34,7 +35,8 @@ type Restaurant =
   | typeof RESTAURANT_A
   | typeof RESTAURANT_B
   | typeof RESTAURANT_L
-  | typeof RESTAURANT_P;
+  | typeof RESTAURANT_P
+  | typeof RESTAURANT_S;
 
 /** RFC 4122 UUIDv5 (§3.7: Google subjects). */
 export function uuidv5(name: string, namespace = URL_NAMESPACE) {
@@ -341,12 +343,10 @@ async function fiscalProfile(
       .check();
     await save.click();
     await expect(
-      panel
-        .getByRole("alert")
-        .filter({
-          hasText:
-            "Confirma que la sucursal está en la región fronteriza y en el padrón del estímulo.",
-        }),
+      panel.getByRole("alert").filter({
+        hasText:
+          "Confirma que la sucursal está en la región fronteriza y en el padrón del estímulo.",
+      }),
     ).toBeVisible();
     await panel
       .getByRole("checkbox", {
@@ -655,11 +655,9 @@ async function modifierGroups(
       await checkpoint(owner, checkpointId, { settle: dialog });
     await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
     await expect(dialog).toHaveCount(0);
-    const card = page
-      .locator(".menu-group-card")
-      .filter({
-        has: page.getByRole("heading", { name: g.name, exact: true }),
-      });
+    const card = page.locator(".menu-group-card").filter({
+      has: page.getByRole("heading", { name: g.name, exact: true }),
+    });
     await expect(card.locator(".menu-rule")).toHaveText(g.ruleText);
     await expect(
       card.getByText("Se usa en 0 productos", { exact: true }),
@@ -746,11 +744,9 @@ async function categoriesAndProducts(
         .getByRole("button", { name: "Guardar", exact: true })
         .click();
       await expect(
-        dialog
-          .getByRole("alert")
-          .filter({
-            hasText: "Un combo necesita al menos un grupo obligatorio.",
-          }),
+        dialog.getByRole("alert").filter({
+          hasText: "Un combo necesita al menos un grupo obligatorio.",
+        }),
       ).toBeVisible();
       await dialog.getByRole("button", { name: "Quitar grupo Extras" }).click();
       for (const gid of p.groups) {
@@ -880,13 +876,11 @@ async function proGranted(owner: Device, runId: string, businessDate: string) {
 
 /** A product row in Menú → Productos. */
 function productRow(page: Page, name: string) {
-  return page
-    .locator("li.menu-row")
-    .filter({
-      has: page.locator("strong", {
-        hasText: new RegExp(`^${escapeRe(name)}$`),
-      }),
-    });
+  return page.locator("li.menu-row").filter({
+    has: page.locator("strong", {
+      hasText: new RegExp(`^${escapeRe(name)}$`),
+    }),
+  });
 }
 
 /** A7.c1, A7.c2 and the group usage counts after A7. */
@@ -930,11 +924,9 @@ async function productChecks(owner: Device, r: Restaurant) {
   for (const p of r.products)
     for (const g of p.groups) uses[g] = (uses[g] ?? 0) + 1;
   for (const g of r.groups) {
-    const card = page
-      .locator(".menu-group-card")
-      .filter({
-        has: page.getByRole("heading", { name: g.name, exact: true }),
-      });
+    const card = page.locator(".menu-group-card").filter({
+      has: page.getByRole("heading", { name: g.name, exact: true }),
+    });
     await expect(
       card.getByText(`Se usa en ${uses[g.id] ?? 0} productos`, { exact: true }),
     ).toBeVisible();
@@ -1038,13 +1030,11 @@ export async function openDrawer(
 
 /** A product card in Vender (its accessible name starts with the category). */
 export function productCard(page: Page, name: string) {
-  return page
-    .locator("button.product")
-    .filter({
-      has: page.locator("strong", {
-        hasText: new RegExp(`^${escapeRe(name)}$`),
-      }),
-    });
+  return page.locator("button.product").filter({
+    has: page.locator("strong", {
+      hasText: new RegExp(`^${escapeRe(name)}$`),
+    }),
+  });
 }
 
 export async function setupA(dev: Devices, state: RunState, save: () => void) {
@@ -1144,11 +1134,9 @@ export async function setupA(dev: Devices, state: RunState, save: () => void) {
         .getByRole("button", { name: "Vincular", exact: true })
         .click();
       await expect(
-        probe.page
-          .getByRole("alert")
-          .filter({
-            hasText: "El código no es válido o ya venció. Pide uno nuevo.",
-          }),
+        probe.page.getByRole("alert").filter({
+          hasText: "El código no es válido o ya venció. Pide uno nuevo.",
+        }),
       ).toBeVisible();
     },
   );
@@ -1192,13 +1180,11 @@ export async function setupA(dev: Devices, state: RunState, save: () => void) {
   await openSettings(owner.page);
   const list = owner.page.getByRole("region", { name: "Dispositivos" });
   const device = (name: string) =>
-    list
-      .locator("li.device-row")
-      .filter({
-        has: owner.page.locator("strong", {
-          hasText: new RegExp(`^${escapeRe(name)}$`),
-        }),
-      });
+    list.locator("li.device-row").filter({
+      has: owner.page.locator("strong", {
+        hasText: new RegExp(`^${escapeRe(name)}$`),
+      }),
+    });
   await expect(device("Caja 1")).toContainText("Terminal compartida");
   await expect(device("Caja 1")).toContainText("Activo");
   await expect(device("Caja 1")).toContainText(`En uso por ${diego.name}`);
@@ -1428,5 +1414,51 @@ export async function setupP(dev: Devices, state: RunState, save: () => void) {
     caja.page.getByRole("heading", { name: "Vender", level: 1 }),
   ).toBeVisible();
   run.step = "P2.4";
+  await openDrawer(caja, r.openingCash);
+}
+
+/**
+ * Branch S (kiosk self-checkout, 039; LD-80, LD-89): Restaurant S, created like P (signup,
+ * support grant, fiscal profile, staff, menu, a paired register), with Inés signed in at an
+ * open drawer: the drawer the kiosks' card charges land in. The owner connects the readers, turns
+ * the club on and sets up the kiosks in the next test (tests/restaurant-day/kiosk-s.ts).
+ */
+export async function setupS(dev: Devices, state: RunState, save: () => void) {
+  const r = RESTAURANT_S;
+  const owner = await dev("ownerS");
+  run.step = "S1.1";
+  await googleOwner(owner, r, state.baseUrl);
+  await signup(owner, r, state.cutoffS);
+  run.step = "S1.2";
+  state.tenantS = await readTenantId(owner);
+  expect(state.tenantS).not.toBe(state.tenantP);
+  save();
+  run.step = "S1.3";
+  await grantPro(state.tenantS, r, state.businessDateS, state.runId);
+  await proGranted(owner, state.runId, state.businessDateS);
+  run.step = "S1.4";
+  await fiscalProfile(owner, r, "S1-fiscal");
+  run.step = "S2.1";
+  await staff(owner, r);
+  run.step = "S2.2";
+  await menuNav(owner.page, "Menú");
+  await categoriesAndProducts(owner, r);
+  run.step = "S2.3";
+  const caja = await dev("cajaS");
+  {
+    const { code, dialog } = await pairingCode(owner, "Caja");
+    await pair(caja, code, r.name, "Caja");
+    await expect(
+      dialog.getByRole("status").filter({ hasText: "Vinculado: Caja" }),
+    ).toBeVisible();
+    await dialog.getByRole("button", { name: "Cerrar", exact: true }).click();
+  }
+  await rosterChecks(caja, r);
+  const ines = r.staff.find((p) => p.key === "ines")!;
+  await signIn(caja, ines.name, ines.pin);
+  await expect(
+    caja.page.getByRole("heading", { name: "Vender", level: 1 }),
+  ).toBeVisible();
+  run.step = "S2.4";
   await openDrawer(caja, r.openingCash);
 }

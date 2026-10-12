@@ -1,0 +1,1502 @@
+// Kiosk self-checkout (039, specs/kiosk-w4.md §8.1, LD-72 on payment only): the kiosk's pure
+// rules (pay buttons, suggestions, idle deadlines, what the diner sees of an attempt, the settle
+// codes), the checkout's next step, the input schemas, and the device helpers.
+import { describe, expect, it, vi } from "vitest";
+import {
+  KIOSK_IDLE,
+  KIOSK_LIMITS,
+  KIOSK_RATES,
+  KIOSK_SETTLE_CODES,
+  idleDeadline,
+  kioskLineInput,
+  kioskChargeFit,
+  kioskOrderInput,
+  kioskPaymentState,
+  kioskRejectReason,
+  kioskSettleCode,
+  maskTypedPhone,
+  payButtons,
+  typedPhoneDisplay,
+  pickSuggestions,
+  stationCardOff,
+  suggestionsInput,
+  type KioskCheckoutView,
+} from "../shared/kiosk";
+import {
+  cardOffText,
+  keepsDraft,
+  pairActionKey,
+  shortBuild,
+} from "../src/features/public/KioskSettings";
+import { suggestionsDirty } from "../src/features/menu/ProductSuggestionsField";
+import {
+  ProductPhotoField,
+  photosOffNotice,
+} from "../src/features/menu/ProductPhotoField";
+import { createElement } from "react";
+import { DinerProduct } from "../src/features/public/DinerMenu";
+import {
+  ProductPhoto,
+  ProductPhotoView,
+} from "../src/features/public/kiosk/KioskProduct";
+import { renderToStaticMarkup } from "react-dom/server";
+import { kioskReportTiles } from "../src/features/public/KioskReport";
+import { moneyFormatter } from "../src/features/menu/format";
+import { orderModeKey } from "../src/labels";
+import {
+  channelColumns,
+  orderColumns,
+} from "../src/features/reports/csv";
+import {
+  CHARGE_REPLAYS,
+  afterCancel,
+  cancelsOnReset,
+  chargeFailure,
+  checkoutIdle,
+  exitRefusal,
+  idleResetRefusal,
+  memberLookupOpen,
+  replayCurrent,
+  replayDue,
+  transientAnswer,
+  stepAnnouncement,
+  stepFor,
+  terminalWaitAction,
+  terminalExits,
+  type KioskStep,
+} from "../src/features/public/kiosk/KioskCheckout";
+import {
+  addedAnnouncement,
+  cartInputs,
+  pickedLine,
+} from "../src/features/public/DinerApp";
+import { createIdleController } from "../src/features/public/kioskIdle";
+import { ApiError } from "../src/api";
+import { priceCart } from "../shared/service";
+import {
+  heartbeatBuild,
+  keepAwake,
+  viewportClass,
+  watchDevice,
+} from "../src/features/public/kiosk/kioskDevice";
+import kiosk from "../src/i18n/kiosk";
+import { resolveChoices } from "../src/features/payments/attempt-text";
+import type { AttemptView } from "../shared/payments";
+import type { ExceptionRow } from "../shared/reports";
+import {
+  exceptionDetail,
+  exceptionReason,
+} from "../src/features/reports/exception-text";
+import { strings, translateError } from "../src/i18n";
+import {
+  acceptInput,
+  holdActions,
+  claimsForCounter,
+  inboxActions,
+  kioskChargingExits,
+  kioskInboxState,
+  rejectInput,
+  type InboxHold,
+} from "../shared/public-ordering";
+
+const id = () => crypto.randomUUID();
+
+describe("pay buttons (§2.5)", () => {
+  const base = {
+    selfCheckout: true,
+    card: true,
+    paymentMode: "card_and_counter" as const,
+    attempts: 0,
+    failedOnce: false,
+  };
+  it("card and counter; card_first hides the counter until a card failure; counter mode never offers card", () => {
+    expect(payButtons(base)).toEqual({ card: true, counter: true });
+    expect(payButtons({ ...base, paymentMode: "card_first" })).toEqual({
+      card: true,
+      counter: false,
+    });
+    expect(
+      payButtons({ ...base, paymentMode: "card_first", failedOnce: true }),
+    ).toEqual({ card: true, counter: true });
+    expect(payButtons({ ...base, paymentMode: "counter" })).toEqual({
+      card: false,
+      counter: true,
+    });
+  });
+  it("no card without self-checkout, without a card reader, or after 3 attempts (then the counter shows)", () => {
+    expect(payButtons({ ...base, selfCheckout: false })).toEqual({
+      card: false,
+      counter: true,
+    });
+    expect(payButtons({ ...base, card: false })).toEqual({
+      card: false,
+      counter: true,
+    });
+    expect(
+      payButtons({ ...base, attempts: KIOSK_LIMITS.attempts - 1 }).card,
+    ).toBe(true);
+    expect(
+      payButtons({
+        ...base,
+        paymentMode: "card_first",
+        attempts: KIOSK_LIMITS.attempts,
+      }),
+    ).toEqual({ card: false, counter: true });
+  });
+});
+
+describe("suggestions (§2.8)", () => {
+  const [a, b, c, d, e, f, g, h] = Array.from({ length: 8 }, id);
+  it("keeps order, skips the cart, the unsellable and the source, at most 6", () => {
+    const sellable = new Set([a, b, c, d, e, f, g, h]);
+    expect(
+      pickSuggestions([a, b, c], {
+        inCart: new Set([b]),
+        sellable,
+        exclude: c,
+      }),
+    ).toEqual([a]);
+    expect(
+      pickSuggestions([a, b, c, d, e, f, g, h], {
+        inCart: new Set(),
+        sellable,
+      }),
+    ).toHaveLength(6);
+    expect(
+      pickSuggestions([a, a, b], { inCart: new Set(), sellable: new Set([b]) }),
+    ).toEqual([b]);
+    expect(
+      pickSuggestions([a, b, c, d, e], { inCart: new Set(), sellable, max: 4 }),
+    ).toEqual([a, b, c, d]);
+  });
+  it("the save refuses duplicates and more than the cart's 6", () => {
+    expect(
+      suggestionsInput.safeParse({
+        operationId: id(),
+        expectedVersion: 0,
+        productIds: [a, a],
+      }).success,
+    ).toBe(false);
+    expect(
+      suggestionsInput.safeParse({
+        operationId: id(),
+        expectedVersion: 0,
+        productIds: [a, b, c, d, e, f, g],
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe("idle (§2.12, WCAG 2.2.1)", () => {
+  it("a cart warns at 70 s and resets at 95 s: at least 20 s to answer", () => {
+    const d = idleDeadline("menu", { cartEmpty: false });
+    expect(d).toEqual({ warnAt: 70_000, resetAt: 95_000 });
+    expect(d.resetAt! - d.warnAt!).toBeGreaterThanOrEqual(20_000);
+  });
+  it("charging suspends the reset for at most 5 minutes; pay 120 s; done 30 s paid, 20 s at the counter", () => {
+    expect(idleDeadline("charging", { cartEmpty: false })).toEqual({
+      warnAt: null,
+      resetAt: 300_000,
+    });
+    expect(idleDeadline("pay", { cartEmpty: false }).resetAt).toBe(120_000);
+    expect(idleDeadline("done_paid", { cartEmpty: true }).resetAt).toBe(30_000);
+    expect(idleDeadline("done_counter", { cartEmpty: true }).resetAt).toBe(
+      20_000,
+    );
+    expect(idleDeadline("welcome", { cartEmpty: true })).toEqual({
+      warnAt: null,
+      resetAt: null,
+    });
+    expect(
+      KIOSK_IDLE.chargeTimeoutMs + KIOSK_IDLE.inProgressExtraMs,
+    ).toBeLessThanOrEqual(KIOSK_IDLE.chargeSuspendMaxMs);
+  });
+  it("KIOSK-UX-05: «¿Para aquí…?», pay, declined and unavailable ask «¿Sigues ahí?» 25 s before the 120 s reset", () => {
+    const steps: KioskStep[] = [
+      "fulfillment",
+      "pay",
+      "declined",
+      "unavailable",
+    ];
+    for (const step of steps) {
+      const d = checkoutIdle(step);
+      expect(d, step).toEqual({ warnAt: 95_000, resetAt: 120_000 });
+      expect(d.resetAt! - d.warnAt!, step).toBeGreaterThanOrEqual(20_000);
+    }
+    expect(checkoutIdle("paid")).toEqual({ warnAt: null, resetAt: 30_000 });
+    for (const step of ["paidNoOrder", "askCounter"] as KioskStep[])
+      expect(checkoutIdle(step), step).toEqual({
+        warnAt: null,
+        resetAt: 20_000,
+      });
+    // Charging and «sigue procesando» run on the poll's clock; the counter code on KioskDone's.
+    for (const step of [
+      "submitting",
+      "charging",
+      "still",
+      "counter",
+    ] as KioskStep[])
+      expect(checkoutIdle(step), step).toEqual({ warnAt: null, resetAt: null });
+  });
+  it("KIOSK-UX-05: on the pay screen the warning comes at 95 s, a touch re-arms it, the reset at 120 s", () => {
+    vi.useFakeTimers();
+    try {
+      const { warnAt, resetAt } = checkoutIdle("pay");
+      const onWarn = vi.fn();
+      const onReset = vi.fn();
+      const c = createIdleController({
+        warnAfterMs: warnAt,
+        resetAfterMs: resetAt!,
+        onWarn,
+        onReset,
+      });
+      vi.advanceTimersByTime(94_999);
+      expect(onWarn).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onWarn).toHaveBeenCalledTimes(1);
+      c.activity(); // «Sigo aquí»
+      vi.advanceTimersByTime(119_999);
+      expect(onWarn).toHaveBeenCalledTimes(2);
+      expect(onReset).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onReset).toHaveBeenCalledTimes(1);
+      c.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("what the diner sees of a charge (critic R9/R11)", () => {
+  it("maps every payments state", () => {
+    expect(kioskPaymentState(null)).toBe("none");
+    for (const s of ["created", "sending", "pending", "unknown"])
+      expect(kioskPaymentState(s)).toBe("pending");
+    expect(kioskPaymentState("approved")).toBe("approved");
+    expect(kioskPaymentState("settled")).toBe("settled");
+    expect(kioskPaymentState("declined")).toBe("declined");
+    expect(kioskPaymentState("cancelled")).toBe("cancelled");
+    expect(kioskPaymentState("dismissed")).toBe("cancelled");
+    expect(kioskPaymentState("expired")).toBe("expired");
+    expect(kioskPaymentState("review")).toBe("review");
+  });
+  it("settle refusals become kiosk_settle_* codes; unknown codes are 'other'", () => {
+    expect(kioskSettleCode("unavailable")).toBe("kiosk_settle_unavailable");
+    expect(kioskSettleCode("public_hold_price_changed")).toBe(
+      "kiosk_settle_price_changed",
+    );
+    expect(kioskSettleCode("invalid_modifier")).toBe(
+      "kiosk_settle_invalid_modifier",
+    );
+    expect(kioskSettleCode("insufficient_stock")).toBe(
+      "kiosk_settle_insufficient_stock",
+    );
+    expect(kioskSettleCode("pro_required")).toBe("kiosk_settle_pro_required");
+    expect(kioskSettleCode("public_order_expired")).toBe(
+      "kiosk_settle_hold_closed",
+    );
+    expect(kioskSettleCode("whatever")).toBe("kiosk_settle_other");
+    for (const c of KIOSK_SETTLE_CODES)
+      expect(kiosk.errors[c]?.[0]).toBeTruthy();
+  });
+});
+
+describe("the checkout's next step while charging", () => {
+  const view = (
+    o: Partial<KioskCheckoutView> & {
+      state?: KioskCheckoutView["payment"]["state"];
+    },
+  ): KioskCheckoutView => ({
+    label: "K-14",
+    holdState: "pending",
+    orderNumber: null,
+    total: 24500,
+    paymentChoice: "card",
+    payment: {
+      state: o.state ?? "pending",
+      attempts: 1,
+      cancelRequested: false,
+      amount: 24500,
+    },
+    paid: false,
+    // As server/kiosk-diner.ts checkoutView sends it: only a review is "paid, no order"
+    // (KIOSK-MONEY-2, KIOSK-UX-09).
+    paidNoOrder: o.state === "review",
+    folio: null,
+    selfInvoiceCode: null,
+    loyalty: null,
+    joinOffer: null,
+    ...o,
+  });
+  it("paid, approved without an order, declined (also after the reader held it: retry, counter or cancel), else keep polling", () => {
+    expect(stepFor(view({ paid: true, state: "settled" }), "charging")).toBe(
+      "paid",
+    );
+    expect(
+      stepFor(view({ paidNoOrder: true, state: "review" }), "charging"),
+    ).toBe("paidNoOrder");
+    expect(view({ state: "review" }).paidNoOrder).toBe(true);
+    expect(stepFor(view({ state: "review" }), "charging")).toBe("paidNoOrder");
+    // Approved is the short step before the settle: keep polling.
+    expect(view({ state: "approved" }).paidNoOrder).toBe(false);
+    expect(stepFor(view({ state: "declined" }), "charging")).toBe("declined");
+    expect(stepFor(view({ state: "cancelled" }), "charging")).toBe("declined");
+    // KIOSK-UX-03: an attempt that ended without money during «La terminal sigue procesando»
+    // offers retry, «Pagar en caja» or cancel, never a dead end.
+    for (const state of ["declined", "cancelled", "expired"] as const)
+      expect(stepFor(view({ state }), "still"), state).toBe("declined");
+    expect(stepFor(view({ state: "pending" }), "still")).toBe(null);
+    expect(stepFor(view({ paid: true, state: "settled" }), "still")).toBe(
+      "paid",
+    );
+    expect(stepFor(view({ state: "pending" }), "charging")).toBe(null);
+    expect(stepFor(view({ state: "approved" }), "charging")).toBe(null);
+    // KV-FIXES-2: a start that never became an attempt goes back to the pay screen.
+    expect(stepFor(view({ state: "none" }), "charging")).toBe("pay");
+    expect(stepFor(view({ state: "none" }), "still")).toBe("pay");
+  });
+
+  it("KV-FIXES-2: a lost answer to «Pagar con tarjeta» replays the same operation, then follows the charge; only the server's refusal is «terminal no disponible»", () => {
+    for (const code of [
+      "network_unavailable",
+      "request_timeout",
+      "server_unavailable",
+    ]) {
+      for (let replays = 0; replays < CHARGE_REPLAYS; replays += 1)
+        expect(chargeFailure(code, true, replays), code).toBe("replay");
+      expect(chargeFailure(code, true, CHARGE_REPLAYS), code).toBe("follow");
+    }
+    expect(CHARGE_REPLAYS).toBeGreaterThan(0);
+    expect(chargeFailure("kiosk_charge_pending", false, 0)).toBe("follow");
+    expect(chargeFailure("public_price_changed", false, 0)).toBe("refused");
+    expect(chargeFailure("unavailable", false, 0)).toBe("refused");
+    expect(chargeFailure("public_order_expired", false, 0)).toBe("expired");
+    for (const code of [
+      "kiosk_card_unavailable",
+      "kiosk_terminal_busy",
+      "kiosk_charge_attempts",
+      "kiosk_till_closed",
+    ])
+      expect(chargeFailure(code, false, 0), code).toBe("unavailable");
+  });
+
+  it("KF-MONEY-2: a limiter's 429 is never the server's refusal; replays go one at a time within the charge limit; stale replay answers and the walk-away reset never drop a live charge", () => {
+    // The limiter answers before the handler: the start may have been taken.
+    for (let replays = 0; replays < CHARGE_REPLAYS; replays += 1)
+      expect(chargeFailure("rate_limited", false, replays)).toBe("replay");
+    expect(chargeFailure("rate_limited", false, CHARGE_REPLAYS)).toBe("follow");
+    for (const action of ["counter", "cancel"] as const)
+      expect(exitRefusal(action, "rate_limited", false)).toBe("stay");
+    expect(transientAnswer(new ApiError("rate_limited", 429, "domain"))).toBe(
+      true,
+    );
+    expect(
+      transientAnswer(new ApiError("request_timeout", 0, "timeout")),
+    ).toBe(true);
+    expect(
+      transientAnswer(new ApiError("kiosk_terminal_busy", 409, "domain")),
+    ).toBe(false);
+    expect(transientAnswer(new Error("rate_limited"))).toBe(false);
+    // One replay in flight at a time, spaced so a minute of them fits the per-link limit.
+    expect(replayDue(false, Infinity)).toBe(true);
+    expect(replayDue(true, Infinity)).toBe(false);
+    expect(replayDue(false, KIOSK_IDLE.chargeReplayMs - 1)).toBe(false);
+    expect(replayDue(false, KIOSK_IDLE.chargeReplayMs)).toBe(true);
+    expect(
+      KIOSK_IDLE.chargeReplayMs * KIOSK_RATES.chargePerIpLink,
+    ).toBeGreaterThanOrEqual(60_000);
+    expect(KIOSK_IDLE.chargeReplayMs).toBeGreaterThan(KIOSK_IDLE.pollMs);
+    // A replay's answer counts only for the charge the kiosk still follows.
+    expect(replayCurrent("op-1", "op-1", true)).toBe(true);
+    expect(replayCurrent("op-1", "op-1", false)).toBe(false);
+    expect(replayCurrent("op-1", "op-2", true)).toBe(false);
+    expect(replayCurrent("op-1", null, true)).toBe(false);
+    // The walk-away reset follows a charge the server says may still be taken, like the exits.
+    expect(idleResetRefusal("kiosk_charge_in_progress", false)).toBe("follow");
+    expect(idleResetRefusal("kiosk_charge_pending", false)).toBe("follow");
+    for (const [code, transient] of [
+      ["network_unavailable", true],
+      ["rate_limited", false],
+      ["public_order_not_pending", false],
+      ["kiosk_hold_at_counter", false],
+      ["public_order_expired", false],
+    ] as const)
+      expect(idleResetRefusal(code, transient), code).toBe("reset");
+  });
+
+  it("KV-FIXES-2, KV-FIXES-1, KV-FIXES-7: «Pagar en caja» and «Cancelar pedido» follow a live charge, never reset over it", () => {
+    for (const action of ["counter", "cancel"] as const) {
+      expect(exitRefusal(action, "kiosk_charge_pending", false)).toBe("follow");
+      expect(exitRefusal(action, "kiosk_charge_in_progress", false)).toBe(
+        "follow",
+      );
+      expect(exitRefusal(action, "kiosk_hold_at_counter", false)).toBe(
+        "counter",
+      );
+      // A lost answer: the guest stays and may try again.
+      expect(exitRefusal(action, "network_unavailable", true)).toBe("stay");
+      expect(exitRefusal(action, "kiosk_charge_in_progress", true)).toBe(
+        "stay",
+      );
+    }
+    expect(exitRefusal("counter", "public_order_expired", false)).toBe(
+      "expired",
+    );
+    expect(exitRefusal("cancel", "public_order_expired", false)).toBe("reset");
+    expect(exitRefusal("cancel", "public_order_not_pending", false)).toBe(
+      "reset",
+    );
+    expect(exitRefusal("counter", "kiosk_device_required", false)).toBe(
+      "stay",
+    );
+  });
+
+  it("the terminal screens' exits follow payments' cancel rules (KIOSK-UX-03)", () => {
+    const live = view({ state: "pending" });
+    const asked = view({
+      state: "pending",
+      payment: {
+        state: "pending",
+        attempts: 1,
+        cancelRequested: true,
+        amount: 24500,
+      },
+    });
+    // «Cancelar cobro» only after the offer delay, while the attempt is live and not yet asked.
+    expect(terminalExits("charging", live, false)).toEqual({
+      cancel: false,
+      help: false,
+    });
+    expect(terminalExits("charging", live, true)).toEqual({
+      cancel: true,
+      help: false,
+    });
+    // Once a cancel was requested the reader may still take the card: help, no second cancel.
+    expect(terminalExits("charging", asked, true)).toEqual({
+      cancel: false,
+      help: true,
+    });
+    // Approved (the settle is coming), settled or final: nothing to cancel, keep polling.
+    for (const state of [
+      "approved",
+      "settled",
+      "review",
+      "declined",
+      "cancelled",
+      "expired",
+      "none",
+    ] as const)
+      expect(terminalExits("charging", view({ state }), true), state).toEqual({
+        cancel: false,
+        help: false,
+      });
+    expect(terminalExits("charging", null, true)).toEqual({
+      cancel: false,
+      help: false,
+    });
+    // «La terminal sigue procesando» always has «Pedir ayuda en caja».
+    expect(terminalExits("still", asked, true)).toEqual({
+      cancel: false,
+      help: true,
+    });
+    for (const step of ["pay", "declined", "askCounter", "paid"] as const)
+      expect(terminalExits(step, live, true), step).toEqual({
+        cancel: false,
+        help: false,
+      });
+    // A withdrawn charge offers retry, counter or cancel; a refused or pending cancel keeps the
+    // guest on «sigue procesando» while polling; a final one is shown by the next sync.
+    expect(afterCancel("withdrawn")).toBe("declined");
+    expect(afterCancel("in_progress")).toBe("still");
+    expect(afterCancel("pending_cancel")).toBe("still");
+    expect(afterCancel("already_final")).toBe(null);
+  });
+
+  it("a reset from the pay, declined or unavailable screens cancels only an unpaid card checkout with no attempt live or approved (KIOSK-MONEY-3)", () => {
+    for (const step of ["pay", "declined", "unavailable"] as const) {
+      for (const state of ["none", "declined", "cancelled", "expired"] as const)
+        expect(cancelsOnReset(step, view({ state })), `${step} ${state}`).toBe(
+          true,
+        );
+      // A choice not made yet is the same walk-away.
+      expect(
+        cancelsOnReset(step, view({ state: "none", paymentChoice: null })),
+      ).toBe(true);
+      // Payments may still take it, or took it: never cancelled from the kiosk.
+      for (const state of ["pending", "approved", "review", "settled"] as const)
+        expect(cancelsOnReset(step, view({ state })), `${step} ${state}`).toBe(
+          false,
+        );
+      expect(
+        cancelsOnReset(step, view({ state: "declined", paid: true })),
+      ).toBe(false);
+      // «Pagar en caja»: the counter's hold now.
+      expect(
+        cancelsOnReset(
+          step,
+          view({ state: "declined", paymentChoice: "counter" }),
+        ),
+      ).toBe(false);
+      // Already decided, or never created.
+      for (const holdState of ["accepted", "cancelled", "expired"] as const)
+        expect(cancelsOnReset(step, view({ state: "none", holdState }))).toBe(
+          false,
+        );
+      expect(cancelsOnReset(step, null)).toBe(false);
+    }
+    // The other screens never cancel on reset (charging, the counter code, paid, ask at counter).
+    for (const step of [
+      "fulfillment",
+      "submitting",
+      "charging",
+      "still",
+      "askCounter",
+      "paid",
+      "paidNoOrder",
+      "counter",
+    ] as const)
+      expect(cancelsOnReset(step, view({ state: "declined" })), step).toBe(
+        false,
+      );
+  });
+});
+
+describe("«Soy del club» only while the member token still travels (KIOSK-UX-02, critic R20)", () => {
+  it("on the menu and at «¿Para aquí o para llevar?»; never once the hold is placed", () => {
+    expect(memberLookupOpen("menu", null)).toBe(true);
+    expect(memberLookupOpen("checkout", "fulfillment")).toBe(true);
+    for (const step of [
+      "submitting",
+      "pay",
+      "charging",
+      "declined",
+      "unavailable",
+      "still",
+      "askCounter",
+      "paid",
+      "paidNoOrder",
+      "counter",
+    ] satisfies KioskStep[])
+      expect(memberLookupOpen("checkout", step), step).toBe(false);
+    // Before the checkout reports its first screen, and on the other views.
+    expect(memberLookupOpen("checkout", null)).toBe(false);
+    expect(memberLookupOpen("kiosk-done", null)).toBe(false);
+    expect(memberLookupOpen("status", null)).toBe(false);
+  });
+});
+
+describe("why a station takes no card, on Configuración's row (KIOSK-UX-10, critic R14)", () => {
+  const ready = {
+    enabled: true,
+    paymentMode: "card_and_counter" as const,
+    paired: true,
+    till: "open" as const,
+    terminal: { usable: true, provider: "clip" as const },
+    providers: {
+      mercadopago: { enabled: false, reason: "worker_not_configured" },
+      clip: { enabled: true },
+    },
+  };
+  it("kioskState's order: switch, tablet, till, mode, terminal, then the terminal's provider", () => {
+    expect(stationCardOff(ready)).toBe(null);
+    expect(stationCardOff({ ...ready, enabled: false, paired: false })).toEqual(
+      { reason: "disabled" },
+    );
+    expect(stationCardOff({ ...ready, paired: false, till: "none" })).toEqual({
+      reason: "unbound",
+    });
+    expect(stationCardOff({ ...ready, till: "none" })).toEqual({
+      reason: "no_till",
+    });
+    expect(
+      stationCardOff({ ...ready, till: "closed", paymentMode: "counter" }),
+    ).toEqual({ reason: "till_closed" });
+    expect(stationCardOff({ ...ready, paymentMode: "counter" })).toEqual({
+      reason: "mode",
+    });
+    expect(stationCardOff({ ...ready, terminal: null })).toEqual({
+      reason: "no_terminal",
+    });
+    // Inactive, archived or manual: the select shows «Sin terminal», the row says why.
+    expect(
+      stationCardOff({
+        ...ready,
+        terminal: { usable: false, provider: "clip" },
+      }),
+    ).toEqual({ reason: "no_terminal" });
+    expect(
+      stationCardOff({
+        ...ready,
+        terminal: { usable: true, provider: "mercadopago" },
+      }),
+    ).toEqual({
+      reason: "provider",
+      provider: "mercadopago",
+      detail: "worker_not_configured",
+    });
+    expect(
+      stationCardOff({
+        ...ready,
+        providers: { ...ready.providers, clip: { enabled: false } },
+      }),
+    ).toEqual({
+      reason: "provider",
+      provider: "clip",
+      detail: "not_connected",
+    });
+  });
+  it("the row's text names the cause", () => {
+    expect(cardOffText("es", null, "")).toBe(null);
+    expect(cardOffText("es", { reason: "till_closed" }, "Caja mostrador")).toBe(
+      "El kiosco no cobra con tarjeta: la caja Caja mostrador está cerrada.",
+    );
+    expect(
+      cardOffText(
+        "es",
+        { reason: "provider", provider: "clip", detail: "not_connected" },
+        "",
+      ),
+    ).toBe("El kiosco no cobra con tarjeta: Clip no está conectado.");
+    expect(
+      cardOffText(
+        "es",
+        {
+          reason: "provider",
+          provider: "mercadopago",
+          detail: "worker_not_configured",
+        },
+        "",
+      ),
+    ).toBe(
+      "El kiosco no cobra con tarjeta: Mercado Pago no está activo en este servidor.",
+    );
+    for (const reason of [
+      "disabled",
+      "unbound",
+      "no_till",
+      "mode",
+      "no_terminal",
+    ] as const)
+      expect(cardOffText("en", { reason }, ""), reason).toMatch(
+        /^The kiosk doesn't take cards: .+\.$/,
+      );
+  });
+});
+
+describe("Excepciones rows of a kiosk charge (KIOSK-OPS-5)", () => {
+  const row = (kind: string, reasonCode: string | null, detail: object) =>
+    ({
+      kind,
+      reasonCode,
+      note: "",
+      amount: 3500,
+      orderId: null,
+      detail,
+    }) as unknown as ExceptionRow;
+  const kioskHold = {
+    holdChannel: "kiosk",
+    holdNumber: 14,
+    terminal: "Clip Entrada",
+  };
+  it("name the hold, and the review says why the charge could not become the order", () => {
+    const review = row(
+      "terminal_attempt_review",
+      "kiosk_settle_unavailable",
+      kioskHold,
+    );
+    expect(exceptionDetail(review, "es", String)).toBe(
+      "Kiosco · K-14 · Clip Entrada",
+    );
+    expect(exceptionDetail(review, "en", String)).toBe(
+      "Kiosk · K-14 · Clip Entrada",
+    );
+    expect(exceptionReason(review, "es")).toBe(
+      translateError("kiosk_settle_unavailable", "es"),
+    );
+    expect(exceptionReason(review, "es")).not.toBe(strings.es.error);
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_dismissed", "refunded_at_provider", {
+          ...kioskHold,
+          resolution: "refunded_at_provider",
+        }),
+        "es",
+        String,
+      ),
+    ).toMatch(/^Kiosco · K-14 · Clip Entrada · /);
+    for (const kind of [
+      "terminal_attempt_unknown_open",
+      "terminal_attempt_late_approval",
+    ])
+      expect(exceptionDetail(row(kind, null, kioskHold), "es", String)).toMatch(
+        /^Kiosco · K-14 · Clip Entrada/,
+      );
+    // A POS charge (an order target) reads as before; a payments review code stays out of Motivo.
+    expect(
+      exceptionDetail(
+        row("terminal_attempt_review", "payments_amount_mismatch", {
+          holdChannel: null,
+          holdNumber: null,
+          terminal: "Clip Caja",
+        }),
+        "es",
+        String,
+      ),
+    ).toBe("Clip Caja");
+    expect(
+      exceptionReason(
+        row("terminal_attempt_review", "payments_amount_mismatch", {}),
+        "es",
+      ),
+    ).toBe("");
+  });
+});
+
+describe("a kiosk hold in the staff inbox (KIOSK-UX-04, KIOSK-MONEY-3)", () => {
+  const kiosk = (
+    o: Partial<NonNullable<InboxHold["kiosk"]>>,
+  ): NonNullable<InboxHold["kiosk"]> => ({
+    paymentChoice: null,
+    claimed: false,
+    attemptId: null,
+    charging: false,
+    unknown: false,
+    approved: false,
+    review: null,
+    ...o,
+  });
+  const review = {
+    attemptId: "a",
+    code: "kiosk_settle_unavailable",
+    amount: 4500,
+    terminalLabel: "Clip",
+    provider: "clip" as const,
+  };
+  it("KIOSK-MONEY-4: a manager cancels a charge payments may still withdraw and resolves an unknown one; other roles get neither", () => {
+    const live = kiosk({
+      paymentChoice: "card",
+      attemptId: "a",
+      charging: true,
+    });
+    const unknown = { ...live, unknown: true };
+    for (const role of ["owner", "manager"]) {
+      expect(kioskChargingExits(live, role), role).toEqual({
+        cancel: true,
+        resolve: false,
+      });
+      expect(kioskChargingExits(unknown, role), role).toEqual({
+        cancel: false,
+        resolve: true,
+      });
+      expect(
+        kioskChargingExits(kiosk({ paymentChoice: "card" }), role),
+      ).toEqual({ cancel: false, resolve: false });
+      // KV-FIXES-6: an approved charge is about to settle; payments refuses its cancel.
+      expect(
+        kioskChargingExits({ ...live, approved: true }, role),
+        role,
+      ).toEqual({ cancel: false, resolve: false });
+    }
+    for (const role of ["cashier", "server"])
+      for (const k of [live, unknown])
+        expect(kioskChargingExits(k, role), role).toEqual({
+          cancel: false,
+          resolve: false,
+        });
+  });
+  it("only «Pagar en caja» keeps Accept; a guest still at the kiosk or an abandoned card checkout is pay-first", () => {
+    expect(kioskInboxState(null)).toBe(null);
+    expect(kioskInboxState(kiosk({ paymentChoice: "counter" }))).toBe(
+      "counter",
+    );
+    expect(kioskInboxState(kiosk({}))).toBe("at_kiosk");
+    expect(kioskInboxState(kiosk({ paymentChoice: "card" }))).toBe(
+      "card_unpaid",
+    );
+    expect(
+      kioskInboxState(kiosk({ paymentChoice: "card", charging: true })),
+    ).toBe("charging");
+    expect(kioskInboxState(kiosk({ paymentChoice: "card", review }))).toBe(
+      "review",
+    );
+    for (const policy of ["accept", "pay_first"] as const) {
+      // A QR hold and a pre-039 kiosk hold: the policy's own actions.
+      expect(inboxActions({ policy, kiosk: null }, "cashier", 4500)).toEqual(
+        holdActions(policy, "cashier", 4500),
+      );
+      expect(
+        inboxActions(
+          { policy, kiosk: kiosk({ paymentChoice: "counter" }) },
+          "cashier",
+          4500,
+        ),
+      ).toEqual(holdActions(policy, "cashier", 4500));
+      for (const k of [kiosk({}), kiosk({ paymentChoice: "card" })]) {
+        expect(inboxActions({ policy, kiosk: k }, "cashier", 4500)).toEqual({
+          accept: false,
+          payAndSend: true,
+          override: false,
+        });
+        // The manager's exception stays.
+        expect(inboxActions({ policy, kiosk: k }, "manager", 4500)).toEqual({
+          accept: false,
+          payAndSend: true,
+          override: true,
+        });
+        // Nothing to collect on a free order.
+        expect(inboxActions({ policy, kiosk: k }, "cashier", 0).accept).toBe(
+          true,
+        );
+      }
+    }
+    // Under the default policy a plain «Aceptar» would have fired the unpaid order.
+    expect(holdActions("accept", "cashier", 4500).accept).toBe(true);
+  });
+  it("KV-FIXES-1: «Cobrar y enviar a cocina» first claims, for the counter, a hold still at the kiosk or an abandoned card checkout, and nothing else", () => {
+    expect(claimsForCounter(kiosk({}), true)).toBe(true);
+    expect(claimsForCounter(kiosk({ paymentChoice: "card" }), true)).toBe(true);
+    expect(claimsForCounter(null, true)).toBe(false);
+    expect(claimsForCounter(kiosk({ paymentChoice: "counter" }), true)).toBe(
+      false,
+    );
+    expect(
+      claimsForCounter(
+        kiosk({ paymentChoice: "card", attemptId: "a", charging: true }),
+        true,
+      ),
+    ).toBe(false);
+    expect(
+      claimsForCounter(kiosk({ paymentChoice: "card", review }), true),
+    ).toBe(false);
+  });
+  it("KF-MONEY-1: no claim without this device's open drawer (the dialog only offers «Ir a caja»); a claimed, uncollected hold is «Reclamado en caja», pay-first under either policy, and not claimed again", () => {
+    // The drawer is read first: closed, nothing is claimed whatever the hold.
+    for (const k of [kiosk({}), kiosk({ paymentChoice: "card" })])
+      expect(claimsForCounter(k, false)).toBe(false);
+    const claimed = kiosk({ paymentChoice: "counter", claimed: true });
+    expect(kioskInboxState(claimed)).toBe("claimed");
+    expect(claimsForCounter(claimed, true)).toBe(false);
+    for (const policy of ["accept", "pay_first"] as const) {
+      // No plain «Aceptar y enviar a cocina»: «Cobrar y enviar» and the manager's exception.
+      expect(
+        inboxActions({ policy, kiosk: claimed }, "cashier", 4500),
+      ).toEqual({ accept: false, payAndSend: true, override: false });
+      expect(
+        inboxActions({ policy, kiosk: claimed }, "manager", 4500),
+      ).toEqual({ accept: false, payAndSend: true, override: true });
+    }
+    // The guest's own «Pagar en caja» keeps the counter policy.
+    expect(
+      inboxActions(
+        { policy: "accept", kiosk: kiosk({ paymentChoice: "counter" }) },
+        "cashier",
+        4500,
+      ).accept,
+    ).toBe(true);
+    // A live charge or a review keeps its own block over the claim.
+    expect(kioskInboxState({ ...claimed, charging: true })).toBe("charging");
+    expect(kioskInboxState({ ...claimed, review })).toBe("review");
+  });
+});
+
+describe("the kiosk cart", () => {
+  it("a line added from a suggestion prices like any other (its origin is attribution only), so it never blocks the cart", () => {
+    const productId = id();
+    const catalog = [
+      {
+        id: productId,
+        name: { es: "Papas de prueba", en: "Test fries" },
+        category: { es: "Acompañantes", en: "Sides" },
+        categoryId: id(),
+        price: 4500,
+        available: true,
+        station: "kitchen",
+        groups: [],
+        cost: null,
+        recipe: [],
+        version: 1,
+      },
+    ] as never;
+    const lines = [
+      {
+        id: id(),
+        productId,
+        quantity: 1,
+        options: [],
+        origin: "suggestion" as const,
+      },
+    ];
+    expect(cartInputs(lines)[0]).not.toHaveProperty("origin");
+    const priced = priceCart(cartInputs(lines), catalog, false);
+    expect(priced.blocked).toBe(false);
+    expect(priced.total).toBe(4500);
+    // The raw line would not price: quote's line input is strict.
+    expect(
+      priceCart(
+        lines.map((l) => ({ ...l, note: "" })),
+        catalog,
+        false,
+      ).blocked,
+    ).toBe(true);
+  });
+});
+
+describe("inputs", () => {
+  const line = { id: id(), productId: id(), quantity: 1, options: [] };
+  it("a line may say it came from a suggestion; nothing else", () => {
+    expect(
+      kioskLineInput.safeParse({ ...line, origin: "suggestion" }).success,
+    ).toBe(true);
+    expect(kioskLineInput.safeParse({ ...line, origin: "ai" }).success).toBe(
+      false,
+    );
+    expect(kioskLineInput.safeParse({ ...line, note: "x" }).success).toBe(
+      false,
+    );
+  });
+  it("the order takes fulfillment (takeaway by default) and refuses control and bidi characters in the name", () => {
+    const body = {
+      operationId: id(),
+      statusKey: "A".repeat(22),
+      lines: [line],
+      expectedTotal: 100,
+    };
+    expect(kioskOrderInput.parse(body).fulfillment).toBe("to_go");
+    expect(
+      kioskOrderInput.safeParse({ ...body, fulfillment: "delivery" }).success,
+    ).toBe(false);
+    expect(kioskOrderInput.safeParse({ ...body, name: "Ana‮" }).success).toBe(
+      false,
+    );
+  });
+  it("the phone is never echoed in full", () => {
+    expect(maskTypedPhone("5555550123")).toBe("•• •• •• 01 23");
+    expect(maskTypedPhone("55")).toBe("•• •• ••");
+  });
+});
+
+describe("a kiosk charge approved without an order (critic R13)", () => {
+  const review = (o: Partial<AttemptView> = {}): AttemptView => ({
+    id: "a1",
+    state: "review",
+    target: "kiosk_hold",
+    origin: "kiosk",
+    orderId: null,
+    holdId: "h1",
+    orderNumber: null,
+    holdLabel: "Kiosco · K-14",
+    terminalId: "t1",
+    terminalLabel: "Clip Kiosco",
+    provider: "clip",
+    amount: 24500,
+    tip: 0,
+    paidAmount: 24500,
+    providerReference: "ref-ficticia-1",
+    providerStatus: "completed",
+    cardType: "credit_card",
+    cardBrand: "visa",
+    cardLast4: "4242",
+    errorCode: "kiosk_settle_unavailable",
+    cancelRequested: false,
+    resolution: null,
+    createdAt: "2026-10-09T18:00:00.000Z",
+    decidedAt: null,
+    ...o,
+  });
+  it("the hold's total against the charge: no partial refund, a total above it leaves a rest", () => {
+    expect(kioskChargeFit(null, 24500)).toEqual({ kind: "unknown" });
+    expect(kioskChargeFit(20000, 24500)).toEqual({
+      kind: "below",
+      missing: 4500,
+    });
+    expect(kioskChargeFit(24500, 24500)).toEqual({ kind: "fits", rest: 0 });
+    expect(kioskChargeFit(26000, 24500)).toEqual({ kind: "fits", rest: 1500 });
+  });
+  it("from its inbox card a manager accepts with the charge or rejects and refunds; a cashier only retries; the banner keeps payments' own outcomes", () => {
+    const manager = { manager: true, viaHold: true };
+    expect(resolveChoices(review(), manager)).toEqual([
+      "kiosk_accept",
+      "kiosk_reject",
+    ]);
+    expect(
+      resolveChoices(
+        review({ errorCode: "payments_refunded_before_settle" }),
+        manager,
+      ),
+    ).toEqual(["kiosk_reject"]);
+    expect(resolveChoices(review(), { manager: false, viaHold: true })).toEqual(
+      [],
+    );
+    expect(resolveChoices(review(), { manager: true, viaHold: false })).toEqual(
+      ["record", "refunded_at_provider"],
+    );
+    expect(
+      resolveChoices(review({ target: "order", holdId: null }), manager),
+    ).toEqual(["record", "refunded_at_provider"]);
+  });
+  it("an item that ran out rejects as unavailable; anything else as other", () => {
+    expect(kioskRejectReason("kiosk_settle_unavailable")).toBe("unavailable");
+    expect(kioskRejectReason("kiosk_settle_insufficient_stock")).toBe(
+      "unavailable",
+    );
+    expect(kioskRejectReason("kiosk_settle_price_changed")).toBe("other");
+    expect(kioskRejectReason(null)).toBe("other");
+  });
+  it("the accept's payment is a union on method: the charge with a note and an optional counter rest; the reject's refund is attested", () => {
+    const base = { operationId: id(), target: { kind: "new" } };
+    const charge = {
+      method: "attempt",
+      attemptId: id(),
+      note: "Revisado en Clip",
+    };
+    expect(acceptInput.parse({ ...base, payment: charge }).payment).toEqual({
+      ...charge,
+      rest: null,
+    });
+    const cash = { amount: 1500, received: 2000, method: "cash" };
+    expect(
+      acceptInput.parse({ ...base, payment: { ...charge, rest: cash } })
+        .payment,
+    ).toMatchObject({ rest: { ...cash, tip: 0 } });
+    for (const bad of [
+      { ...charge, note: "corta" },
+      { ...charge, rest: { ...charge } },
+      { ...charge, rest: { ...cash, method: "platform" } },
+      { ...charge, amount: 100 },
+    ])
+      expect(acceptInput.safeParse({ ...base, payment: bad }).success).toBe(
+        false,
+      );
+    // A counter payment parses exactly as before 039 (the accept's once() fingerprint).
+    expect(acceptInput.parse({ ...base, payment: cash }).payment).toEqual({
+      amount: 1500,
+      tip: 0,
+      received: 2000,
+      method: "cash",
+      externalConfirmed: false,
+      reference: "",
+    });
+    const reject = { operationId: id(), reason: "unavailable" };
+    expect("refund" in rejectInput.parse(reject)).toBe(false);
+    const refund = { attemptId: id(), note: "Reembolso completo en Clip" };
+    expect(
+      rejectInput.safeParse({
+        ...reject,
+        refund: { ...refund, confirmed: true },
+      }).success,
+    ).toBe(true);
+    expect(rejectInput.safeParse({ ...reject, refund }).success).toBe(false);
+  });
+});
+
+describe("device helpers (feature-detected, §2.11)", () => {
+  it("viewport class", () => {
+    expect(viewportClass(1280, 800)).toBe("landscape");
+    expect(viewportClass(800, 1280)).toBe("portrait");
+  });
+  it("a wake lock is requested while visible and again after the page was hidden; none without the API", async () => {
+    const listeners: Record<string, () => void> = {};
+    const doc = {
+      visibilityState: "visible",
+      addEventListener: (e: string, f: () => void) => (listeners[e] = f),
+      removeEventListener: vi.fn(),
+    } as unknown as Document;
+    const release = vi.fn(async () => {});
+    const request = vi.fn(async () => ({ release }));
+    const stop = keepAwake(
+      () => true,
+      { wakeLock: { request } } as unknown as Navigator,
+      doc,
+    );
+    await Promise.resolve();
+    expect(request).toHaveBeenCalledTimes(1);
+    listeners.visibilitychange();
+    await Promise.resolve();
+    expect(request).toHaveBeenCalledTimes(2);
+    stop();
+    expect(keepAwake(() => true, {} as Navigator, doc)).toBeTypeOf("function");
+  });
+  it("a new build reloads only when the kiosk is idle on its welcome screen", async () => {
+    vi.useFakeTimers();
+    let commit = "aaa";
+    let idle = false;
+    const reload = vi.fn();
+    const doc = { visibilityState: "visible" } as Document;
+    const stop = watchDevice({
+      everyMs: 60_000,
+      beat: async () => {},
+      idle: () => idle,
+      reload,
+      fetchVersion: async () => commit,
+      doc,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    commit = "bbb";
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reload).not.toHaveBeenCalled();
+    idle = true;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(reload).toHaveBeenCalledTimes(1);
+    stop();
+    vi.useRealTimers();
+  });
+});
+
+describe("Finanzas › Kiosco (039 §6.3, KIOSK-OPS-4, KIOSK-UX-19)", () => {
+  it("shows the charges refunded at the provider, count and amount, after the resolved ones", () => {
+    const tiles = kioskReportTiles(
+      {
+        orders: 9,
+        paidAtKiosk: 7,
+        paidAtCounter: 2,
+        review: { open: 1, resolved: 3, refunded: 2, refundedAmount: 18550 },
+        suggestions: { lines: 4, amount: 18000 },
+      },
+      "es",
+      moneyFormatter("es", "MXN"),
+    );
+    expect(tiles).toEqual([
+      ["Pedidos del kiosco", "9"],
+      ["Pagados en el kiosco", "7"],
+      ["Pagados en caja", "2"],
+      ["Cobros por resolver", "1"],
+      ["Cobros resueltos", "3"],
+      ["Reembolsados en el proveedor", "2"],
+      ["Importe reembolsado", "$185.50"],
+      ["Líneas sugeridas aceptadas", "4"],
+      ["Importe de sugerencias", "$180.00"],
+    ]);
+    expect(
+      kioskReportTiles(
+        {
+          orders: 0,
+          paidAtKiosk: 0,
+          paidAtCounter: 0,
+          review: { open: 0, resolved: 0, refunded: 0, refundedAmount: 0 },
+          suggestions: { lines: 0, amount: 0 },
+        },
+        "en",
+        moneyFormatter("en", "MXN"),
+      ).slice(5, 7),
+    ).toEqual([
+      ["Refunded at the provider", "0"],
+      ["Amount refunded", "MX$0.00"],
+    ]);
+  });
+});
+
+describe("a kiosk «para aquí» order reads «Comer aquí», never table service (KIOSK-OPS-11, KIOSK-UX-14)", () => {
+  it("orderModeKey: dine-in without a table is eat_in; with a table, and every other mode, keep their key", () => {
+    expect(orderModeKey("dine_in", false)).toBe("eat_in");
+    expect(orderModeKey("dine_in", true)).toBe("dine_in");
+    expect(orderModeKey("takeaway", false)).toBe("takeaway");
+    expect(orderModeKey("delivery", false)).toBe("delivery");
+    expect(strings.es[orderModeKey("dine_in", false)]).toBe("Comer aquí");
+    expect(strings.en[orderModeKey("dine_in", false)]).toBe("Eat in");
+    expect(strings.es[orderModeKey("dine_in", true)]).toBe("En mesa");
+  });
+  it("the orders CSV and «Por tipo de servicio» CSV label the server's eat_in key «Comer aquí»", () => {
+    const mode = orderColumns("es").find(
+      (c) =>
+        typeof c.header !== "string" &&
+        c.header.es === strings.es.reportsColMode,
+    )!;
+    const row = (tableName: string | null) =>
+      ({ mode: "dine_in", tableName }) as never;
+    expect(mode.value(row(null))).toBe("Comer aquí");
+    expect(mode.value(row("Mesa 4"))).toBe("En mesa");
+    const group = channelColumns("es")[0];
+    expect(
+      group.value({ group: "mode", key: "eat_in" } as never),
+    ).toBe("Tipo de servicio: Comer aquí");
+  });
+});
+
+describe("Configuración › Kiosco de autoservicio keeps unsaved edits and asks before cutting a tablet off (KIOSK-UX-12)", () => {
+  it("a save reloads only its own part: the settings keep the cart ticks and the reverse; a station save keeps both", () => {
+    expect(keepsDraft("all", "settings")).toBe(false);
+    expect(keepsDraft("all", "cart")).toBe(false);
+    expect(keepsDraft("settings", "settings")).toBe(false);
+    expect(keepsDraft("settings", "cart")).toBe(true);
+    expect(keepsDraft("cart", "cart")).toBe(false);
+    expect(keepsDraft("cart", "settings")).toBe(true);
+    expect(keepsDraft("station", "settings")).toBe(true);
+    expect(keepsDraft("station", "cart")).toBe(true);
+  });
+  it("each save has its own label; a paired tablet's new code is «Reemplazar tableta»", () => {
+    const es = strings.es;
+    const saves = [es.kioskSaveSettings, es.kioskSaveCart, es.kioskSaveStation];
+    expect(new Set(saves).size).toBe(3);
+    expect(saves).toEqual([
+      "Guardar configuración",
+      "Guardar sugerencias",
+      "Guardar estación",
+    ]);
+    const device = (state: "pending" | "paired") =>
+      ({ id: id(), state }) as never;
+    expect(pairActionKey(null)).toBe("kioskPairTablet");
+    expect(pairActionKey(device("pending"))).toBe("kioskPairTablet");
+    expect(pairActionKey(device("paired"))).toBe("kioskReplaceTablet");
+    expect(es[pairActionKey(device("paired"))]).toBe("Reemplazar tableta");
+  });
+  it("«Sugerir con este producto»: ticks that differ from the saved set, in order, are unsaved edits", () => {
+    expect(suggestionsDirty([], [])).toBe(false);
+    expect(suggestionsDirty(["a", "b"], ["a", "b"])).toBe(false);
+    expect(suggestionsDirty(["a"], [])).toBe(true);
+    expect(suggestionsDirty([], ["a"])).toBe(true);
+    expect(suggestionsDirty(["b", "a"], ["a", "b"])).toBe(true);
+  });
+});
+
+describe("the product editor's photo honours /capabilities menuPhotos (KIOSK-OPS-10)", () => {
+  const product = {
+    id: id(),
+    name: { es: "Torta ficticia", en: "Fictional torta" },
+    image: null,
+    version: 1,
+  } as never;
+  const render = (capability: { enabled: boolean; reason?: string } | null) =>
+    renderToStaticMarkup(
+      createElement(ProductPhotoField, {
+        product,
+        locale: "es",
+        disabled: false,
+        onChanged: () => {},
+        capability,
+      }),
+    );
+  it("no store: no «Subir foto», a notice that says photos are not set up on this server", () => {
+    const html = render({
+      enabled: false,
+      reason: "media_store_not_configured",
+    });
+    expect(html).not.toContain("Subir foto");
+    expect(html).not.toContain('type="file"');
+    expect(html).toContain("Fotos no configuradas en este servidor");
+  });
+  it("switched off: its own notice; on, or unknown: «Subir foto»", () => {
+    const off = render({ enabled: false, reason: "switched_off" });
+    expect(off).not.toContain("Subir foto");
+    expect(off).toContain("apagadas en este servidor");
+    expect(render({ enabled: true })).toContain("Subir foto");
+    expect(render(null)).toContain("Subir foto");
+    // One «Subir foto» for keyboard and screen-reader users: the button. The file input behind it
+    // (a button to assistive technology) is out of the tab order and the accessibility tree.
+    const on = render({ enabled: true });
+    const picker = /<input[^>]*type="file"[^>]*>/.exec(on)?.[0] ?? "";
+    expect(picker).toContain('tabindex="-1"');
+    expect(picker).toContain('aria-hidden="true"');
+    expect(on.match(/<button[^>]*>Subir foto<\/button>/g)).toHaveLength(1);
+    expect(photosOffNotice({ enabled: true }, "en")).toBeNull();
+    expect(
+      photosOffNotice(
+        { enabled: false, reason: "media_store_not_configured" },
+        "en",
+      ),
+    ).toMatch(/^Photos aren't set up on this server/);
+  });
+});
+
+declare const __BUILD_ID__: string;
+describe("the heartbeat reports the bundle's build (KIOSK-UX-13)", () => {
+  it("is vite's __BUILD_ID__ (what connectivity.ts compares with /api/version), never 'local' in a build", () => {
+    expect(typeof __BUILD_ID__).toBe("string");
+    expect(heartbeatBuild()).toBe(__BUILD_ID__.slice(0, 40));
+    expect(heartbeatBuild()).not.toBe("local");
+  });
+  it("Configuración shows a commit id short", () => {
+    expect(shortBuild("4f2e092a1b2c3d4e5f60718293a4b5c6d7e8f901")).toBe("4f2e092");
+    expect(shortBuild("1.2.0-1760000000000")).toBe("1.2.0-1760000000000");
+  });
+});
+
+describe("a kiosk or QR menu photo that fails to load falls back to the initial tile (KIOSK-UX-17)", () => {
+  const product = {
+    id: id(),
+    name: { es: "torta ficticia", en: "fictional torta" },
+    image: { id: "8f6f3b0e-2f5c-4c1e-9a7d-0b1c2d3e4f50", w: 1200, h: 900 },
+  } as never;
+  const view = (failed: boolean) =>
+    renderToStaticMarkup(
+      createElement(ProductPhotoView, {
+        product,
+        locale: "es",
+        variant: "card",
+        decorative: true,
+        failed,
+        onError: () => {},
+      }),
+    );
+  it("loading or loaded: the photo; failed: the neutral tile with the initial, no img", () => {
+    expect(view(false)).toContain("<img");
+    expect(view(false)).toContain("8f6f3b0e-2f5c-4c1e-9a7d-0b1c2d3e4f50");
+    const failed = view(true);
+    expect(failed).not.toContain("<img");
+    expect(failed).toContain("kiosk-photo-empty");
+    expect(failed).toContain(">T<");
+  });
+  it("ProductPhoto starts on the photo (no failure yet)", () => {
+    const html = renderToStaticMarkup(
+      createElement(ProductPhoto, { product, locale: "es", variant: "thumb" }),
+    );
+    expect(html).toContain("<img");
+  });
+});
+
+describe("the QR menu's product description reaches screen readers (KIOSK-UX-18)", () => {
+  const product = {
+    id: "p-1",
+    name: { es: "Hamburguesa ficticia", en: "Fictional burger" },
+    description: {
+      es: "Pan brioche, carne de res, queso y salsa de la casa. Contiene cacahuate y lácteos.",
+      en: "",
+    },
+    image: null,
+    kind: "simple",
+    price: 12000,
+    available: true,
+    archived: false,
+    groups: [],
+  } as never;
+  const render = (kiosk: boolean) =>
+    renderToStaticMarkup(
+      createElement(DinerProduct, {
+        product,
+        locale: "es",
+        price: "$120.00",
+        kiosk,
+        photos: false,
+        onPick: () => {},
+      }),
+    );
+  it("the button's name is name and price; its description is the whole text, by aria-describedby", () => {
+    const html = render(false);
+    expect(html).toContain('aria-label="Hamburguesa ficticia, $120.00"');
+    expect(html).toContain('aria-describedby="diner-desc-p-1"');
+    expect(html).toMatch(
+      /<span id="diner-desc-p-1"[^>]*>Pan brioche, carne de res, queso y salsa de la casa\. Contiene cacahuate y lácteos\.<\/span>/,
+    );
+  });
+  it("the kiosk grid shows no description (its sheet does) and describes nothing", () => {
+    const html = render(true);
+    expect(html).not.toContain("aria-describedby");
+    expect(html).not.toContain("Contiene cacahuate");
+  });
+});
+
+describe("the kiosk speaks every checkout step and every cart addition (KIOSK-UX-15, §2.12)", () => {
+  it("the steps no handler announces are said through the live region", () => {
+    const say = (step: KioskStep, error = "") =>
+      stepAnnouncement(step, "es", "K-14", error);
+    expect(say("fulfillment")).toBe("¿Para aquí o para llevar?");
+    expect(say("pay")).toBe("¿Cómo quieres pagar?");
+    expect(say("still")).toBe(
+      strings.es.kioskTerminalStill.replace("{label}", "K-14"),
+    );
+    expect(say("askCounter")).toBe("Pregunta en caja por tu pedido K-14.");
+    expect(say("paidNoOrder")).toBe(
+      strings.es.kioskPaidNoOrder.replace("{label}", "K-14"),
+    );
+    expect(say("unavailable")).toBe(strings.es.kioskTerminalUnavailable);
+    expect(say("unavailable", strings.es.kioskTerminalBusy)).toBe(
+      strings.es.kioskTerminalBusy,
+    );
+    // Said where they happen (the sale result, the decline, «Sigue las instrucciones…»).
+    for (const step of ["paid", "declined", "charging", "counter", "submitting"] as KioskStep[])
+      expect(say(step)).toBeNull();
+  });
+  it("«Agregado: {name}», and the same product twice is announced again", () => {
+    const first = addedAnnouncement("Taco de asada", "es", "");
+    expect(first).toBe("Agregado: Taco de asada");
+    const second = addedAnnouncement("Taco de asada", "es", first);
+    expect(second).not.toBe(first);
+    expect(second.trim()).toBe(first);
+    expect(addedAnnouncement("Taco de asada", "es", second)).toBe(first);
+    expect(addedAnnouncement("Churros", "en", "")).toBe("Added: Churros");
+  });
+});
+
+describe("«Soy del club»: every keypad tap shows on screen (KIOSK-UX-16)", () => {
+  it("one dot per digit and a count of 10; the last four from the fourth digit; never the number in full", () => {
+    const shown = ["5", "55", "555", "5555", "55555"].map(typedPhoneDisplay);
+    expect(shown).toEqual([
+      "• · 1/10",
+      "•• · 2/10",
+      "••• · 3/10",
+      "55 55 · 4/10",
+      "• 55 55 · 5/10",
+    ]);
+    expect(new Set(shown).size).toBe(shown.length);
+    expect(typedPhoneDisplay("5555550123")).toBe("•••••• 01 23 · 10/10");
+    expect(typedPhoneDisplay("5555550123")).not.toContain("555555");
+  });
+  it("the backspace key's name is «Borrar» / «Delete» (the keypad is a portaled dialog: the browser suite reads it)", () => {
+    expect(strings.es.kioskKeyDelete).toBe("Borrar");
+    expect(strings.en.kioskKeyDelete).toBe("Delete");
+  });
+});
+
+describe("the terminal screens' own clock is the 5-minute cap the idle rules promise (KIOSK-UX-22)", () => {
+  it("charging asks to cancel at 3 min; «sigue procesando» sends the guest to the counter 2 min later: off the terminal screens within chargeSuspendMaxMs", () => {
+    expect(terminalWaitAction("charging", KIOSK_IDLE.chargeTimeoutMs - 1, false)).toBeNull();
+    expect(terminalWaitAction("charging", KIOSK_IDLE.chargeTimeoutMs, false)).toBe("cancel");
+    expect(terminalWaitAction("charging", KIOSK_IDLE.chargeSuspendMaxMs - 1, true)).toBeNull();
+    // KV-FIXES-4: a cancel answered "already final" keeps the charging screen for the next sync;
+    // with the syncs failing, the cap still sends the guest to the counter.
+    expect(terminalWaitAction("charging", KIOSK_IDLE.chargeSuspendMaxMs, true)).toBe("askCounter");
+    expect(terminalWaitAction("charging", KIOSK_IDLE.chargeTimeoutMs * 2, true)).toBe("askCounter");
+    expect(terminalWaitAction("still", KIOSK_IDLE.inProgressExtraMs - 1, true)).toBeNull();
+    expect(terminalWaitAction("still", KIOSK_IDLE.inProgressExtraMs, true)).toBe("askCounter");
+    for (const step of ["pay", "declined", "paid", "askCounter"] as KioskStep[])
+      expect(terminalWaitAction(step, 10 * 60_000, false)).toBeNull();
+    // Poll by poll (every 2 s, the sync answering or not): the step the guest sees, from the
+    // charge's start, until the counter screen.
+    let step: KioskStep = "charging";
+    let since = 0;
+    let cancelled = false;
+    let t = 0;
+    while (step !== "askCounter" && t <= 10 * 60_000) {
+      t += KIOSK_IDLE.pollMs;
+      const action = terminalWaitAction(step, t - since, cancelled);
+      if (action === "cancel") {
+        cancelled = true;
+        step = "still"; // the reader holds the charge: payments answers pending_cancel
+        since = t;
+      } else if (action === "askCounter") step = "askCounter";
+    }
+    expect(step).toBe("askCounter");
+    expect(t).toBeLessThanOrEqual(
+      idleDeadline("charging", { cartEmpty: false }).resetAt!,
+    );
+    expect(t).toBe(KIOSK_IDLE.chargeTimeoutMs + KIOSK_IDLE.inProgressExtraMs);
+    // KV-FIXES-4: the cancel answered "already final" (the charging screen stays for the next
+    // sync) and every sync fails: the guest still reaches the counter screen within the cap.
+    step = "charging";
+    cancelled = false;
+    t = 0;
+    while (step !== "askCounter" && t <= 10 * 60_000) {
+      t += KIOSK_IDLE.pollMs;
+      const action = terminalWaitAction(step, t, cancelled);
+      if (action === "cancel") cancelled = true;
+      else if (action === "askCounter") step = "askCounter";
+    }
+    expect(step).toBe("askCounter");
+    expect(t).toBe(KIOSK_IDLE.chargeSuspendMaxMs);
+    expect(t).toBeLessThanOrEqual(
+      idleDeadline("charging", { cartEmpty: false }).resetAt!,
+    );
+  });
+});
+
+describe("a suggested product that needs choices is still a suggestion line (KIOSK-UX-23)", () => {
+  it("the option picker opened from «Combínalo con…» or «¿Algo más?» keeps origin 'suggestion'; from the menu, none", () => {
+    const product = { id: id(), name: { es: "Taco", en: "Taco" } } as never;
+    const fromSuggestion = pickedLine({ product, origin: "suggestion" }, ["o1"]);
+    expect(fromSuggestion).toEqual({
+      product,
+      options: ["o1"],
+      origin: "suggestion",
+    });
+    expect(pickedLine({ product }, ["o1"]).origin).toBeUndefined();
+  });
+});

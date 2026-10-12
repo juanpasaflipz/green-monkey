@@ -15,7 +15,12 @@ import {
 } from "../../shared/service";
 import { api } from "../api";
 import { strings, errorNotice, type Key } from "../i18n";
-import { channelLabel, orderNumberLabel, orderNumberText } from "../labels";
+import {
+  channelLabel,
+  orderModeKey,
+  orderNumberLabel,
+  orderNumberText,
+} from "../labels";
 import { Badge, Button, Empty, Modal } from "../components/ui";
 import { usePoll, useStoredState } from "../serviceHooks";
 import { PrintSettingsDialog, printDocument, usePrintSettings } from "../print";
@@ -537,7 +542,8 @@ export function Kitchen({
                     <span>{r.callName}</span>
                   </h2>
                   <span>
-                    {t("round")} {r.roundNumber} · {t(r.mode as Key)}
+                    {t("round")} {r.roundNumber} ·{" "}
+                    {t(orderModeKey(r.mode, !!r.tableName))}
                     {station === "all" && <> · {stationName(r.station)}</>}
                   </span>
                 </div>

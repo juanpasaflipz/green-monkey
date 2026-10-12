@@ -13,7 +13,9 @@ probado todavía con la impresora real, tablets reales ni una caída real de int
 pruebas son condición para el piloto
 ([recuperación sin conexión, "Verification"](OFFLINE_RECOVERY.md#verification)). La lista
 del cambio desde pos-lite está en
-[la entrega de lanzamiento](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos).
+[la entrega de lanzamiento](LAUNCH_HANDOFF.md#4-cutover-checklist-for-juanbertos), y el
+orden del día del cambio (detener pos-lite, socios del club, terminales, kiosco, salir en
+vivo) en [el «Día de cambio»](MIGRATION.md#día-de-cambio-cutover-runbook-critic-r43).
 
 **Lo que llega antes del piloto (ola 4).** Está en construcción y **no está en
 producción**: cobro con terminales Clip y Mercado Pago Point integradas, terminales con
@@ -663,7 +665,8 @@ historial del proveedor.
 ## 9. Club de lealtad
 
 El club de Juanberto's pasa de POS Lite a Green Monkey el día de cambio
-([Loyalty](LOYALTY.md); los pasos de la migración en [Migration](MIGRATION.md)).
+([Loyalty](LOYALTY.md); los pasos de la migración en el
+[«Día de cambio»](MIGRATION.md#día-de-cambio-cutover-runbook-critic-r43), pasos 4 y 8).
 
 - **Antes de activarlo.** El propietario publica el aviso de privacidad del
   restaurante (Configuración › Privacidad y datos) y confirma que menciona el
@@ -703,3 +706,64 @@ El club de Juanberto's pasa de POS Lite a Green Monkey el día de cambio
   Clientes › Imprimir datos del cliente o Eliminar datos del cliente (gerente).
   Clientes sigue disponible aunque el club esté desactivado o el plan sea
   Gratis, mientras haya socios con datos.
+
+## 10. Kiosco de autoservicio
+
+El «Kiosco de autoservicio» es la tableta donde el cliente pide y paga solo. No es el «modo
+kiosco» de §1.3 (imprimir sin el diálogo del navegador en la caja). Guía completa:
+[KIOSK.md](KIOSK.md). El día del cambio se configura en el paso 7 del
+[«Día de cambio»](MIGRATION.md#día-de-cambio-cutover-runbook-critic-r43), después de detener el
+kiosco de POS Lite (paso 1).
+
+- **Configurarlo (dueño o gerente, unos 15 minutos).** En la tableta: desinstala la app del kiosco
+  de POS Lite, actualiza Chrome, pon bloqueo de pantalla con PIN y activa «Fijar aplicaciones» con
+  «Solicitar PIN para quitar la fijación». En Green Monkey: Configuración › Pedidos en línea ›
+  Agregar kiosco; en «Kiosco de autoservicio» elige la **Terminal** y la **Caja que recibe los
+  cobros** y toca **Guardar estación**. Arriba, en «Cobro en el kiosco», elige **Tarjeta en el
+  kiosco o en caja** y toca **Guardar configuración** (pide tu PIN): viene en «Solo en caja» y así
+  el kiosco solo ofrece «Pagar en caja». Luego toca **Vincular tableta**: sale un código de 8
+  dígitos que vence en 10 minutos. En
+  la tableta abre el enlace del kiosco, deja presionado 3 segundos el nombre del restaurante,
+  escribe el código y toca **Vincular**. Toca «Toca para ordenar» una vez (pantalla completa) y
+  fija Chrome desde Recientes.
+- **Prueba antes de abrir.** Una venta con tarjeta, una tarjeta rechazada (cancela en la
+  terminal), un «Pagar en caja», dejar la tableta sola hasta que vuelva al inicio, y reiniciarla.
+- **Abrir el día.** La caja que recibe los cobros debe estar abierta: sin ella el kiosco solo
+  ofrece «Pagar en caja». Revisa en Configuración que diga «Tableta vinculada · vista hace…».
+  Después de un apagón, vuelve a fijar Chrome.
+- **Pedidos pagados en el kiosco.** Llegan solos a cocina en cuanto se aprueba la tarjeta, con
+  «Comer aquí» o «Para llevar». El cobro queda en la caja que recibe los cobros, en su terminal.
+- **«Pagar en caja».** El cliente trae su código (K-14): cóbralo y acéptalo en Órdenes como hoy.
+- **«En el kiosco · aún no paga» y «Cobro con tarjeta abandonado».** El cliente sigue en el kiosco
+  sin elegir cómo pagar, o eligió tarjeta y no pagó (rechazada o se fue). Ese pedido no se acepta
+  sin cobrar: si el cliente pasa a caja, toca **Cobrar y enviar a cocina** con tu caja abierta (si
+  está cerrada, el cobro solo ofrece «Ir a caja» y el pedido sigue igual). Al abrirse el cobro, el
+  pedido queda **«Reclamado en caja»**: el kiosco ya no lo puede cancelar ni cobrar con tarjeta.
+  Si cierras el cobro sin cobrar, el pedido se queda así en Órdenes y sigue sin poder enviarse a
+  cocina sin cobro: cóbralo con **Cobrar y enviar a cocina** cuando el cliente pase, recházalo con
+  **Rechazar** si se fue, o un gerente usa la excepción con su PIN. Si nadie lo cobra ni lo
+  rechaza, vence con el tiempo de espera de pedidos y sale de Órdenes sin llegar a cocina. Si nadie
+  lo reclamó, el kiosco lo cancela solo 2 minutos después de que el cliente se va, y sale de
+  Órdenes.
+- **«Pagando en el kiosco…».** Ese pedido no se puede aceptar ni rechazar mientras el cliente paga.
+  Si se quedó atorado, un gerente toca **Cancelar cobro** en esa tarjeta.
+- **Tarjeta roja «pagó … y no se pudo enviar a cocina».** El cliente pagó pero un producto se
+  acabó o cambió de precio. Toca **Resolver cobro del kiosco**:
+  - si el producto ya está y el precio es el cobrado, cualquiera toca **Registrar el cobro
+    aprobado** y se crea el pedido («Volver a consultar» solo vuelve a preguntar al proveedor);
+  - un gerente puede **Aceptar con el pago del kiosco** con el pedido como está en su tarjeta
+    (sin lo agotado, con el precio de hoy). Si el total es mayor que lo cobrado, cobra la
+    diferencia en efectivo o terminal en ese momento. Si es menor, no se puede (no hay reembolsos
+    parciales): incluye productos hasta igualar el cobro, o
+  - **Rechazar y reembolsar**: el gerente reembolsa el cobro completo en la app de Clip o
+    Mercado Pago, escribe la nota con el folio del reembolso y confirma; el pedido queda rechazado.
+
+  La caja no cierra mientras haya una tarjeta roja.
+- **Cerrar el día.** Al cerrar la caja que recibe los cobros, escribe también el «Total del lote»
+  de la terminal del kiosco (el cierre de lote en su app), como el de cualquier otra terminal que
+  cobró en esa caja. El corte muestra «Del kiosco: n · $» bajo cada terminal: todos los cobros
+  que no son efectivo de pedidos del kiosco en esa caja, también una tarjeta cobrada en el
+  mostrador por un pedido del kiosco. En Finanzas › Kiosco, «Pagados en el kiosco» cuenta los
+  pedidos que se cobraron con la tarjeta en el kiosco. «Pagados en caja» cuenta los que se
+  cobraron en el mostrador. Un pedido con cobro en el kiosco y diferencia en caja cuenta en los
+  dos. Un pedido aceptado que nadie cobró no cuenta en ninguno.

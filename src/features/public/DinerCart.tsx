@@ -39,6 +39,8 @@ export function DinerCart(props: {
   onRetry: () => void;
   /** After an unknown outcome: edit anyway, as a new order (new keys). */
   onEditAnyway: () => void;
+  /** Kiosk (039): "¿Algo más?" suggestions, after the lines. */
+  extra?: React.ReactNode;
 }) {
   const { menu, locale, cart, draft } = props;
   const t = strings[locale];
@@ -101,6 +103,7 @@ function CartBody({
   onSend,
   onRetry,
   onEditAnyway,
+  extra,
 }: Parameters<typeof DinerCart>[0]) {
   const t = strings[locale];
   const money = moneyFormatter(locale, menu.restaurant.currency);
@@ -164,6 +167,7 @@ function CartBody({
           );
         })}
       </ul>
+      {extra}
       <UnavailableLines
         lines={cart.lines}
         catalog={menu.catalog}

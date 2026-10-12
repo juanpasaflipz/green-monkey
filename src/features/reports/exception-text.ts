@@ -1,6 +1,7 @@
 import type { Label, Locale } from "../../../shared/domain";
 import type { AuditRow, ExceptionRow } from "../../../shared/reports";
-import { strings, type Key } from "../../i18n";
+import { strings, translateError, type Key } from "../../i18n";
+import { holdLabel } from "../../../shared/public-ordering";
 import { reasonLabel } from "../discounts/format";
 import { platformLabel } from "../../../shared/payments";
 import { differenceLabel, fill, pct } from "./format";
@@ -40,12 +41,31 @@ const label = (v: unknown, locale: Locale) =>
   v && typeof v === "object" && locale in v ? String((v as Label)[locale]) : "";
 const num = (v: unknown) => (typeof v === "number" ? v : 0);
 
+/**
+ * "Kiosco · K-14" for a charge on a kiosk or QR hold, settled or not (critic R8;
+ * KIOSK-OPS-5); "" otherwise.
+ */
+function holdText(d: Record<string, unknown>, locale: Locale): string {
+  const channel = d.holdChannel;
+  if (
+    (channel !== "kiosk" && channel !== "qr") ||
+    typeof d.holdNumber !== "number"
+  )
+    return "";
+  const t = strings[locale];
+  return `${channel === "kiosk" ? t.serviceChannelKiosk : t.serviceChannelQr} · ${holdLabel(channel, d.holdNumber)}`;
+}
+
 /** Motivo: the reason code's label and the free-text note. */
 export function exceptionReason(row: ExceptionRow, locale: Locale): string {
   const coded =
     row.reasonCode && (row.kind === "discount" || row.kind === "refund")
       ? reasonLabel(row.kind, row.reasonCode, locale)
-      : null;
+      : // KIOSK-OPS-5: why a kiosk charge could not become the order (kiosk_settle_*).
+        row.kind === "terminal_attempt_review" &&
+          row.reasonCode?.startsWith("kiosk_settle_")
+        ? translateError(row.reasonCode, locale)
+        : null;
   return [coded, row.note.trim()].filter(Boolean).join(" · ");
 }
 
@@ -173,11 +193,18 @@ export function exceptionDetail(
     }
     case "terminal_attempt_review":
     case "terminal_attempt_unknown_open":
-      // payments (037 P2): the terminal of the charge (a provider code never shows raw).
-      return typeof d.terminal === "string" ? d.terminal : "";
+      // payments (037 P2): the hold of a kiosk charge and the terminal (a provider code never
+      // shows raw).
+      return [
+        holdText(d, locale),
+        typeof d.terminal === "string" ? d.terminal : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
     case "terminal_attempt_late_approval":
       // payments (P2V-FIXES-2): the terminal, and how the charge had been closed.
       return [
+        holdText(d, locale),
         typeof d.terminal === "string" ? d.terminal : "",
         d.resolution === "not_charged"
           ? t.payResolutionNotCharged
@@ -191,6 +218,7 @@ export function exceptionDetail(
         .join(" · ");
     case "terminal_attempt_dismissed":
       return [
+        holdText(d, locale),
         typeof d.terminal === "string" ? d.terminal : "",
         d.resolution === "recorded"
           ? t.payResolutionRecorded

@@ -163,6 +163,19 @@ const operations: Record<string, Key> = {
   "loyalty.order.relinked": "loyaltyOpRelinked",
   "loyalty.reward.redeemed": "loyaltyOpRedeemed",
   "loyalty.import.page": "loyaltyOpImport",
+  // kiosk (039, critic R27)
+  "kiosk.settings_saved": "kioskOpSettings",
+  "kiosk.station_saved": "kioskOpStation",
+  "kiosk.pairing_created": "kioskOpPairing",
+  "kiosk.device_paired": "kioskOpPaired",
+  "kiosk.device_revoked": "kioskOpRevoked",
+  "kiosk.charge_started": "kioskOpCharge",
+  "kiosk.settle_refused": "kioskOpRefused",
+  "kiosk.hold_claimed": "kioskOpClaimed",
+  "menu.media.attached": "kioskOpMediaAttached",
+  "menu.media.removed": "kioskOpMediaRemoved",
+  "menu.media.import": "kioskOpMediaImport",
+  "menu.suggestions_saved": "kioskOpSuggestions",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",
@@ -375,4 +388,14 @@ export function orderNumberLabel(
   locale: Locale,
 ): string {
   return "#" + orderNumberText(order, today, locale);
+}
+
+/**
+ * The order mode's label key: a dine-in order without a table is a kiosk "para aquí" (039),
+ * labelled "Comer aquí" instead of "En mesa" on the KDS, the kitchen ticket, Órdenes, the order
+ * detail and the orders CSV. Finanzas › Por tipo de servicio gets the same split from the server
+ * as the key 'eat_in' (server/reports/breakdowns.ts groupBreakdown).
+ */
+export function orderModeKey(mode: string, hasTable: boolean): Key {
+  return mode === "dine_in" && !hasTable ? "eat_in" : (mode as Key);
 }

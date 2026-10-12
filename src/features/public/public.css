@@ -294,3 +294,17 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Kiosk (039): a hold the guest is paying at the kiosk, and an approved charge without an order. */
+.hold-kiosk {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--fill);
+}
+.hold-kiosk-review {
+  border: 1px solid var(--negative);
+  background: var(--negative-bg);
+  color: var(--negative);
+}

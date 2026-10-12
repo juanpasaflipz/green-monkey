@@ -107,6 +107,19 @@ export const groupInput = z
     });
   });
 
+/** Plain text, no control or bidi characters (the diner-note rule), 300 characters (039). */
+const DESCRIPTION_FORBIDDEN =
+  // eslint-disable-next-line no-control-regex
+  /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/;
+const descriptionText = z
+  .string()
+  .trim()
+  .max(300)
+  .refine((v) => !DESCRIPTION_FORBIDDEN.test(v), { message: "forbidden" });
+export const productDescription = z
+  .object({ es: descriptionText, en: descriptionText.default("") })
+  .strict();
+
 // fiscal (027): optional; absent keeps the stored value.
 export const productInput = z
   .object({
@@ -129,6 +142,8 @@ export const productInput = z
     recipe: recipeInput.default([]),
     cost: money.nullable().default(null),
     fiscal: productFiscalInput.optional(),
+    /** kiosk (039, §2.9): optional; absent keeps the stored value. The photo is never set here. */
+    description: productDescription.optional(),
   })
   .strict()
   .superRefine((p, ctx) => {

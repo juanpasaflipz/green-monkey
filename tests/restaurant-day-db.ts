@@ -24,6 +24,14 @@ import {
   type RunState,
 } from "./restaurant-day/env.js";
 import { EXPECTED_P } from "./restaurant-day/expected-p.js";
+import { EXPECTED_S } from "./restaurant-day/expected-s.js";
+import {
+  CLUB_S,
+  KIOSKS_S,
+  ORDERS_S,
+  PAYMENTS_S,
+  RESTAURANT_S,
+} from "./restaurant-day/scenario-s.js";
 import {
   CFDI_FORMS_P,
   ORDERS_P,
@@ -607,16 +615,403 @@ if (state.branch === "P") {
     },
   );
 
+  // -------------------------------------------------------------- branch S
+  // Kiosk self-checkout (039; critic R13, R47; LD-80/LD-89): Restaurant S plays after P in the
+  // same job. Its rows are reconciled with its hand-typed table (expected-s.ts).
+  const S = state.tenantS!;
+  const inS = <T>(fn: (tx: Tx) => Promise<T>) => inT(S, fn);
+  const staffS = (key: string) =>
+    RESTAURANT_S.staff.find((p) => p.key === key)!.name;
+  const orderS = (n: number) => ORDERS_S.find((o) => o.number === n)!;
+
+  await check(
+    "DS1",
+    "Restaurant S: folios S-000001..4 with their totals and IVA, and its tenders (card per kiosk charge on its station's reader with the provider's reference, the difference in cash) equal branch S's book, all in the register's one drawer",
+    async () => {
+      const tickets = await inS(
+        (tx) =>
+          tx`select t.series||'-'||lpad(t.number::text,6,'0') as folio, o.number::int as n, t.gross::int as gross,
+            o.total::int as total, t.business_date::text as d,
+            (select json_build_object('base',x.base::int,'tax',x.tax::int) from fiscal_ticket_taxes x
+              where x.ticket_id=t.id and x.category='iva16') as iva16
+          from fiscal_tickets t join orders o on o.id=t.order_id order by t.number`,
+      );
+      for (const t of tickets) {
+        assert.equal(
+          t.gross,
+          t.total,
+          `${t.folio}: gross is the order's total`,
+        );
+        assert.equal(t.d, state.businessDateS, `${t.folio}: business date`);
+      }
+      assert.deepEqual(
+        tickets.map((t) => ({
+          folio: t.folio,
+          number: t.n,
+          total: mxn(t.total),
+          base: mxn(t.iva16.base),
+          tax: mxn(t.iva16.tax),
+        })),
+        EXPECTED_S.tickets,
+      );
+      const tenders = await inS(
+        (tx) =>
+          tx`select o.number::int as n, x.method, x.amount::int as amount, x.tip::int as tip,
+            x.terminal_label, x.card_brand, x.card_type, x.card_last4, x.fee::int as fee,
+            x.fee_source, x.provider, x.provider_reference, x.attempt_id, x.session_id
+          from tenders x join orders o on o.id=x.order_id
+          order by (x.method='cash'), o.number, x.created_at`,
+      );
+      assert.deepEqual(
+        tenders.map((x) => ({
+          order: orderS(x.n).id,
+          method: x.method,
+          amount: mxn(x.amount),
+          terminal: x.terminal_label,
+          card: x.card_brand
+            ? `${x.card_brand} ${x.card_type} ${x.card_last4}`
+            : null,
+          fee: x.fee === null ? null : mxn(x.fee),
+        })),
+        EXPECTED_S.tenders,
+      );
+      const drawers = await inS(
+        (tx) => tx`select id from cash_sessions order by opened_at`,
+      );
+      assert.equal(drawers.length, 1, "one drawer: the register's");
+      for (const x of tenders) {
+        const o = orderS(x.n);
+        assert.equal(
+          x.session_id,
+          drawers[0]!.id,
+          `${o.id}: the register's drawer`,
+        );
+        assert.equal(x.tip, 0, `${o.id}: no tip`);
+        if (x.method === "external") {
+          const t = PAYMENTS_S.terminals[KIOSKS_S[o.kiosk].terminal];
+          assert.equal(x.provider, t.provider, `${o.id} provider`);
+          assert.equal(x.fee_source, "estimated", `${o.id} fee estimated`);
+          assert.ok(x.attempt_id, `${o.id}: the tender names its attempt`);
+          assert.equal(
+            x.provider_reference,
+            (state.kioskCharges as Record<string, string>)[o.id],
+            `${o.id}: the provider's reference is the fake's charge`,
+          );
+        } else {
+          assert.equal(x.provider, null);
+          assert.equal(x.attempt_id, null);
+        }
+      }
+    },
+  );
+
+  await check(
+    "DS2",
+    "Restaurant S's kiosk charges: one hold-target attempt per order, from the kiosk, into the register's drawer as the drawer opener, all settled on their order's card tender; the retried review keeps its code with no resolution, the accepted one is Saúl's record with his note; nothing live",
+    async () => {
+      const rows = await inS(
+        (tx) =>
+          tx`select o.number::int as n, a.target, a.origin, a.amount::int as amount, a.tip::int as tip,
+            a.state, a.error_code, a.resolution, a.resolution_note, a.terminal_label,
+            er.name as resolver, e.name as actor, a.tender_id=x.id as own_tender,
+            a.cash_session_id=d.id as on_drawer, a.hold_id=h.id as on_hold,
+            (select count(*)::int from payment_attempt_events v where v.attempt_id=a.id and v.kind='review') as reviews
+          from payment_attempts a
+          join orders o on o.id=a.order_id
+          join public_order_holds h on h.order_id=o.id
+          join employees e on e.id=a.employee_id
+          left join employees er on er.id=a.resolved_by
+          left join tenders x on x.attempt_id=a.id
+          cross join (select id from cash_sessions) d
+          order by o.number`,
+      );
+      const terminals = { mp: "MP Kiosco", clip: "Clip Kiosco" } as const;
+      assert.deepEqual(
+        rows.map((a) => ({
+          order: orderS(a.n).id,
+          terminal: (Object.keys(terminals) as (keyof typeof terminals)[]).find(
+            (k) => terminals[k] === a.terminal_label,
+          ),
+          amount: mxn(a.amount),
+          state: a.state,
+          errorCode: a.error_code,
+          resolution: a.resolution,
+        })),
+        EXPECTED_S.attempts,
+      );
+      for (const a of rows) {
+        const o = orderS(a.n);
+        assert.deepEqual(
+          { target: a.target, origin: a.origin, tip: a.tip },
+          { target: "kiosk_hold", origin: "kiosk", tip: 0 },
+          o.id,
+        );
+        assert.equal(a.own_tender, true, `${o.id}: settled on its own tender`);
+        assert.equal(a.on_drawer, true, `${o.id}: the register's drawer`);
+        assert.equal(a.on_hold, true, `${o.id}: the hold's attempt`);
+        assert.equal(a.actor, staffS("ines"), `${o.id}: the drawer opener`);
+        assert.equal(
+          a.reviews,
+          o.resolution.kind === "approved" ? 0 : 1,
+          `${o.id}: review events`,
+        );
+        if (o.resolution.kind === "acceptWithRest") {
+          assert.equal(a.resolver, staffS("saul"));
+          assert.equal(a.resolution_note, o.resolution.note);
+        } else assert.equal(a.resolver, null);
+      }
+      const [all] = await inS(
+        (tx) =>
+          tx`select count(*)::int as n,
+            count(*) filter (where state in ('created','sending','pending','unknown','approved','review'))::int as live
+          from payment_attempts`,
+      );
+      assert.deepEqual(all, { n: ORDERS_S.length, live: 0 });
+    },
+  );
+
+  await check(
+    "DS3",
+    "Restaurant S's kiosk holds and orders: every hold accepted and paid at the accept, by the kiosk (no staff tap, LD-72) except the one Saúl accepted with the kiosk payment; para aquí is dine-in with no table; each order's round reached the kitchen stations of its lines; the suggested side kept its origin",
+    async () => {
+      const holds = await inS(
+        (tx) =>
+          tx`select o.number::int as n, h.channel, h.state, h.decision_source, h.paid_at_accept,
+            h.accepted_total::int as accepted, o.mode, o.table_id, o.channel as order_channel,
+            e.name as decided_by, h.lines,
+            (select count(*)::int from rounds r where r.order_id=o.id and r.number=1) as rounds,
+            (select count(*)::int from rounds r where r.order_id=o.id and r.number>1) as later_rounds,
+            (select a.detail->'via' from audit a where a.operation='public.hold_accepted'
+              and a.entity_id=h.id::text) as via
+          from public_order_holds h join orders o on o.id=h.order_id
+          join employees e on e.id=h.decided_by
+          order by o.number`,
+      );
+      assert.equal(holds.length, ORDERS_S.length);
+      assert.deepEqual(
+        holds.map((h) => ({
+          order: orderS(h.n).id,
+          number: h.n,
+          decisionSource: h.decision_source,
+          mode: h.mode,
+          acceptedTotal: mxn(h.accepted),
+        })),
+        EXPECTED_S.holds,
+      );
+      const stationOf = (id: string) =>
+        RESTAURANT_S.products.find((p) => p.id === id)!.station;
+      for (const h of holds) {
+        const o = orderS(h.n);
+        assert.equal(h.channel, "kiosk");
+        assert.equal(h.order_channel, "kiosk");
+        assert.equal(h.state, "accepted");
+        assert.equal(h.paid_at_accept, true, `${o.id}: paid at the accept`);
+        assert.equal(h.table_id, null, `${o.id}: no table`);
+        const stations = new Set([
+          ...o.lines.map((l) => stationOf(l.product)),
+          ...(o.suggestion ? [stationOf(o.suggestion)] : []),
+        ]);
+        assert.equal(h.rounds, stations.size, `${o.id}: one round per station`);
+        assert.equal(h.later_rounds, 0);
+        if (o.resolution.kind === "acceptWithRest") {
+          assert.equal(h.decided_by, staffS("saul"));
+          assert.equal(h.via, null, `${o.id}: a staff decision`);
+        } else {
+          assert.equal(
+            h.decided_by,
+            staffS("ines"),
+            `${o.id}: the kiosk actor`,
+          );
+          assert.deepEqual(
+            h.via,
+            { kind: "kiosk" },
+            `${o.id}: decided by the kiosk`,
+          );
+        }
+        const suggested = (h.lines as { origin?: string; productId: string }[])
+          .filter((l) => l.origin === "suggestion")
+          .map((l) => l.productId);
+        assert.equal(
+          suggested.length,
+          o.suggestion ? 1 : 0,
+          `${o.id}: suggestion lines`,
+        );
+      }
+    },
+  );
+
+  await check(
+    "DS4",
+    "Restaurant S's drawer: closed by Saúl with the expected cash (the opening plus the accepted difference) counted exactly, and each terminal's batch total equal to its kiosk tenders",
+    async () => {
+      const [d] = await inS(
+        (tx) =>
+          tx`select d.expected::int as expected, d.counted::int as counted, e.name as closer,
+            d.closed_at is not null as closed
+          from cash_sessions d join employees e on e.id=d.closed_by`,
+      );
+      assert.deepEqual(
+        {
+          expected: mxn(d.expected),
+          counted: mxn(d.counted),
+          closer: d.closer,
+          closed: d.closed,
+        },
+        {
+          expected: EXPECTED_S.corteZ.cash.expected,
+          counted: EXPECTED_S.corteZ.cash.counted,
+          closer: staffS("saul"),
+          closed: true,
+        },
+      );
+      const counts = await inS(
+        (tx) =>
+          tx`select t.name, c.reported::int as reported from drawer_terminal_counts c
+            join payment_terminals t on t.id=c.terminal_id order by t.name`,
+      );
+      assert.deepEqual(
+        counts.map((c) => [c.name, mxn(c.reported)]),
+        Object.entries(EXPECTED_S.corteZ.terminal.byTerminal).map(([l, v]) => [
+          l.replace(/ \(\d+\)$/, ""),
+          v.batch,
+        ]),
+      );
+    },
+  );
+
+  await check(
+    "DS5",
+    "Restaurant S's club: one member, enrolled at the counter (never at the kiosk); the member's kiosk order is linked from the kiosk and earned one stamp; the kiosk checkout keeps the member reference",
+    async () => {
+      const members = await inS(
+        (tx) =>
+          tx`select id, name, joined_via, stamps::int as stamps from loyalty_members`,
+      );
+      assert.equal(members.length, 1);
+      assert.deepEqual(
+        { name: members[0]!.name, via: members[0]!.joined_via },
+        { name: CLUB_S.member.name, via: "pos" },
+      );
+      // Posted by loyalty's reconcile job long before the day closed.
+      assert.equal(members[0]!.stamps, EXPECTED_S.club.stampsAfter);
+      const links = await inS(
+        (tx) =>
+          tx`select o.number::int as n, l.via, l.member_id from loyalty_order_links l
+            join orders o on o.id=l.order_id order by o.number`,
+      );
+      const member = ORDERS_S.find((o) => o.member)!;
+      assert.deepEqual(
+        links.map((l) => [orderS(l.n).id, l.via, l.member_id]),
+        [[member.id, "kiosk", members[0]!.id]],
+      );
+      const [c] = await inS(
+        (tx) =>
+          tx`select k.loyalty_member_id from kiosk_checkouts k
+            join public_order_holds h on h.id=k.hold_id join orders o on o.id=h.order_id
+            where o.number=${member.number}`,
+      );
+      assert.equal(c!.loyalty_member_id, members[0]!.id);
+    },
+  );
+
+  await check(
+    "DS6",
+    "Restaurant S's kiosks: two stations on their readers receiving into the register, each with one bound tablet; one checkout per hold with one attempt; Excepciones lists payments' kinds only (two reviews, Saúl's record); nothing dead",
+    async () => {
+      const stations = await inS(
+        (tx) =>
+          tx`select l.label, t.name as terminal, dv.name as till,
+            (select count(*)::int from kiosk_devices k where k.station_id=s.id and k.revoked_at is null
+              and k.paired_at is not null) as tablets
+          from kiosk_stations s join public_links l on l.station_id=s.id
+          left join payment_terminals t on t.id=s.terminal_id
+          left join devices dv on dv.id=s.register_device_id
+          order by l.label`,
+      );
+      assert.deepEqual(
+        stations.map((x) => [x.label, x.terminal, x.till, x.tablets]),
+        [
+          ["Entrada", PAYMENTS_S.terminals.mp.name, "Caja", 1],
+          ["Terraza", PAYMENTS_S.terminals.clip.name, "Caja", 1],
+        ],
+      );
+      const checkouts = await inS(
+        (tx) =>
+          tx`select k.attempt_count::int as attempts, k.payment_choice from kiosk_checkouts k`,
+      );
+      assert.equal(checkouts.length, ORDERS_S.length);
+      for (const c of checkouts)
+        assert.deepEqual(c, { attempts: 1, payment_choice: "card" });
+      const [restaurant] = await inS(
+        (tx) => tx`select name,currency,timezone,cutoff from restaurants`,
+      );
+      const [owner] = await inS(
+        (tx) => tx`select id from employees where role='owner'`,
+      );
+      const session = {
+        id: "00000000-0000-4000-8000-0000000000d5",
+        tenantId: S,
+        employeeId: owner!.id,
+        name: RESTAURANT_S.owner.name,
+        role: "owner",
+        deviceId: "00000000-0000-4000-8000-000000000000",
+        expiresAt: "",
+        offlineUntil: "",
+        csrf: "",
+        restaurant,
+      } as unknown as Session;
+      const page = await inS((tx) =>
+        exceptionRows(tx, session, {
+          from: state.businessDateS,
+          to: state.businessDateS,
+          limit: "500",
+        }),
+      );
+      assert.deepEqual(
+        page.rows
+          .map((r) => ({
+            kind: r.kind,
+            order: r.orderNumber,
+            amount: mxn(r.amount),
+            terminal: r.detail.terminal,
+          }))
+          .sort(
+            (a, b) =>
+              a.kind.localeCompare(b.kind) || (a.order ?? 0) - (b.order ?? 0),
+          ),
+        [
+          ...EXPECTED_S.exceptions.recorded.map((x) => ({
+            kind: "terminal_attempt_dismissed",
+            order: x.number,
+            amount: x.amount,
+            terminal: x.terminal,
+          })),
+          ...EXPECTED_S.exceptions.review.map((x) => ({
+            kind: "terminal_attempt_review",
+            order: x.number,
+            amount: x.amount,
+            terminal: x.terminal,
+          })),
+        ],
+      );
+      const [jobs] = await meta(
+        (tx) =>
+          tx`select (select count(*)::int from jobs where tenant_id=${S} and state='dead') as dead`,
+      );
+      assert.deepEqual(jobs, { dead: 0 });
+    },
+  );
+
   await sql.end();
   await admin.end();
   if (failed) {
     console.error(
-      `Restaurant-day DB reconciliation (branch P): ${failed} check(s) failed.`,
+      `Restaurant-day DB reconciliation (branches P and S): ${failed} check(s) failed.`,
     );
     process.exit(1);
   }
   console.log(
-    `Restaurant-day DB reconciliation passed (${passed} checks, branch P).`,
+    `Restaurant-day DB reconciliation passed (${passed} checks, branches P and S).`,
   );
   process.exit(0);
 }

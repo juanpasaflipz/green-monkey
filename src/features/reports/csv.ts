@@ -22,7 +22,12 @@ import type {
   TenderReportRow,
 } from "../../../shared/reports";
 import { strings, type Key } from "../../i18n";
-import { channelLabel, operationLabel, tenderMethodLabel } from "../../labels";
+import {
+  channelLabel,
+  operationLabel,
+  orderModeKey,
+  tenderMethodLabel,
+} from "../../labels";
 import { platformLabel } from "../../../shared/payments";
 import { differenceLabel, exceptionKindLabel, hourLabel } from "./format";
 import { summarySections } from "./summary-rows";
@@ -287,7 +292,7 @@ export const orderColumns = (locale: Locale): CsvColumn<OrderReportRow>[] => [
   {
     header: h("reportsColMode"),
     type: "t",
-    value: (r) => strings[locale][r.mode as Key] ?? r.mode,
+    value: (r) => strings[locale][orderModeKey(r.mode, !!r.tableName)] ?? r.mode,
   },
   { header: h("reportsColTable"), type: "t", value: (r) => r.tableName },
   { header: h("reportsColWaiter"), type: "t", value: (r) => r.waiterName },

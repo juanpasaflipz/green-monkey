@@ -53,9 +53,14 @@ export const PUBLIC_LIMITS = {
   minOrderTotal: 10_000,
   maxOrderTotal: 10_000_000,
 } as const;
+/**
+ * Kiosk idle timing (kiosk 039 §2.12): "¿Sigues ahí?" at 70 s and the reset at 95 s leave 25 s
+ * to answer (WCAG 2.2.1 asks at least 20; before 039 it was 75/90, 15 s). shared/kiosk.ts
+ * KIOSK_IDLE repeats these for the kiosk's own screens.
+ */
 export const KIOSK_TIMING = {
-  warnAfterMs: 75_000,
-  resetAfterMs: 90_000,
+  warnAfterMs: 70_000,
+  resetAfterMs: 95_000,
   doneResetMs: 20_000,
 } as const;
 export const STATUS_POLL = {
@@ -97,7 +102,10 @@ export const publicLineInput = z
     options: z.array(id).max(30).default([]),
   })
   .strict();
-export type PublicLine = z.infer<typeof publicLineInput>;
+/** A held line; a kiosk line added from a suggestion keeps origin (039, report attribution). */
+export type PublicLine = z.infer<typeof publicLineInput> & {
+  origin?: "suggestion";
+};
 /**
  * Characters a diner's name never carries: C0 controls, DEL, C1 controls and
  * the bidi overrides and isolates (U+202A-U+202E, U+2066-U+2069). A NUL would
@@ -195,7 +203,7 @@ const holdPayment = <M extends z.ZodTypeAny>(method: M) => ({
   externalConfirmed: z.boolean().default(false),
   reference: z.string().max(120).default(""),
 });
-export const holdPaymentInput = z.discriminatedUnion("method", [
+const counterPayments = [
   z.object(holdPayment(z.literal("cash"))).strict(),
   z
     .object({
@@ -203,6 +211,31 @@ export const holdPaymentInput = z.discriminatedUnion("method", [
       terminalId: id.optional(),
     })
     .strict(),
+] as const;
+/** What staff collect at the counter: cash or a manual terminal record. */
+export const holdCounterPaymentInput = z.discriminatedUnion(
+  "method",
+  counterPayments,
+);
+/**
+ * «Aceptar con el pago del kiosco» (039, critic R13): a manager accepts a kiosk hold whose card
+ * charge was approved without an order (payments' review), with that charge as its payment. The
+ * note names what the manager checked (payments' record). v1 has no partial refund: the accepted
+ * total is at least the charge, and a total above it collects `rest` (cash or a manual terminal)
+ * in the same accept.
+ */
+export const holdAttemptPaymentInput = z
+  .object({
+    method: z.literal("attempt"),
+    attemptId: id,
+    note: z.string().trim().min(10).max(500),
+    rest: holdCounterPaymentInput.nullable().default(null),
+  })
+  .strict();
+export type HoldAttemptPayment = z.output<typeof holdAttemptPaymentInput>;
+export const holdPaymentInput = z.discriminatedUnion("method", [
+  ...counterPayments,
+  holdAttemptPaymentInput,
 ]);
 export const acceptInput = z
   .object({
@@ -235,8 +268,26 @@ export const rejectInput = z
     operationId: id,
     reason: z.enum(REJECT_REASONS),
     revokeLink: z.boolean().default(false),
+    /**
+     * «Rechazar y reembolsar» (039, critic R13): a kiosk hold whose card charge was approved
+     * without an order. A manager with a recent PIN refunded the whole charge in the provider's
+     * app; the reject records it (payments' refunded_at_provider) in the same transaction.
+     */
+    refund: z
+      .object({
+        attemptId: id,
+        note: z.string().trim().min(10).max(500),
+        confirmed: z.literal(true),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
+/**
+ * Staff claim a kiosk hold for the counter when «Cobrar y enviar a cocina» opens on it
+ * (KV-FIXES-1): from then on the kiosk can no longer cancel it.
+ */
+export const claimInput = z.object({ operationId: id }).strict();
 
 // ---- wire views ---------------------------------------------------------
 
@@ -377,6 +428,33 @@ export type InboxHold = {
     paid: number;
     waiterName: string;
   }[];
+  /**
+   * Kiosk (039): the hold's card charge at the kiosk. charging: payments may still take it (no
+   * accept or reject; "Pagando en el kiosco…"); review: approved but the order could not be
+   * created (the red card, resolved through payments' resolve dialog, critic R13).
+   */
+  kiosk?: null | {
+    paymentChoice: "card" | "counter" | null;
+    /**
+     * Staff claimed it for the counter («Cobrar y enviar a cocina» opened; KF-MONEY-1): it stays
+     * pay-first until collected, unlike the guest's own «Pagar en caja».
+     */
+    claimed: boolean;
+    /** The latest attempt (payments' charge), when one was started. */
+    attemptId: string | null;
+    charging: boolean;
+    /** The charge's outcome is unknown (payments' 'unknown'): resolved, not cancelled. */
+    unknown: boolean;
+    /** Approved and about to settle: payments can no longer cancel it (KV-FIXES-6). */
+    approved: boolean;
+    review: null | {
+      attemptId: string;
+      code: string;
+      amount: number;
+      terminalLabel: string;
+      provider: "mercadopago" | "clip";
+    };
+  };
 };
 export type InboxResponse = {
   available: boolean;
@@ -444,6 +522,81 @@ export function holdActions(
   };
 }
 
+/**
+ * A kiosk hold in the staff inbox (039; KIOSK-UX-04, KIOSK-MONEY-3; kiosk spec §2.5). null: not a
+ * kiosk checkout (a QR hold, or a pre-039 kiosk link's counter hold). "charging" and "review" have
+ * their own block. "counter": the guest chose «Pagar en caja» (or the kiosk could not take cards),
+ * a normal card. "at_kiosk": the guest has not chosen yet. "card_unpaid": the guest chose card and
+ * it never paid (a decline, a walk-away, a review refunded at the provider): an abandoned card
+ * checkout. "claimed": staff claimed it for the counter and have not collected it yet
+ * («Reclamado en caja», KF-MONEY-1): the kiosk can no longer cancel it, so staff collect or
+ * reject it.
+ */
+export type KioskInboxState =
+  "charging" | "review" | "counter" | "claimed" | "at_kiosk" | "card_unpaid";
+export function kioskInboxState(k: InboxHold["kiosk"]): KioskInboxState | null {
+  if (!k) return null;
+  if (k.review) return "review";
+  if (k.charging) return "charging";
+  if (k.paymentChoice === "counter") return k.claimed ? "claimed" : "counter";
+  return k.paymentChoice === "card" ? "card_unpaid" : "at_kiosk";
+}
+
+/**
+ * A manager's exits on a kiosk card the guest is paying («Pagando en el kiosco…»; pure,
+ * tests/kiosk.test.ts): «Cancelar cobro en curso» while payments may still withdraw the charge,
+ * and «Resolver cobro del kiosco» (record it or «No se cobró», payments' dialog) once its outcome
+ * is unknown (KIOSK-MONEY-4). Other roles get neither (kiosk §2.2; KIOSK-SECURITY-2).
+ */
+export function kioskChargingExits(
+  k: InboxHold["kiosk"],
+  role: string,
+): { cancel: boolean; resolve: boolean } {
+  const manager = role === "owner" || role === "manager";
+  if (!k?.charging || !k.attemptId || !manager)
+    return { cancel: false, resolve: false };
+  // An approved charge only settles (requestCancel answers payments_not_cancellable): no exit.
+  return { cancel: !k.unknown && !k.approved, resolve: k.unknown };
+}
+
+/**
+ * The inbox actions of a hold: holdActions, except that a kiosk hold the guest has not sent to the
+ * counter, or one staff claimed and have not collected (KF-MONEY-1), is pay-first whatever the
+ * counter policy (no «Aceptar y enviar a cocina»; «Cobrar y enviar a cocina», «Rechazar» and a
+ * manager's exception stay). The server enforces the same rule.
+ */
+export function inboxActions(
+  hold: Pick<InboxHold, "policy" | "kiosk">,
+  role: string,
+  currentTotal: number | null,
+): ReturnType<typeof holdActions> {
+  const k = kioskInboxState(hold.kiosk);
+  return holdActions(
+    k === "at_kiosk" || k === "card_unpaid" || k === "claimed"
+      ? "pay_first"
+      : hold.policy,
+    role,
+    currentTotal,
+  );
+}
+
+/**
+ * Whether «Cobrar y enviar a cocina» claims the hold for the counter before the payment dialog
+ * opens (KV-FIXES-1; pure, tests/kiosk.test.ts): a kiosk hold the guest has not sent to the counter
+ * («En el kiosco», «Cobro con tarjeta abandonado»). The kiosk's idle reset or «Cancelar pedido»
+ * would otherwise cancel the hold while the cashier charges the guest. Only when this device's
+ * drawer is open (KF-MONEY-1): without it the dialog can only send the cashier to «Ir a caja», and
+ * a claim then would take the hold from the kiosk with no collection to follow.
+ */
+export function claimsForCounter(
+  k: InboxHold["kiosk"],
+  drawerOpen: boolean,
+): boolean {
+  if (!drawerOpen) return false;
+  const state = kioskInboxState(k);
+  return state === "at_kiosk" || state === "card_unpaid";
+}
+
 /** The diner never learns that staff flagged the order as abuse. */
 export const dinerRejectReason = (
   r: RejectReason | null,
@@ -465,6 +618,6 @@ function sorted(value: unknown): unknown {
   return value;
 }
 /** JSON with sorted keys, for request_hash (stable across key order). */
-export function canonicalRequest(p: PublicOrderInput): string {
+export function canonicalRequest(p: PublicOrderInput | object): string {
   return JSON.stringify(sorted(p));
 }

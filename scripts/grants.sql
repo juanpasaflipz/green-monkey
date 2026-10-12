@@ -219,3 +219,25 @@ DO $$ BEGIN
   GRANT UPDATE (member_id, changed_at, changed_by) ON loyalty_order_links TO gm_app;
  END IF;
 END $$;
+
+-- 039 kiosk (LD-71/LD-72). Guarded: this manifest also runs on schemas before 039 (the 036
+-- pattern). No DELETE on any kiosk or media table (critic R35: suggestions are replaced by UPDATE).
+-- Column grants keep identities immutable together with 039's triggers. Nothing for the worker
+-- (critic R36: the media jobs run on the web, the only process holding the media token). The
+-- checkout's member reference is blanked by retention as the schema owner (R25), so the runtime
+-- role gets no UPDATE on it.
+DO $$ BEGIN
+ IF to_regclass('public.kiosk_checkouts') IS NOT NULL THEN
+  GRANT SELECT, INSERT ON kiosk_settings, kiosk_stations, kiosk_devices, kiosk_checkouts, menu_media,
+    menu_suggestions TO gm_app;
+  GRANT UPDATE (payment_mode, ask_fulfillment, suggestions, loyalty_at_kiosk, version, updated_at, updated_by)
+    ON kiosk_settings TO gm_app;
+  GRANT UPDATE (terminal_id, register_device_id, version, updated_by, updated_at, archived_at) ON kiosk_stations TO gm_app;
+  GRANT UPDATE (pairing_attempts, secret_hash, paired_at, pairing_code_hash, pairing_expires_at, last_seen_at, build,
+    viewport, revoked_at, revoked_by) ON kiosk_devices TO gm_app;
+  GRANT UPDATE (payment_choice, attempt_id, attempt_count, updated_at) ON kiosk_checkouts TO gm_app;
+  GRANT UPDATE (state, width, height, variants, deleted_at, deleted_by, purged_at) ON menu_media TO gm_app;
+  GRANT UPDATE (product_ids, version, updated_at, updated_by) ON menu_suggestions TO gm_app;
+  GRANT UPDATE (decision_source) ON public_order_holds TO gm_app;
+ END IF;
+END $$;

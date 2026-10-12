@@ -255,6 +255,20 @@ Loyalty (038) adds no deletion and one redaction: club members with no
 activity for 24 months lose name, phone and the notice snapshot
 (`redacted.loyalty_members`); no `loyalty_*` row is ever deleted.
 
+The kiosk (039, critic R25/R41) adds no deletion and one redaction: the club
+member a kiosk checkout carried (`kiosk_checkouts.loyalty_member_id`, an id
+only) is blanked 30 days after the checkout was created
+(`redacted.kiosk_checkouts` in the `retention_run` line). 039's
+`kiosk_checkout_transition` trigger accepts exactly that update (the member
+id to null, nothing else changing) and refuses any delete; the partial index
+`kiosk_checkouts_member_retention` keeps each batch to the checkouts that
+still carry a member. A `retention_table_skipped` for `kiosk_checkouts` is
+the same lock timeout as for any table (below). Menu photos are not
+retention's: a removed photo's objects are deleted by the web's `media_purge`
+job 7 days after removal (the `menu_media` row stays, `purged`), and
+`media_stale` sweeps an upload left half-done after 1 hour; both are jobs
+(see Jobs), retried and then dead like any other.
+
 It also **redacts** in place, never deletes: the diner's name and note of
 every public ordering hold older than 30 days, in any state, are blanked
 (migration 034 lets the transition trigger accept exactly that update;
@@ -263,8 +277,10 @@ LD-41). Each run reports them as `redacted.public_order_holds` in the
 034's partial index `public_order_holds_unredacted` keeps each batch to the
 holds that still carry a name or note.
 
-The three tables force row-level security and the runtime login has no
-DELETE (nor UPDATE on a hold's name or note), so retention runs as the
+The five tables (`oauth_login_attempts`, `jobs`, `public_order_holds`,
+`loyalty_members`, `kiosk_checkouts`) force row-level security and the
+runtime login has no DELETE (nor UPDATE on a hold's name or note, a member's
+data or a checkout's member), so retention runs as the
 schema owner `gm_migrator` from GitHub Actions (the environment secret
 `MIGRATION_DATABASE_URL`), never from a Railway service:
 
@@ -658,6 +674,10 @@ test merchant), charges are real and low-value:
       for the terminal, then 504 PINPAD_TERMINAL_TIMEOUT_EXCEPTION (the fake answers 400; the
       worker treats a 5xx as an unknown outcome and withdraws by serial). Record the status,
       the time it took, and whether a delete by serial during those 60 s finds the request.
+   r. MP fee timing: whether an approved payment's read ever returns `fee_details: []` before
+      MP has computed the fee. The worker records an empty array as a zero fee, so the tender
+      and the corte would then show no MP fee for that charge. Record the payment's
+      `fee_details` on the first read after approval and again a minute later.
 5. Evidence (timings, screenshots, attempt events with ids only) stays local under the LD-67
    evidence-directory pattern; nothing with a token, a key or a card beyond the last 4.
 6. Afterwards: disconnect both accounts in Configuración (the worker wipes the credentials)
@@ -960,6 +980,74 @@ it with the operator API call above, as no screen does yet, or call
 never double-post) and the `loyalty_ledger_vs_members` alert in Finanzas › Club
 de lealtad (the alert is a count: escalate with the restaurant and the day;
 support compares members with their ledger sums).
+
+## Kiosk self-checkout and menu photos
+
+Area doc: [KIOSK.md](KIOSK.md) (troubleshooting table in §11).
+
+- **"El kiosco no cobra con tarjeta."** Configuración › Pedidos en línea › Kiosco de autoservicio:
+  the station shows "Tableta vinculada · vista hace …" (else re-pair: Vincular tableta, then on the
+  tablet a 3-second press on the restaurant name), a terminal and a till; the till's drawer is open;
+  the provider shows Conectado; "Cobro en el kiosco" is not "Solo en caja"; `KIOSK_SELF_CHECKOUT_ENABLED`
+  is not `false`. Meanwhile the kiosk takes counter orders.
+- **"Terminal ocupada."** Another live charge on the reader (a POS charge or another kiosk). Wait, or a
+  manager cancels it from the inbox card («Cancelar cobro») or Cobros en terminal.
+- **"Cobrado sin pedido" (red card).** «Resolver cobro del kiosco»: «Registrar el cobro aprobado»
+  once the product is back (any operator; «Volver a consultar» only asks the provider again); or a
+  manager «Aceptar con el pago del kiosco»; or the manager refunds the
+  whole charge in the provider app and chooses «Rechazar y reembolsar» (PIN, a note with the refund
+  folio). For a charge outside a hold, payments' resolve dialog records «Se cobró y se reembolsó en
+  la terminal». The drawer cannot close until it is resolved.
+- **Variables (KIOSK-OPS-1, LD-95).** `.railway/railway.ts` declares all seven on web only.
+  `KIOSK_SELF_CHECKOUT_ENABLED` and `MENU_PHOTOS_ENABLED` are `preserve()` on staging (unset means
+  on) and the literal `"false"` in production until the switch-on below. `MEDIA_STORE` and the
+  four `MEDIA_R2_*` are `preserve()` in both environments. They are set with railway-vars.sh
+  once the owner provides the media bucket (LAUNCH_HANDOFF 1.16a): `MEDIA_STORE=r2` together
+  with the four values. Never set `MEDIA_STORE=fs` or `MEDIA_FS_ROOT` on Railway. Without the
+  bucket, uploads answer `media_store_not_configured` and the menus show text tiles.
+- **Kill switch.** In a production incident after the switch-on, act in the app first: the owner
+  or a manager sets Configuración › Kiosco de autoservicio › «Cobro en el kiosco» to «Solo en
+  caja» and taps «Guardar configuración» (PIN). The server reads it on every `/charge` and
+  `/state`, so the next charge is refused at once and the kiosks offer only «Pagar en caja»; a
+  single tablet can also be cut off with «Desvincular» on its station. Charges already taken
+  still settle. As a stopgap, `KIOSK_SELF_CHECKOUT_ENABLED=false` may be set by hand on the
+  production web (railway-vars.sh, redeploy); the next apply overwrites it, so land the reviewed
+  change of that `railway.ts` line back to `"false"` before the next production deploy.
+  Staging: `KIOSK_SELF_CHECKOUT_ENABLED=false` on web (railway-vars.sh, redeploy) turns card at
+  the kiosk off, and `preserve()` keeps it through later applies. Production stays off until the
+  switch-on.
+- **Switching production on.** Follow [LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) 1.16a in its order
+  (LD-96), each step passed and recorded before the next: (1) the R44a device rehearsal
+  ("Payments: real-device rehearsal"); (2) `PAYMENTS_PROVIDERS` on the production worker (card at
+  the kiosk needs integrated charging); (3) the R2 media bucket, with `MEDIA_STORE=r2` and the
+  four `MEDIA_R2_*` values set with `railway-vars.sh production`; (4) the kiosk field checks;
+  (5) R44b, the combined Wave 4 rehearsal (a member stamped at the kiosk, a drawer close with
+  the kiosk reader's batch and «Del kiosco», a corte reprint). Only then (6) the switches: one
+  reviewed change to `.railway/railway.ts`: the
+  production side of the kiosk spread declares `"true"` for the switches being turned on.
+  `preserve()` would keep the `"false"` already applied. Update the kiosk assertion in
+  `tests/workflows.test.ts` in the same pull request and merge to main. The production deploy
+  (dispatch, outside service hours) applies it: `railway config plan` shows the changed values
+  on `web` and no deletion. Check `/capabilities`, which should report `kioskSelfCheckout` and
+  `menuPhotos` enabled, then upload one photo and confirm it loads. Switching off again is the
+  reverse change.
+- **Menu photos store outage.** The media route answers 503 (`media_unavailable`). There is no
+  alert and no Sentry event: only the web's error log lines `media_route_failed` (serving) and
+  `media_store_failed` (uploads), so watch the web logs when photos go blank. Menus show the
+  product's initial tile instead of the photo; uploads fail with "No pudimos guardar la foto". Check R2 status and the
+  token; nothing to repair in the database. `MENU_PHOTOS_ENABLED=false` hides photos entirely.
+- **R2 media token rotation.** Create a new bucket-scoped Object Read & Write token without expiry
+  for the media bucket, set `MEDIA_R2_ACCESS_KEY_ID` and `MEDIA_R2_SECRET_ACCESS_KEY` on web
+  (railway-vars.sh), redeploy, check one photo loads and one upload works, then revoke the old token.
+- **Tenant offboarding.** The media purge is a step of the account offboarding procedure
+  ([OPERATIONS](OPERATIONS.md) "Offboarding", critic R36: a runbook step, not a hook): after the
+  export window, the tenant's `menu_media` rows are marked removed, the prefix `m/<tenantId>/` is
+  deleted from the media bucket, and the step is recorded in the register.
+- **A copied tablet cookie (KIOSK-SECURITY-3).** The device secret is not rotated (deferred): the
+  heartbeat only re-sends the same `gm_kiosk` cookie after 30 days. A copy of a tablet's cookie
+  therefore stays valid until the tablet is unpaired. If a tablet is lost, stolen or its browser
+  data may have been copied, tap «Desvincular» on its station (Configuración › Pedidos en línea ›
+  Kiosco de autoservicio): that revokes the cookie at once; pair the tablet again with a new code.
 
 ## Open follow-ups
 

@@ -577,6 +577,31 @@ describe("public ordering tokens and schemas (032)", () => {
     );
     expect(done).toContain('<h2 class="kiosk-code">K-6</h2>');
     expect(done).not.toContain('role="status"');
+    // KIOSK-UX-01: a club member's counter order says the stamp comes with the payment.
+    expect(done).not.toContain("Tu sello se suma al pagar en caja.");
+    const member = renderToStaticMarkup(
+      createElement(KioskDone, {
+        hold: {
+          restaurant: { name: "R", currency: "MXN", timezone: "UTC" },
+          label: "K-7",
+          state: "pending",
+          kind: "kiosk",
+          policy: "accept",
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date().toISOString(),
+          lines: [],
+          total: 4500,
+          priceChanged: false,
+          rejectReason: null,
+          order: null,
+        },
+        locale: "es",
+        currency: "MXN",
+        member: true,
+        onReset: () => {},
+      }),
+    );
+    expect(member).toContain("Tu sello se suma al pagar en caja.");
     const loading = renderToStaticMarkup(
       createElement(DinerStatus, {
         token: token(),

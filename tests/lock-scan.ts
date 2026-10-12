@@ -105,6 +105,15 @@ export const TABLE_LEVEL: Record<string, number> = {
   // loyalty (038; ARCHITECTURE LO-3, LO-R10): member rows FOR NO KEY UPDATE, the settings row
   loyalty_members: LEVEL.config,
   loyalty_settings: LEVEL.config,
+  // kiosk (039; ARCHITECTURE LO-2b and LO-3, critic R7): the checkout row always right after its
+  // hold; stations, devices and settings rows; media and suggestions after catalog in the
+  // configuration order (menu_state → … → catalog → menu_media / menu_suggestions)
+  kiosk_checkouts: LEVEL.holds,
+  kiosk_settings: LEVEL.config,
+  kiosk_stations: LEVEL.config,
+  kiosk_devices: LEVEL.config,
+  menu_media: LEVEL.config,
+  menu_suggestions: LEVEL.config,
   order_numbers: LEVEL.orderNumbers,
   public_hold_numbers: LEVEL.orderNumbers,
   orders: LEVEL.orders,

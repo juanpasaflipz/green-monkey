@@ -12,6 +12,7 @@ import { statusHash } from "./public-tokens.js";
 import { restaurantPrivacyUrl } from "./account-settings.js";
 import { fiscalTicketIdentity } from "./fiscal-read.js";
 import { selfInvoiceOffered } from "./cfdi/store.js";
+import { liveAttemptForHold } from "./payments/guards.js";
 import {
   DomainError,
   businessDate,
@@ -36,10 +37,11 @@ import {
   type PricedHoldLine,
   type PublicLine,
   type PublicMenuView,
+  type PublicOrderInput,
   type RejectReason,
 } from "../shared/public-ordering.js";
 
-type LinkContext = {
+export type LinkContext = {
   id: string;
   kind: LinkKind;
   channel: "qr" | "kiosk";
@@ -141,7 +143,7 @@ export async function dinerRevision(
   return { revision, ordering: orderingState(c) };
 }
 
-type HoldRow = {
+export type HoldRow = {
   id: string;
   link_id: string;
   request_hash: string;
@@ -150,6 +152,7 @@ type HoldRow = {
   mode: "dine_in" | "takeaway";
   table_id: string | null;
   policy: HoldPolicy;
+  lines: PublicLine[];
   priced: PricedHoldLine[];
   quoted_total: number;
   state: "pending" | "accepted" | "rejected" | "cancelled";
@@ -271,9 +274,39 @@ export async function submitHold(
   raw: unknown,
 ): Promise<DinerHoldView> {
   const p = publicOrderInput.parse(raw);
-  const requestHash = createHash("sha256")
-    .update(canonicalRequest(p))
-    .digest("hex");
+  return (await placeHold(tx, linkId, p, canonicalRequest(p))).view;
+}
+
+/** What placeHold needs of a diner's order (the QR body, or the kiosk's without its extras). */
+export type PlaceHoldInput = Omit<PublicOrderInput, "lines"> & {
+  lines: (PublicOrderInput["lines"][number] & { origin?: "suggestion" })[];
+};
+export type PlacedHold = {
+  view: DinerHoldView;
+  hold: HoldRow;
+  /** False when the operation id replayed an earlier submission. */
+  created: boolean;
+  context: LinkContext;
+};
+
+/**
+ * submitHold's body, shared with the kiosk (039 kioskSubmit): `canonical` is the diner's whole
+ * request (its hash detects a changed replay), `o.mode` the kiosk's "para aquí" (dine in without a
+ * table, kiosk links only) and `o.afterInsert` the kiosk's checkout insert, under the same locks
+ * (LO-R8). A suggestion line keeps its `origin` in the hold's lines (report attribution only).
+ */
+export async function placeHold(
+  tx: Tx,
+  linkId: string,
+  p: PlaceHoldInput,
+  canonical: string,
+  o: {
+    mode?: "dine_in" | "takeaway";
+    kind?: LinkKind;
+    afterInsert?: (hold: HoldRow, c: LinkContext) => Promise<void>;
+  } = {},
+): Promise<PlacedHold> {
+  const requestHash = createHash("sha256").update(canonical).digest("hex");
   // LO-1: the diner's idempotency key, disjoint from staff once() keys.
   await tx`select pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id')||':public-op:'||${p.operationId},0))`;
   const [prior] = await tx<
@@ -283,7 +316,12 @@ export async function submitHold(
   if (prior) {
     if (prior.link_id !== linkId || prior.request_hash !== requestHash)
       throw new DomainError("operation_conflict", 409);
-    return holdView(tx, prior);
+    return {
+      view: await holdView(tx, prior),
+      hold: prior,
+      created: false,
+      context: await linkContext(tx, linkId),
+    };
   }
   const keyHash = statusHash(p.statusKey);
   const [reused] =
@@ -291,6 +329,8 @@ export async function submitHold(
   if (reused) throw new DomainError("operation_conflict", 409);
 
   const c = await activeContext(tx, linkId);
+  if (o.kind && c.kind !== o.kind)
+    throw new DomainError("public_link_invalid", 404);
   const ordering = orderingState(c);
   if (ordering.reason === "table_unavailable")
     throw new DomainError("public_table_unavailable", 409);
@@ -305,7 +345,7 @@ export async function submitHold(
   let priced: PricedLine[];
   try {
     priced = quote(
-      p.lines.map((l) => ({ ...l, note: "" })),
+      p.lines.map(({ origin: _origin, ...l }) => ({ ...l, note: "" })),
       menu,
       false,
     );
@@ -365,7 +405,13 @@ export async function submitHold(
     productId: l.productId,
     quantity: l.quantity,
     options: l.options,
+    ...(l.origin ? { origin: l.origin } : {}),
   }));
+  // A kiosk "para aquí" is dine in without a table (039's public_order_holds_table_mode).
+  const mode =
+    c.table_id || (o.mode === "dine_in" && c.kind === "kiosk")
+      ? "dine_in"
+      : "takeaway";
   const shown: PricedHoldLine[] = priced.map((l, i) => ({
     id: ids[i],
     quantity: l.quantity,
@@ -380,7 +426,7 @@ export async function submitHold(
       business_date,number,channel,mode,table_id,policy,name,note,lines,priced,quoted_total,
       menu_revision,order_operation_id,expires_at)
     values(current_setting('app.tenant_id')::uuid,${randomUUID()},${c.id},${p.operationId},${requestHash},${keyHash},
-      ${date},${number.value},${c.channel},${c.table_id ? "dine_in" : "takeaway"},${c.table_id},${ordering.policy},
+      ${date},${number.value},${c.channel},${mode},${c.table_id},${ordering.policy},
       ${p.name},${p.note},${tx.json(lines)},${tx.json(shown as never)},${total},${revision},${randomUUID()},
       now()+make_interval(mins=>${c.hold_minutes}))
     returning *,false as expired`.catch(
@@ -393,10 +439,17 @@ export async function submitHold(
       throw e;
     },
   );
-  return holdView(tx, {
+  const placed = {
     ...hold,
     restaurant: { name: c.name, currency: c.currency, timezone: c.timezone },
-  });
+  };
+  await o.afterInsert?.(placed, c);
+  return {
+    view: await holdView(tx, placed),
+    hold: placed,
+    created: true,
+    context: c,
+  };
 }
 
 /**
@@ -443,6 +496,17 @@ export async function cancelHold(
     throw new DomainError("public_hold_not_found", 404);
   const [h] = await holdByKey(tx, linkId, statusKey, true);
   if (!h) throw new DomainError("public_hold_not_found", 404);
+  // Kiosk (039, critic R12): the checkout right after its hold; no cancel while payments may still
+  // take, or has taken, the hold's card charge. Nor once the hold belongs to the counter («Pagar
+  // en caja», or staff claimed it to collect: KV-FIXES-1), since the cashier may be charging.
+  if (h.channel === "kiosk") {
+    const [c] =
+      await tx`select payment_choice from kiosk_checkouts where hold_id=${h.id} for update`;
+    if (await liveAttemptForHold(tx, h.id))
+      throw new DomainError("kiosk_charge_in_progress", 409);
+    if (h.state === "pending" && c?.payment_choice === "counter")
+      throw new DomainError("kiosk_hold_at_counter", 409);
+  }
   if (h.state !== "pending")
     throw new DomainError("public_order_not_pending", 409);
   if (h.expired) throw new DomainError("public_order_expired", 409);

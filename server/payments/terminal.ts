@@ -467,6 +467,12 @@ export async function requestCancel(
   s: Session,
   attemptId: string,
   raw: unknown,
+  /**
+   * "kiosk": the kiosk's own cancel on its charging screen (kioskCancelCharge, device-checked,
+   * as the receiving till's opener). Staff cancelling a kiosk hold's charge («Cancelar cobro en
+   * curso») need a manager (kiosk §2.2, §4.5; KIOSK-SECURITY-2); any operator cancels the rest.
+   */
+  by: "staff" | "kiosk" = "staff",
 ): Promise<AttemptView> {
   permit(s, operators);
   id.parse(attemptId);
@@ -479,6 +485,7 @@ export async function requestCancel(
     { attemptId },
     async () => {
       const a = await lockAttempt(tx, attemptId);
+      if (a.target === "kiosk_hold" && by === "staff") permit(s, managers);
       if (
         a.state === "approved" ||
         a.state === "settled" ||
@@ -613,8 +620,21 @@ export async function settleAttempt(
   manager?: ManagerRecord,
 ): Promise<SettleOutcome> {
   const [head] =
-    await tx`select settle_operation_id from payment_attempts where id=${attemptId}`;
+    await tx`select settle_operation_id,target from payment_attempts where id=${attemptId}`;
   if (!head) throw new DomainError("payments_attempt_not_found", 404);
+  // Another target's settler takes its own settle sequence (kiosk 039: the hold and its checkout
+  // before the attempt, ARCHITECTURE row 58); a domain error here rolls the caller back.
+  if (head.target !== "order") {
+    const settler = settlers.get(head.target as string);
+    if (!settler) throw new DomainError("payments_not_approved", 409);
+    return settler.settle(
+      tx,
+      s,
+      await readAttempt(tx, attemptId),
+      via,
+      manager,
+    );
+  }
   const key = head.settle_operation_id as string;
   await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + key},0))`;
   const [prior] =
@@ -660,6 +680,8 @@ export async function applyApprovedAttempt(
   attempt: Pick<AttemptRow, "id">,
   via: SettleVia,
   manager?: ManagerRecord,
+  /** A kiosk hold's settle (039): the order its accept just created for the hold. */
+  holdOrderId?: string,
 ): Promise<SettleOutcome> {
   // LO-2c: the caller already holds the row (a free re-lock); read it fresh under the lock.
   const a = await lockAttempt(tx, attempt.id);
@@ -670,9 +692,17 @@ export async function applyApprovedAttempt(
     : via === "retry"
       ? ["review", "approved"]
       : ["approved"];
-  if (!allowed.includes(a.state) || a.target !== "order" || !a.order_id)
+  // An order target names its order; a kiosk hold target gets one (holdOrderId) and 037's trigger
+  // lets order_id go null -> value only in the update that settles it.
+  const hold = a.target === "kiosk_hold";
+  if (
+    !allowed.includes(a.state) ||
+    (hold
+      ? !holdOrderId || a.order_id !== null
+      : a.target !== "order" || !a.order_id)
+  )
     throw new DomainError("payments_not_approved", 409);
-  const orderId = a.order_id;
+  const orderId = hold ? holdOrderId! : a.order_id!;
   const [row] =
     await tx`select id,state,check_state from orders where id=${orderId} for update`;
   if (!row) throw new DomainError("not_found", 404);
@@ -771,13 +801,14 @@ export async function applyApprovedAttempt(
       values(${s.tenantId},${orderId},${tenderId},${allocation.lineId},${allocation.unit},${allocation.amount})`;
   if (manager)
     await tx`update payment_attempts set state='settled',tender_id=${tenderId},settled_at=now(),
+        order_id=${orderId},
         provider_reference=coalesce(provider_reference,${reference}),resolution='recorded',
         resolution_note=${manager.note},resolved_by=${manager.employeeId},resolved_at=now(),
         version=version+1
       where id=${a.id}`;
   else
     await tx`update payment_attempts set state='settled',tender_id=${tenderId},settled_at=now(),
-        version=version+1
+        order_id=${orderId},version=version+1
       where id=${a.id}`;
   await event(tx, s, a.id, "settled", manager?.employeeId ?? null, {
     tenderId,
@@ -994,35 +1025,59 @@ export async function resolveAttempt(
         }
       } else if (a.state !== "review")
         throw new DomainError("payments_not_approved", 409);
-      const resolution =
-        p.outcome === "not_charged" ? "not_charged" : "refunded_at_provider";
-      const [row] = await tx<AttemptRow[]>`update payment_attempts
-        set state='dismissed',resolution=${resolution},resolution_note=${p.note!},
-          resolved_by=${s.employeeId},resolved_at=now(),version=version+1
-        where id=${attemptId} returning *`;
-      await event(tx, s, attemptId, "resolved", s.employeeId, {
-        outcome: resolution,
-        ...(attested ? { attested: "reader_cleared" } : {}),
-      });
-      // The late watch (P2V-FIXES-2/-3): the worker keeps reading a dismissed charge that has a
-      // provider reference, so a payment the provider takes later is alerted and listed in
-      // Excepciones (a late_approval), never lost.
-      if (resolution === "not_charged" && row.provider_reference)
-        await enqueueJob(tx, s, {
-          kind: "payments_poll",
-          dedupeKey: `${attemptId}:late:1`,
-          payload: { attemptId, chain: "late", seq: 1 },
-          runAt: new Date(Date.now() + PAYMENTS_LIMITS.lateWatchMs),
-        });
-      await audit(tx, s, "payment.terminal_resolved", a.order_id ?? attemptId, {
-        attemptId,
-        outcome: resolution,
-        note: p.note,
-        ...(attested ? { attested: "reader_cleared" } : {}),
-      });
+      const row = await dismissAttempt(
+        tx,
+        s,
+        a,
+        p.outcome === "not_charged" ? "not_charged" : "refunded_at_provider",
+        p.note!,
+        attested,
+      );
       return { attempt: await viewOf(tx, row) };
     },
   );
+}
+
+/**
+ * The dismissal itself (a manager's not_charged or refunded_at_provider): the attempt to
+ * dismissed with the manager's note, the event, the late watch and the audit row. The caller
+ * checked the role, the recent PIN and the state, and holds the attempt (LO-2c). The kiosk's
+ * «Rechazar y reembolsar» (039, critic R13) calls it after the hold and its checkout (LO-2b).
+ */
+export async function dismissAttempt(
+  tx: Tx,
+  s: Session,
+  a: AttemptRow,
+  resolution: "not_charged" | "refunded_at_provider",
+  note: string,
+  attested = false,
+): Promise<AttemptRow> {
+  const attemptId = a.id;
+  const [row] = await tx<AttemptRow[]>`update payment_attempts
+    set state='dismissed',resolution=${resolution},resolution_note=${note},
+      resolved_by=${s.employeeId},resolved_at=now(),version=version+1
+    where id=${attemptId} returning *`;
+  await event(tx, s, attemptId, "resolved", s.employeeId, {
+    outcome: resolution,
+    ...(attested ? { attested: "reader_cleared" } : {}),
+  });
+  // The late watch (P2V-FIXES-2/-3): the worker keeps reading a dismissed charge that has a
+  // provider reference, so a payment the provider takes later is alerted and listed in
+  // Excepciones (a late_approval), never lost.
+  if (resolution === "not_charged" && row.provider_reference)
+    await enqueueJob(tx, s, {
+      kind: "payments_poll",
+      dedupeKey: `${attemptId}:late:1`,
+      payload: { attemptId, chain: "late", seq: 1 },
+      runAt: new Date(Date.now() + PAYMENTS_LIMITS.lateWatchMs),
+    });
+  await audit(tx, s, "payment.terminal_resolved", a.order_id ?? attemptId, {
+    attemptId,
+    outcome: resolution,
+    note,
+    ...(attested ? { attested: "reader_cleared" } : {}),
+  });
+  return row;
 }
 
 /** After commit: a started, cancelled or checked attempt reaches the worker without the sweep. */

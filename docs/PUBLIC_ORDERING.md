@@ -31,6 +31,15 @@ on staging or production. Thermal printing of the QR cards and the QR scanners
 of real phones and kiosk tablets have not been checked on hardware (see
 [Field checks](#field-checks-before-printing-at-scale)).
 
+**Kiosk self-checkout (039).** Kiosk links now point at a station (its card
+reader and receiving till), kiosk holds may be dine-in without a table ("Comer
+aquí"), a paired tablet can take card payment on the terminal and the approved
+charge creates the order with no staff tap (LD-72: on payment only), and
+`acceptHold`/`rejectHold`/the diner's cancel refuse while a kiosk charge is
+live (`kiosk_charge_in_progress`). The accept is split into `createHoldOrder`
+and `finishHoldAccept`, shared with the kiosk's own accepts. Lock rows 55–63
+in ARCHITECTURE; the whole area is [KIOSK.md](KIOSK.md).
+
 ---
 
 ## 1. Concepts
@@ -181,12 +190,16 @@ is closed.
 - **Kiosk.**
   - After a submit, a full-screen code ("K-14"), the total, and where to pay.
     The kiosk resets after 20 s or on **Nuevo pedido**.
-  - With items in the cart, "¿Sigues ahí?" appears after 75 s idle, and the
-    kiosk clears the order at 90 s. A clean kiosk refetches its menu every
-    90 s.
+  - With items in the cart, "¿Sigues ahí?" appears after 70 s idle, and the
+    kiosk clears the order at 95 s (25 s to answer, WCAG 2.2.1; 75/90 before
+    039). A clean kiosk refetches its menu every 95 s.
   - After two consecutive transient failures, a full-screen "Sin conexión.
     Pide en caja." overlay appears. It clears on the next successful poll.
-  - The kiosk stores nothing on the device.
+  - Since 039 the kiosk stores one revocable HttpOnly binding cookie
+    (`gm_kiosk`, path `/api/public/kiosk`) when a manager pairs the tablet
+    (kiosk Q6 accepted by LD-72); nothing else. Card payment, "¿Para aquí o
+    para llevar?", photos, suggestions and the club at the kiosk are in
+    [KIOSK.md](KIOSK.md).
   - The kiosk renders **no navigational link**: "Privacidad de la
     plataforma" and the restaurant's notice open an in-page dialog with a QR
     code per notice to read on the diner's own phone. The idle reset closes

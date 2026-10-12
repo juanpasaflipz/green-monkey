@@ -1,4 +1,6 @@
 import {
+  createContext,
+  useContext,
   useEffect,
   useRef,
   useId,
@@ -54,6 +56,13 @@ export function Empty({ title, detail }: { title: string; detail?: string }) {
     </div>
   );
 }
+/**
+ * Where Modal portals its dialog: document.body, unless a page provides its own root. The kiosk
+ * provides its main.diner.kiosk, so «Texto grande», «Modo alcance» and the kiosk's 64 px targets
+ * apply inside its dialogs too (KIOSK-UX-07).
+ */
+export const ModalRoot = createContext<HTMLElement | null>(null);
+
 export function Modal({
   title,
   close,
@@ -71,6 +80,7 @@ export function Modal({
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
+  const root = useContext(ModalRoot);
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     ref.current?.showModal();
@@ -102,6 +112,6 @@ export function Modal({
       <div className="modal-body">{children}</div>
       {footer && <div className="modal-footer">{footer}</div>}
     </dialog>,
-    document.body,
+    root ?? document.body,
   );
 }

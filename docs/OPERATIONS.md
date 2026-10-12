@@ -211,6 +211,10 @@ Arts. 28–34) arrive at `LEGAL_PRIVACY_CONTACT_EMAIL`:
   after cutover (LOYALTY.md runbook), also delete the person in pos-lite (its
   `loyalty_customers` row for that phone) and note it in the register. Members
   with no activity for 24 months are redacted by the daily retention pass;
+- **kiosk** (039, critic R41): `kiosk_checkouts.loyalty_member_id` holds a
+  member id only (never a name or phone) and retention blanks it 30 days
+  after the checkout; a member's deletion is loyalty's (Clientes › Eliminar
+  datos del cliente). Kiosk tablets store no IP or user agent;
 - **held QR/kiosk orders** (public ordering, 032-034): a diner who typed a
   name or a note on a QR or kiosk order can have the hold's copy blanked.
   The restaurant has no tool for it (the runtime role cannot change a hold's
@@ -249,4 +253,14 @@ masiva and must keep them 5 years (CFF Art. 30). End any support grant; then
 The restaurant's records are never deleted by the tools: fiscal records
 (tickets, CFDI) stay blocked for at least 5 years, append-only money ledgers
 stay as they are, and the account follows the ARCO cancellation steps above.
+**Menu photos** (039, critic R36; `/media` serves a ready photo to anyone
+with its id): after the export window, as `gm_migrator`, run in one
+transaction `select set_config('app.tenant_id','<tenantId>',true)` and
+`update menu_media set state='deleted', deleted_at=now() where state in
+('uploading','ready')` (the route then answers 404, after at most its
+10-minute cache), delete the prefix `m/<tenantId>/` from the media bucket
+(Cloudflare dashboard › R2 › the media bucket, or an S3 client with a
+bucket-scoped token), then in a second transaction with the same
+`set_config` run `update menu_media set state='purged', purged_at=now() where
+state='deleted'`. No row is deleted (039's trigger refuses it).
 Record each step in the ticket and the cancellation register.

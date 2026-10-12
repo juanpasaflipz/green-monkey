@@ -52,6 +52,10 @@ export type DeviceName =
   | "cajaL"
   | "ownerP"
   | "cajaP"
+  | "ownerS"
+  | "cajaS"
+  | "kioskEntradaS"
+  | "kioskTerrazaS"
   | "probe"
   | "probe2";
 
@@ -89,6 +93,12 @@ export const DEVICE_SPECS: Record<DeviceName, Spec> = {
   // Branch P (payments spec §12.4): the owner's computer and the one register.
   ownerP: { width: 1440, height: 900, tz: "America/Mexico_City" },
   cajaP: { width: 1024, height: 768, tz: "America/Mexico_City" },
+  // Branch S (kiosk 039): the owner's computer, the one register and two kiosk tablets
+  // (Samsung Tab S10 FE in landscape, 1280×800).
+  ownerS: { width: 1440, height: 900, tz: "America/Mexico_City" },
+  cajaS: { width: 1024, height: 768, tz: "America/Mexico_City" },
+  kioskEntradaS: { width: 1280, height: 800, tz: "America/Mexico_City" },
+  kioskTerrazaS: { width: 1280, height: 800, tz: "America/Mexico_City" },
   probe: { width: 1024, height: 768, tz: "America/Mexico_City" },
   probe2: { width: 1024, height: 768, tz: "America/Mexico_City" },
 };

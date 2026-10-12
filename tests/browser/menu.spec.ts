@@ -1414,12 +1414,17 @@ test("OWNER-2/OWNER-11: QR and kiosk pages follow menu changes, flag a stale lin
     await kiosk
       .getByRole("button", { name: "Enviar pedido", exact: true })
       .click();
+    // Kiosk (039 §2.4): "¿Para aquí o para llevar?" comes before the order is sent.
+    await kiosk
+      .getByRole("button", { name: "Para llevar", exact: true })
+      .click();
     const message = kiosk.locator(".diner-error");
     await expect(message).toHaveText(
       "Un producto ya no está disponible. Quítalo de la orden.",
     );
     await expect(kiosk.locator(".line-unavailable")).toContainText(tepache);
-    await page.clock.fastForward(90_000);
+    // The idle reset is at 95 s since kiosk 039 (§2.12).
+    await page.clock.fastForward(95_000);
     await expect(message).toHaveCount(0);
     await expect(kiosk.locator(".line-unavailable")).toHaveCount(0);
     await expect(kiosk.locator(".diner-total strong")).toHaveText("$0.00");

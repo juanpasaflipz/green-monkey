@@ -4,14 +4,36 @@ import type { AttemptView } from "../../../shared/payments";
 import { parseMoneyInput } from "../../../shared/service";
 import { api } from "../../api";
 import { Button, Field, Modal } from "../../components/ui";
-import { strings, errorNotice, type Key } from "../../i18n";
-import { attemptStatus, canRetrySettle, resolveOptions } from "./attempt-text";
+import { strings, errorNotice, translateError, type Key } from "../../i18n";
+import { attemptStatus, canRetrySettle, resolveChoices } from "./attempt-text";
+import { kioskChargeFit } from "../../../shared/kiosk";
 
-type Outcome = "record" | "not_charged" | "refunded_at_provider";
+type Outcome =
+  | "record"
+  | "not_charged"
+  | "refunded_at_provider"
+  | "kiosk_accept"
+  | "kiosk_reject";
 const OUTCOME_KEYS: Record<Outcome, Key> = {
   record: "payResolveRecord",
   not_charged: "payResolveNotCharged",
   refunded_at_provider: "payResolveRefunded",
+  kiosk_accept: "kioskAcceptWithCharge",
+  kiosk_reject: "kioskRejectAndRefund",
+};
+
+/**
+ * Kiosk (039, critic R13): a kiosk hold's charge approved without an order resolves through its
+ * hold. «Sí se cobró: registrar» becomes «Aceptar con el pago del kiosco» (the hold as its card
+ * includes it now; a total above the charge collects the rest) and «Se reembolsó» becomes
+ * «Rechazar y reembolsar». No partial refund in v1.
+ */
+export type KioskResolve = {
+  /** The hold's total as its card includes it now; null while a price is unknown. */
+  total: number | null;
+  /** rest = total − charge, never negative. */
+  accept: (note: string, rest: number) => Promise<void>;
+  reject: (note: string) => Promise<void>;
 };
 
 /**
@@ -27,6 +49,7 @@ export function ResolveDialog({
   locale,
   money,
   manager,
+  kiosk,
   onClose,
   onResolved,
 }: {
@@ -34,13 +57,18 @@ export function ResolveDialog({
   locale: Locale;
   money: (n: number) => string;
   manager: boolean;
+  kiosk?: KioskResolve;
   onClose: () => void;
   /** The answer: the attempt now, and the order when a tender was recorded. */
   onResolved: (r: { attempt: AttemptView; order?: Order }) => void;
 }) {
   const t = (k: Key) => strings[locale][k];
   const ids = useId();
-  const options = manager ? resolveOptions(attempt) : [];
+  const options: Outcome[] = resolveChoices(attempt, {
+    manager,
+    viaHold: !!kiosk,
+  });
+
   const [outcome, setOutcome] = useState<Outcome | null>(options[0] ?? null);
   const [reference, setReference] = useState("");
   const [charged, setCharged] = useState("");
@@ -70,18 +98,38 @@ export function ResolveDialog({
   }
   const chargedOk =
     !needsCharged || (chargedMinor !== null && chargedMinor > 0);
+  // «Aceptar con el pago del kiosco»: the hold's total against the charge (no partial refund).
+  const kioskTotal = kiosk?.total ?? null;
+  const fit = kioskChargeFit(kioskTotal, attempt.amount);
+  const rest = fit.kind === "fits" ? fit.rest : null;
+  const kioskOk = outcome !== "kiosk_accept" || rest !== null;
   const canSubmit =
     !!outcome &&
     note.trim().length >= 10 &&
     confirmed &&
     referenceOk &&
     chargedOk &&
+    kioskOk &&
     !busy;
   const order =
     attempt.orderNumber !== null
       ? `#${attempt.orderNumber}`
       : (attempt.holdLabel ?? "—");
 
+  /** The kiosk outcomes run through the hold; the inbox reloads and this dialog closes. */
+  async function viaKiosk(run: () => Promise<void>) {
+    setBusy(true);
+    setError("");
+    try {
+      await run();
+      onClose();
+    } catch (e) {
+      if ((e as Error).message !== "step_up_cancelled")
+        setError(errorNotice(e, locale));
+    } finally {
+      setBusy(false);
+    }
+  }
   async function send(body: Record<string, unknown>, done = true) {
     setBusy(true);
     setError("");
@@ -111,19 +159,31 @@ export function ResolveDialog({
             className="full"
             disabled={!canSubmit}
             onClick={() =>
-              void send({
-                outcome,
-                note: note.trim(),
-                confirmed: true,
-                ...(needsReference ? { reference: reference.trim() } : {}),
-                ...(needsCharged ? { charged: chargedMinor } : {}),
-                ...(offersReaderCleared && readerCleared
-                  ? { readerCleared: true }
-                  : {}),
-              })
+              kiosk && outcome === "kiosk_accept"
+                ? void viaKiosk(() => kiosk.accept(note.trim(), rest ?? 0))
+                : kiosk && outcome === "kiosk_reject"
+                  ? void viaKiosk(() => kiosk.reject(note.trim()))
+                  : void send({
+                      outcome,
+                      note: note.trim(),
+                      confirmed: true,
+                      ...(needsReference
+                        ? { reference: reference.trim() }
+                        : {}),
+                      ...(needsCharged ? { charged: chargedMinor } : {}),
+                      ...(offersReaderCleared && readerCleared
+                        ? { readerCleared: true }
+                        : {}),
+                    })
             }
           >
-            {busy ? t("loading") : t("payResolveSubmit")}
+            {busy
+              ? t("loading")
+              : outcome === "kiosk_accept" && rest !== null && rest > 0
+                ? t("kioskAcceptCollectRest").replace("{rest}", money(rest))
+                : outcome === "kiosk_accept" || outcome === "kiosk_reject"
+                  ? t(OUTCOME_KEYS[outcome])
+                  : t("payResolveSubmit")}
           </Button>
         ) : undefined
       }
@@ -187,6 +247,34 @@ export function ResolveDialog({
               </label>
             ))}
           </fieldset>
+          {outcome === "kiosk_accept" && (
+            <>
+              <p>
+                {kioskTotal === null
+                  ? t("kioskAcceptPriceUnknown")
+                  : t("kioskAcceptTotals")
+                      .replace("{total}", money(kioskTotal))
+                      .replace("{charge}", money(attempt.amount))}
+              </p>
+              {fit.kind === "below" && (
+                <p className="warning-panel" role="alert">
+                  {translateError("kiosk_charge_above_total", locale)}
+                </p>
+              )}
+              {rest !== null && rest > 0 && (
+                <p className="notice">
+                  {t("kioskAcceptRest").replace("{rest}", money(rest))}
+                </p>
+              )}
+            </>
+          )}
+          {outcome === "kiosk_reject" && (
+            <p className="notice">
+              {t("kioskRejectRefundHint")
+                .replace("{amount}", money(attempt.amount + attempt.tip))
+                .replace("{terminal}", attempt.terminalLabel)}
+            </p>
+          )}
           {needsReference && (
             <Field label={t("payResolveReference")}>
               <input
@@ -213,7 +301,7 @@ export function ResolveDialog({
           )}
           <Field
             label={t(
-              outcome === "refunded_at_provider"
+              outcome === "refunded_at_provider" || outcome === "kiosk_reject"
                 ? "payResolveRefundNote"
                 : "payResolveNote",
             )}

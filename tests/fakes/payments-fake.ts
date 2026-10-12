@@ -68,6 +68,12 @@ type Approval = {
   brand?: string;
   type?: "credit_card" | "debit_card" | "prepaid_card";
   last4?: string;
+  /**
+   * MP's processor fee on GET /v1/payments/{id}: a number is one mercadopago_fee line; null is
+   * an empty fee_details (MP lists no fee: the restaurant records a provider fee of 0); absent,
+   * the payment has no fee_details (MP reports none: the restaurant keeps the terminal's
+   * estimate, as the restaurant-day oracles expect of an approval without a fee).
+   */
   fee?: number | null;
   externalReference?: string;
   terminalId?: string;
@@ -497,10 +503,14 @@ export async function startPaymentsFake(
         const fee = c.approval?.fee;
         return send(res, 200, {
           id: Number(payment[1]),
-          fee_details:
-            fee === null || fee === undefined
-              ? []
-              : [{ type: "mercadopago_fee", amount: fee / 100 }],
+          ...(fee === undefined
+            ? {}
+            : {
+                fee_details:
+                  fee === null
+                    ? []
+                    : [{ type: "mercadopago_fee", amount: fee / 100 }],
+              }),
           card: { last_four_digits: c.approval?.last4 ?? "4242" },
           payment_type_id: c.approval?.type ?? "credit_card",
         });

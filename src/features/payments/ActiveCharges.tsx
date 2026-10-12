@@ -118,11 +118,13 @@ export function ActiveCharges({
                 ? `#${a.orderNumber}`
                 : (a.holdLabel ?? "—");
             const actionable = a.state === "unknown" || a.state === "review";
+            // A kiosk hold's charge is cancelled by a manager (kiosk §2.2; KIOSK-SECURITY-2).
             const cancellable =
               (a.state === "created" ||
                 a.state === "sending" ||
                 a.state === "pending") &&
-              !a.cancelRequested;
+              !a.cancelRequested &&
+              (a.target !== "kiosk_hold" || manager);
             return (
               <li key={a.id} className="row between wrap">
                 <span>

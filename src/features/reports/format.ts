@@ -121,6 +121,7 @@ const GROUP_KEYS: Record<AuditGroup, Key> = {
   fiscal: "reportsAuditGroupFiscal",
   reports: "reportsAuditGroupReports",
   loyalty: "loyaltyAuditGroup",
+  kiosk: "kioskReportTitle",
 };
 export function auditGroupLabel(group: AuditGroup, locale: Locale) {
   return strings[locale][GROUP_KEYS[group]];

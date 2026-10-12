@@ -90,6 +90,15 @@ const PERMANENT: Record<string, string> = {
     "LO-R5 fresh key (recordPayment(randomUUID())) after createOrder's closing refresh, which follows the feed (LO-R3, 027) and cannot issue (E5)",
   "server/public-holds.ts#acceptHold:12>11":
     "E5 createOrder's closing refresh cannot issue (nothing is paid at creation); recordPayment then takes the drawer and issues the ticket (LO-12) last, as applySale",
+  // Kiosk (039, exception E8, LD-72 / critic R4 Q3): the same shapes as acceptHold's LD-24 entries.
+  "server/kiosk-accept.ts#kioskAccept:2b>1":
+    "E8 LO-R5 the hold's own order key (createOrder(h.order_operation_id)) after the hold and its checkout",
+  "server/kiosk-accept.ts#settleKioskHoldCharge:2c>1":
+    "E8 LO-R5 the hold's own order key after the attempt row (2c), which the hold settle locks before createOrder",
+  "server/public-holds.ts#acceptHold:2c>1":
+    "E8 LO-R5 «Aceptar con el pago del kiosco» (critic R13): the hold's own order key after the attempt row (2c), as settleKioskHoldCharge",
+  "server/kiosk-accept.ts#settleKioskHoldCharge:12>11":
+    "E8 (as E5) createOrder's closing refresh cannot issue; applyApprovedAttempt then takes the attempt's drawer and issues the ticket (LO-12) last",
 };
 const ALLOWLIST = { ...PERMANENT };
 

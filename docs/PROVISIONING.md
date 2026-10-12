@@ -107,7 +107,23 @@ rotate the
    for the device rehearsal; undeclared in production, so integrated charging stays
    off there with manual terminals working, until the rehearsal passes and one
    reviewed change to `railway.ts` plus a deploy switches it on: [RUNBOOK.md](RUNBOOK.md)
-   "Payments: real-device rehearsal" step 7). A worker with providers needs
+   "Payments: real-device rehearsal" step 7). Kiosk (039) `KIOSK_SELF_CHECKOUT_ENABLED`
+   and `MENU_PHOTOS_ENABLED` are not in this file either: `railway.ts` declares both
+   `"false"` in production (unset means on, so leaving them undeclared would turn card at
+   the kiosk and photos on) and `preserve()` on staging, until the steps of
+   [LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) 1.16a pass in their order (R44a,
+   `PAYMENTS_PROVIDERS` on the production worker, the media bucket, the field checks, R44b;
+   LD-96); then one reviewed change to `railway.ts` plus a deploy switches production on
+   ([RUNBOOK.md](RUNBOOK.md) "Kiosk self-checkout and menu photos"). The menu photos
+   bucket is the owner's: a private R2 bucket separate from the backup bucket and a
+   bucket-scoped Object Read & Write token **that does not expire**. They go in this file
+   under `# service: web` only: `MEDIA_STORE=r2`, `MEDIA_R2_ACCOUNT_ID`, `MEDIA_R2_BUCKET`,
+   `MEDIA_R2_ACCESS_KEY_ID`, `MEDIA_R2_SECRET_ACCESS_KEY` (all five declared `preserve()`
+   on web; the worker refuses the keys). Never set `MEDIA_STORE=fs` or `MEDIA_FS_ROOT` on
+   Railway: the service disk does not survive a deploy, and a deployed web refuses `fs`
+   (`media_store_fs_deployed`). Without the bucket, `MEDIA_STORE` stays unset and photos
+   are unavailable: uploads answer `media_store_not_configured`, and the kiosk, the QR
+   menu and the POS show text tiles. A worker with providers needs
    `CREDENTIAL_ENCRYPTION_KEY` or it refuses to start. `MERCADOPAGO_API_URL` and
    `CLIP_API_URL` stay unset in staging and production (the providers' production
    APIs; a loopback fake is accepted only in development and test). The web gets

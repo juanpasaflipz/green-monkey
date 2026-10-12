@@ -78,6 +78,8 @@ type ProductDraft = {
   cost: number | null;
   /** fiscal (027): absent keeps the stored value (legacy saves, imports). */
   fiscal?: ProductFiscal;
+  /** kiosk (039): absent keeps the stored value. */
+  description?: { es: string; en: string };
 };
 
 const json = (value: unknown) => JSON.stringify(value);
@@ -499,6 +501,9 @@ async function writeProduct(
     recipe: p.recipe,
     cost: p.cost,
     ...(p.fiscal !== undefined ? { fiscal: p.fiscal } : {}),
+    // kiosk (039): the description is saved here; the photo only by the photo commands (the
+    // spread of the old document keeps it).
+    ...(p.description !== undefined ? { description: p.description } : {}),
     version: p.expectedVersion + 1,
   };
   await writeDoc(tx, s, data);

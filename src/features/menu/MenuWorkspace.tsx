@@ -12,6 +12,7 @@ import { Badge, Button, Empty, Modal } from "../../components/ui";
 import { CategoryDialog } from "./CategoryDialog";
 import { GroupEditor } from "./GroupEditor";
 import { ProductEditor, type ProductPreset } from "./ProductEditor";
+import { MenuMediaImport } from "./MenuMediaImport";
 import {
   fiscalDraft,
   ProductFiscalFields,
@@ -90,6 +91,7 @@ export function MenuWorkspace({
     null,
   );
   const [archiveGroup, setArchiveGroup] = useState<MenuGroup | null>(null);
+  const [importing, setImporting] = useState(false);
   const [names, setNames] = useState<Record<string, string>>({});
 
   // A reload applies only if nothing newer happened while it was in flight:
@@ -366,6 +368,11 @@ export function MenuWorkspace({
               }
             >
               {t("menuNewProduct")}
+            </Button>
+          )}
+          {tab === "products" && (
+            <Button disabled={!online} onClick={() => setImporting(true)}>
+              {t("menuImportPhotos")}
             </Button>
           )}
           {tab !== "modifiers" && (
@@ -721,6 +728,16 @@ export function MenuWorkspace({
             patch((cur) => withProductAvailable(cur, id, available));
             void load();
           }}
+          onPhoto={() => void load()}
+        />
+      )}
+      {importing && (
+        <MenuMediaImport
+          products={payload.products}
+          locale={locale}
+          online={online}
+          onClose={() => setImporting(false)}
+          onImported={() => void load()}
         />
       )}
       {categoryDialog && (

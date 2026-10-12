@@ -445,8 +445,25 @@ legal_acceptances group by 1, 2`), the release marks it material instead (`requi
 `2026-10-09` (`CLUB_LEGAL_VERSION`): the later version keeps every club paragraph, so the club is
 covered from `CLUB_LEGAL_EFFECTIVE_FROM` whatever later version is in force.
 
-**Still inputs for their tracks:** the kiosk device-binding cookie in DPA §2 and Cloudflare's scope
-widening to "and menu images" (kiosk). Each ships as a new version the same way.
+**Platform notice and DPA: the kiosk (039, critic R40, KIOSK-OPS-2, LD-95).** Version `2026-10-11` of
+the privacy notice and the DPA: privacy §9 adds the `gm_kiosk` cookie of a paired self-service tablet
+(it binds the tablet to the restaurant for up to 400 days or until the restaurant unpairs it), so the
+cookie list stays complete; DPA §2 adds the self-service tablets category (the `gm_kiosk` cookie, of
+which Green Monkey keeps only a digest, and the tablet's last connection, app version and screen
+orientation; the tablet identifies no guest); privacy §5 and DPA §6 widen Cloudflare from encrypted
+backup storage to backup and menu photo storage (the private R2 media bucket). It is a **new version
+id** because PR #13 shipped `2026-10-10` to production (LD-95) and a shipped version's text never
+changes: the pins of `2026-10-09` and `2026-10-10` in `tests/legal.test.ts` stay the releases'
+(privacy `3bd07765…`, DPA `661b53ef…`, terms `7ff6ac52…`, billing consent `e14afa1e…` for
+`2026-10-10`). Versions are plain dates, so it is the next day. The pins of `2026-10-11` are privacy
+`a3e2d7b0…`, DPA `75954771…` and billing consent `4a45d035…` (the billing consent's hash carries the
+privacy version; its text did not change). `previousVersion` is `2026-10-10` for both; the terms do
+not change and stay at `2026-10-10`. Non-material (effect on announcement, `requiresAcceptanceSince`
+stays `2026-10-06`) for the same reason as `2026-10-10`; if acceptances of a published version exist
+when the kiosk deploys, the release marks it material instead (`requiresAcceptanceSince` =
+`2026-10-11`, `effectiveFrom` at least 15 days after `announcedAt`). The club's gate keeps pointing at
+`2026-10-09` (`CLUB_LEGAL_VERSION`): this version keeps every club and payments paragraph. Counsel
+reviews these lines with the rest before publication (LD-3, LAUNCH_HANDOFF 1.16a).
 
 ## Plan lapse (GAP-1)
 

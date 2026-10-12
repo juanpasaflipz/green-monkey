@@ -54,8 +54,19 @@ export function publicLimiter(
     limit: number;
     windowMs?: number;
     scope?: (req: express.Request) => string;
+    /**
+     * A key that replaces the network-and-scope one when it returns a string (a kiosk device's
+     * own bucket on any network, KIOSK-SECURITY-1); undefined falls back to publicKey.
+     */
+    key?: (req: express.Request) => string | undefined;
     /** Requests that do not count towards this limiter (express-rate-limit `skip`). */
     skip?: (req: express.Request, res: express.Response) => boolean;
+    /**
+     * Asked only once a request is over the limit: true lets it through (counted, not refused).
+     * For a request the limiter must never turn into a refusal, such as a kiosk replaying a charge
+     * it already started (KF-MONEY-2). A failure refuses as usual.
+     */
+    pass?: (req: express.Request) => Promise<boolean>;
   },
 ) {
   return rateLimit({
@@ -63,9 +74,15 @@ export function publicLimiter(
     limit: o.limit,
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => publicKey(clientIp(req), o.scope?.(req)),
+    keyGenerator: (req) =>
+      o.key?.(req) ?? publicKey(clientIp(req), o.scope?.(req)),
     skip: o.skip ?? (() => false),
-    handler: (req, res) => {
+    handler: async (req, res, next) => {
+      if (o.pass && (await o.pass(req).catch(() => false))) {
+        res.removeHeader("Retry-After");
+        next();
+        return;
+      }
       log.warn("rate_limited", {
         limiter: name,
         route: routeLabel(req),

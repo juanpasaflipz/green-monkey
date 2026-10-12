@@ -269,8 +269,9 @@ export default async function globalSetup() {
   const cutoffB = cutoffFor("America/Tijuana", now);
   // Branch L's restaurant (loyalty spec §9.4) is in Mexico City, like A.
   const cutoffL = cutoffFor("America/Mexico_City", now);
-  // Branch P's restaurant (payments spec §12.4) too.
+  // Branch P's restaurant (payments spec §12.4) too, and branch S's (kiosk 039).
   const cutoffP = cutoffFor("America/Mexico_City", now);
+  const cutoffS = cutoffFor("America/Mexico_City", now);
 
   // Output folder: everything but Playwright's own artifacts dir.
   mkdirSync(OUT, { recursive: true });
@@ -576,10 +577,12 @@ export default async function globalSetup() {
     cutoffB,
     cutoffL,
     cutoffP,
+    cutoffS,
     businessDateA: businessDate(now, "America/Mexico_City", cutoffA),
     businessDateB: businessDate(now, "America/Tijuana", cutoffB),
     businessDateL: businessDate(now, "America/Mexico_City", cutoffL),
     businessDateP: businessDate(now, "America/Mexico_City", cutoffP),
+    businessDateS: businessDate(now, "America/Mexico_City", cutoffS),
     ...(payPort ? { paymentsFakeUrl: `http://127.0.0.1:${payPort}` } : {}),
     orders: {},
     numbers: {},

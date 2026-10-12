@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import {
   currencyExponent,
   type Locale,
@@ -29,6 +29,8 @@ import {
 } from "./format";
 import { SavesAsAmount } from "./SavesAs";
 import { fiscalDraft } from "../fiscal/ProductFiscalFields";
+import { ProductPhotoField } from "./ProductPhotoField";
+import { ProductSuggestionsField } from "./ProductSuggestionsField";
 
 const NEW = "__new";
 
@@ -43,6 +45,23 @@ export type ProductPreset = {
   station?: "kitchen" | "bar";
   kind?: "item" | "combo";
 };
+
+/**
+ * The version the editor follows after a photo upload or removal (KF-SECURITY-2; pure,
+ * tests/menu.test.ts). The photo's command bumps the product's version by one; the
+ * editor's form, opened at `editing`, still holds the rest of the product as it was then. Only
+ * when the photo was the one change since then (`after` is `editing` + 1) does the editor adopt
+ * `after`. Otherwise someone else saved the product meanwhile: the editor keeps `editing`, so
+ * «Guardar» and «Archivar» meet menu_changed (and «Recargar») instead of overwriting that save.
+ */
+export function versionAfterPhoto(
+  editing: number,
+  after: number,
+): { version: number; changed: boolean } {
+  return after === editing + 1
+    ? { version: after, changed: false }
+    : { version: editing, changed: true };
+}
 
 /**
  * Wide product editor. One operationId per open dialog, reused for retries, so
@@ -62,6 +81,7 @@ export function ProductEditor({
   onClose,
   onReload,
   onAvailability,
+  onPhoto,
   renderFiscal,
 }: {
   payload: MenuEditorPayload;
@@ -79,6 +99,11 @@ export function ProductEditor({
   onReload: () => void;
   /** The live switch in the header was saved; the list must follow. */
   onAvailability?: (productId: string, available: boolean) => void;
+  /**
+   * A photo was uploaded or removed (its own command; the editor follows the version it bumps):
+   * the list must follow, and the editor stays open with its preview and unsaved edits.
+   */
+  onPhoto?: () => void;
   /**
    * Extension slot for fiscal (027): renders the "Impuestos" section. Without
    * it no section is shown and no `fiscal` is sent, so saves preserve whatever
@@ -154,6 +179,12 @@ export function ProductEditor({
   const [busy, setBusy] = useState(false);
   // fiscal (027): the product's tax category and SAT keys (renderFiscal slot).
   const [fiscal, setFiscal] = useState<unknown>(source?.fiscal);
+  // kiosk (039): the description (saved with the product) and the photo (its own commands,
+  // which bump the product's version: the editor follows it).
+  const [descEs, setDescEs] = useState(source?.description?.es ?? "");
+  const [descEn, setDescEn] = useState(source?.description?.en ?? "");
+  const [image, setImage] = useState(product?.image ?? null);
+  const [version, setVersion] = useState(product?.version ?? 0);
   const [dialog, setDialog] = useState<"category" | "group" | null>(null);
   const [confirmArchive, setConfirmArchive] = useState(false);
   // Unsaved edits: the form differs from how it opened. Live availability of
@@ -173,9 +204,15 @@ export function ProductEditor({
     recipeValid,
     cost,
     renderFiscal ? fiscalDraft(fiscal) : null,
+    descEs,
+    descEn,
   ]);
   const [opened] = useState(snapshot);
-  const dirty = snapshot !== opened;
+  // «Sugerir con este producto» saves on its own; its unsaved ticks are unsaved edits too, and
+  // «Guardar» saves them before the product (KIOSK-UX-12).
+  const [suggestionsDirty, setSuggestionsDirty] = useState(false);
+  const saveSuggestions = useRef<(() => Promise<boolean>) | null>(null);
+  const dirty = snapshot !== opened || suggestionsDirty;
   const discard = useDiscardGuard(dirty, t);
 
   const linked = groupIds
@@ -203,7 +240,7 @@ export function ProductEditor({
     const value = {
       operationId,
       id: productId,
-      expectedVersion: product?.version ?? 0,
+      expectedVersion: version,
       name: { es, en },
       categoryId,
       kind,
@@ -217,6 +254,9 @@ export function ProductEditor({
       cost: cost.trim() ? money(cost, "cost") : null,
       // fiscal (027): a bad SAT key fails productInput under `fiscal`.
       ...(renderFiscal ? { fiscal: fiscalDraft(fiscal) } : {}),
+      ...(descEs.trim() || descEn.trim() || source?.description
+        ? { description: { es: descEs.trim(), en: descEn.trim() } }
+        : {}),
     };
     if (!recipeValid) invalid.add("recipe");
     if (choices > MENU_LIMITS.choicesPerLine) invalid.add("groupIds");
@@ -233,6 +273,12 @@ export function ProductEditor({
   async function save(): Promise<Product | null> {
     const value = body();
     if (!value) return null;
+    if (
+      suggestionsDirty &&
+      saveSuggestions.current &&
+      !(await saveSuggestions.current())
+    )
+      return null;
     setBusy(true);
     setError("");
     try {
@@ -254,7 +300,8 @@ export function ProductEditor({
   async function archive(archived: boolean) {
     if (!product) return;
     setError("");
-    let current: Product | null = product;
+    // The version the editor follows, also after a photo change (KF-SECURITY-3).
+    let current: Product | null = { ...product, image, version };
     // Restoring into an archived category: save the newly chosen one first.
     if (!archived && categoryId !== product.categoryId) current = await save();
     if (!current) return;
@@ -653,6 +700,59 @@ export function ProductEditor({
               </>
             ) : (
               <p className="menu-locked">{t("menuProRequired")}</p>
+            )}
+          </fieldset>
+          <fieldset className="menu-section">
+            <legend>{t("menuPhoto")}</legend>
+            {product ? (
+              <ProductPhotoField
+                product={{ ...product, image, version }}
+                locale={locale}
+                disabled={!online || busy}
+                onChanged={(r) => {
+                  setImage(r.image ?? null);
+                  // KF-SECURITY-2: the version only with the base it belongs to.
+                  const next = versionAfterPhoto(version, r.version);
+                  setVersion(next.version);
+                  if (next.changed) {
+                    setStale(true);
+                    setError(translateError("menu_changed", locale));
+                  }
+                  onPhoto?.();
+                }}
+              />
+            ) : (
+              <p className="muted">{t("menuPhotoSaveFirst")}</p>
+            )}
+            <label className="field">
+              <span>{t("menuDescriptionEs")}</span>
+              <textarea
+                maxLength={300}
+                rows={2}
+                value={descEs}
+                disabled={!online || busy}
+                onChange={(e) => setDescEs(e.target.value)}
+              />
+            </label>
+            <label className="field">
+              <span>{t("menuDescriptionEn")}</span>
+              <textarea
+                maxLength={300}
+                rows={2}
+                value={descEn}
+                disabled={!online || busy}
+                onChange={(e) => setDescEn(e.target.value)}
+              />
+            </label>
+            {product && (
+              <ProductSuggestionsField
+                productId={product.id}
+                products={payload.products}
+                locale={locale}
+                disabled={!online || busy}
+                onDirtyChange={setSuggestionsDirty}
+                saveRef={saveSuggestions}
+              />
             )}
           </fieldset>
           {renderFiscal && (

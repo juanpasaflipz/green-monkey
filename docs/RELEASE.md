@@ -255,6 +255,13 @@ local and CI clusters need (contract C-11):
 - loyalty (038) adds a guarded `DO` block to `scripts/grants.sql` (SELECT and INSERT on its four
   tables, column UPDATEs on settings, members' contact and redaction columns and links; no DELETE;
   balances only through the ledger trigger), so the manifest still applies to schemas before 038;
+- kiosk (039) adds a guarded `DO` block (SELECT and INSERT on its six tables; column UPDATEs on
+  settings, stations, devices' pairing/heartbeat/revocation columns, checkouts' payment columns,
+  media state and suggestion sets, and `public_order_holds.decision_source`; no DELETE, no worker
+  grant: the media jobs run on the web, critic R35/R36). 039 replaces
+  `public_order_holds_table_mode` by a strictly weaker CHECK under the same name (a kiosk hold may
+  be dine-in without a table), so migrations-lint sees a same-name replacement; it adds no backfill
+  and no advisory class;
 - with `--grants`, the reviewed grants manifest `scripts/grants.sql` for
   `PG_APP_USER` commits in the **same transaction as the newest pending
   migration**, before its `schema_migrations` row. Readiness keys on that row,

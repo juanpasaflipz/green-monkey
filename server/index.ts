@@ -32,7 +32,6 @@ import {
   managers,
 } from "./auth.js";
 import {
-  catalog,
   getOrder,
   getOrders,
   createOrder,
@@ -43,6 +42,7 @@ import {
   stock,
 } from "./orders.js";
 import { saveProduct, saveEmployee, receive } from "./management.js";
+import { sellingCatalog } from "./menu-read.js";
 import { activeTables } from "./floor.js";
 import { previewImport } from "../shared/import.js";
 import { commitImport } from "./imports.js";
@@ -84,6 +84,10 @@ import * as paymentsRoutes from "./routes/payments.js";
 import { providerCapabilities } from "./payments/providers.js";
 import { configureWake } from "./payments/wake.js";
 import * as loyaltyRoutes from "./routes/loyalty.js";
+import * as kioskRoutes from "./routes/kiosk.js";
+import { MEDIA_ROUTE, mediaRoute } from "./media.js";
+import { kioskCapabilities } from "./kiosk-config.js";
+import { publicLimiter } from "./public-limits.js";
 import { loyaltyCapability } from "./loyalty/settings.js";
 import {
   paymentRecoveryStatus,
@@ -188,7 +192,7 @@ route("post", "/imports/preview", async (_tx, s, req) => {
 route("post", "/imports/commit", async (tx, s, req) =>
   commitImport(tx, s, req.body),
 );
-route("get", "/catalog", async (tx) => catalog(tx));
+route("get", "/catalog", async (tx) => sellingCatalog(tx));
 route("get", "/tables", async (tx) => activeTables(tx));
 route("get", "/orders", async (tx) => {
   // legacy: removed after one release (docs/SERVICE.md); new screens use /service/orders.
@@ -487,6 +491,8 @@ route("get", "/capabilities", async (tx) => ({
   printer: { enabled: false, reason: "device_not_paired" },
   resend: { enabled: false, reason: "sender_and_sandbox_required" },
   loyalty: await loyaltyCapability(tx),
+  // kiosk (039, critic R30)
+  ...kioskCapabilities(),
 }));
 opsRoutes.register({ app, sql, route });
 accessRoutes.register({ app, sql, route });
@@ -502,6 +508,10 @@ publicOrderingRoutes.register({ app, sql, route });
 // Wave 4 authenticated routes, in order: payments, loyalty, kiosk (critic R31).
 paymentsRoutes.register({ app, sql, route });
 loyaltyRoutes.register({ app, sql, route });
+kioskRoutes.register({ app, sql, route });
+// kiosk (039): menu photos, same origin (no CSP change), outside /api and before the static and
+// SPA fallback; no session (the menu_media_lookup policy resolves the asset).
+app.get(MEDIA_ROUTE, publicLimiter("media", { limit: 600 }), mediaRoute(sql));
 app.use("/api", (_req, res) => res.status(404).json({ error: "not_found" }));
 if (process.env.NODE_ENV === "production") {
   // Diner pages (public ordering 032) stay out of search indexes; helmet

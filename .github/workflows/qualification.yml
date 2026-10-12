@@ -151,11 +151,13 @@ jobs:
         # payments (037 P2): the MP Point + Clip fake on 127.0.0.1:4899 (fictional credentials only)
         # and, on the worker only, PAYMENTS_PROVIDERS with the fake's loopback API bases; the
         # browser suite scripts the fake through PAYMENTS_FAKE_URL.
+        # kiosk (039): menu photos on the local filesystem store (web only; APP_ENV is unset here,
+        # and the config refuses fs in staging or production).
         run: |
           npm run dev:facturapi-fake > /tmp/green-monkey-facturapi-fake.log 2>&1 &
           PAYMENTS_FAKE_PORT=4899 npm run dev:payments-fake > /tmp/green-monkey-payments-fake.log 2>&1 &
           node --input-type=module -e 'for(let i=0;i<60;i++){try{await fetch("http://127.0.0.1:4799/v2/organizations");await fetch("http://127.0.0.1:4899/__fake/charges");process.exit(0)}catch{}await new Promise(r=>setTimeout(r,500))}process.exit(1)'
-          NODE_ENV=production node --import ./build/server/instrument.js build/server/index.js > /tmp/green-monkey-server.log 2>&1 &
+          MEDIA_STORE=fs MEDIA_FS_ROOT=/tmp/green-monkey-media NODE_ENV=production node --import ./build/server/instrument.js build/server/index.js > /tmp/green-monkey-server.log 2>&1 &
           NODE_ENV=production WORKER_PORT=3005 DATABASE_URL= WORKER_DATABASE_URL=postgresql://gm_worker:local-only-worker@127.0.0.1:5432/green_monkey_dev FACTURAPI_API_KEY=sk_user_ci_fake CREDENTIAL_ENCRYPTION_KEY=ci-cfdi:c3ludGhldGljLWNpLW9ubHktY2ZkaS1jcmVkZW50aWFsLWtleS0wMDA FACTURAPI_BASE_URL=http://127.0.0.1:4799/v2 PAYMENTS_PROVIDERS=mercadopago,clip MERCADOPAGO_API_URL=http://127.0.0.1:4899/mp CLIP_API_URL=http://127.0.0.1:4899/clip npm run start:worker > /tmp/green-monkey-worker.log 2>&1 &
           node --input-type=module -e 'for(let i=0;i<60;i++){try{if((await fetch("http://127.0.0.1:3002/api/health")).ok&&(await fetch("http://127.0.0.1:3005/healthz")).ok)process.exit(0)}catch{}await new Promise(r=>setTimeout(r,500))}process.exit(1)'
           # Only the test runner gets the fixture admin URL (owner/Free fixtures);

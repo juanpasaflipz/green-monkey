@@ -1011,6 +1011,13 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
     await expect(sendButton).toBeInViewport();
     await expect(kiosk.locator(".diner-total").first()).toBeInViewport();
     await sendButton.click();
+    // Kiosk (039 §2.4): "¿Para aquí o para llevar?" before anything is created.
+    await expect(
+      kiosk.getByRole("heading", { name: "¿Para aquí o para llevar?" }),
+    ).toBeVisible();
+    await kiosk
+      .getByRole("button", { name: "Para llevar", exact: true })
+      .click();
     const code = kiosk.locator(".kiosk-code");
     await expect(code).toHaveText(/^K-\d+$/);
     const label = (await code.innerText()).trim();
@@ -1184,7 +1191,7 @@ test("pay-first refusal after a terminal charge: the cashier is told to record t
   });
 });
 
-test("kiosk idle: a warning at 75 s keeps the cart; at 90 s idle the kiosk clears it and returns to Spanish", async ({
+test("kiosk idle: a warning at 70 s keeps the cart; at 95 s idle the kiosk clears it and returns to Spanish (25 s to answer, kiosk 039 §2.12)", async ({
   page,
   context,
 }) => {
@@ -1200,7 +1207,7 @@ test("kiosk idle: a warning at 75 s keeps the cart; at 90 s idle the kiosk clear
     const note = kiosk.getByLabel("Indicaciones para la cocina (opcional)");
     await name.fill(`Idle ${f.id}`);
     await note.fill("sin cebolla");
-    await kiosk.clock.fastForward(75_000);
+    await kiosk.clock.fastForward(70_000);
     const warning = kiosk.getByRole("dialog", { name: "¿Sigues ahí?" });
     await expect(warning).toBeVisible();
     await warning
@@ -1213,7 +1220,7 @@ test("kiosk idle: a warning at 75 s keeps the cart; at 90 s idle the kiosk clear
     await expect(
       kiosk.getByRole("button", { name: "Send order" }),
     ).toBeVisible();
-    await kiosk.clock.fastForward(90_000);
+    await kiosk.clock.fastForward(95_000);
     await expect(kiosk.locator(".diner-line")).toHaveCount(0);
     // PRIVACY-7: the reset leaves no name or note for the next customer.
     await expect(kiosk.getByLabel("Nombre (opcional)")).toHaveValue("");

@@ -60,6 +60,8 @@ export type ApiOptions = {
   idempotent?: boolean;
   /** Extra request headers (public ordering's x-gm-link-token / x-gm-status-token). */
   headers?: Record<string, string>;
+  /** A raw request body instead of JSON (kiosk 039: the menu photo upload); POST. */
+  raw?: { body: Blob; type: string };
 };
 let csrf = "";
 let tenantId = "",
@@ -154,7 +156,7 @@ async function request<T>(
         response = await fetch("/api" + path, {
           method,
           headers: {
-            "Content-Type": "application/json",
+            "Content-Type": options.raw ? options.raw.type : "application/json",
             "x-csrf-token": csrf,
             ...(tenantId
               ? { "x-tenant-id": tenantId, "x-session-id": sessionId }
@@ -163,7 +165,11 @@ async function request<T>(
           },
           credentials: "same-origin",
           signal: controller.signal,
-          ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+          ...(options.raw
+            ? { body: options.raw.body }
+            : body !== undefined
+              ? { body: JSON.stringify(body) }
+              : {}),
         });
         text = await response.text();
       } catch (e) {

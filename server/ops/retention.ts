@@ -227,6 +227,14 @@ export const redactionRules: readonly {
     predicate: `redacted_at IS NULL
     AND coalesce(last_activity_at, legacy_last_visit_at, joined_at) < now() - interval '24 months'`,
   },
+  // Kiosk (039, critic R25/R41): the club member a kiosk order carried, blanked 30 days after the
+  // checkout (loyalty keeps its own order↔member link under its own rule). 039's transition
+  // trigger allows exactly this update; kiosk_checkouts_member_retention serves the predicate.
+  {
+    table: "kiosk_checkouts",
+    set: `loyalty_member_id = NULL`,
+    predicate: `loyalty_member_id IS NOT NULL AND created_at < now() - interval '30 days'`,
+  },
 ];
 
 const IDENT = /^[a-z_][a-z0-9_]*$/;

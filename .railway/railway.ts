@@ -96,6 +96,30 @@ export default defineRailway((ctx) => {
       // declares it, so a value set there is planned as a deletion and the
       // server refuses to start with it (contracts D22, access A2).
       ...(production ? {} : { DEMO_TENANT_ID: preserve() }),
+      // kiosk (039; KIOSK-OPS-1, LD-95): card at the kiosk and menu photos. Unset or "true" means
+      // on, "false" off (server/kiosk-config.ts), so production declares "false" (undeclared
+      // would mean on) until LAUNCH_HANDOFF.md 1.16a's steps pass in order: R44a,
+      // PAYMENTS_PROVIDERS on the production worker, the media bucket, the field checks, R44b
+      // (LD-96). Staging keeps them on, and a "false" set there as the
+      // RUNBOOK kill switch survives an apply. Switching production on is one reviewed change
+      // here (production declares "true"; preserve() would keep the "false" already applied),
+      // then a deploy (RUNBOOK.md "Kiosk self-checkout and menu photos").
+      ...(production
+        ? { KIOSK_SELF_CHECKOUT_ENABLED: "false", MENU_PHOTOS_ENABLED: "false" }
+        : {
+            KIOSK_SELF_CHECKOUT_ENABLED: preserve(),
+            MENU_PHOTOS_ENABLED: preserve(),
+          }),
+      // kiosk (039, critic R36): the owner's private R2 media bucket and its bucket-scoped,
+      // non-expiring token, web only (the worker refuses the keys). MEDIA_STORE is "r2", set
+      // together with the four MEDIA_R2_* values; unset means photos are unavailable (text
+      // tiles). Never "fs": MEDIA_FS_ROOT (development and CI) is never declared, so a deployed
+      // service never keeps photos on its ephemeral disk.
+      MEDIA_STORE: preserve(),
+      MEDIA_R2_ACCOUNT_ID: preserve(),
+      MEDIA_R2_BUCKET: preserve(),
+      MEDIA_R2_ACCESS_KEY_ID: preserve(),
+      MEDIA_R2_SECRET_ACCESS_KEY: preserve(),
     },
   });
 

@@ -138,14 +138,23 @@ async function insertLink(
     tableId: string | null;
     label: string;
     replacesId?: string | null;
+    /** Kiosk (039): the station this kiosk link points at (rotation keeps it). */
+    stationId?: string | null;
   },
 ): Promise<RevealedLink> {
   const token = newPublicToken();
   const id = randomUUID();
   const channel = link.kind === "kiosk" ? "kiosk" : "qr";
-  await tx`insert into public_links(tenant_id,id,token_hash,kind,channel,table_id,label,created_by,replaces_id)
+  // A kiosk link always has a station: a new one, or (rotation) its old link's (ARCHITECTURE
+  // row 62: the station row before the link rows).
+  let stationId = link.stationId ?? null;
+  if (link.kind === "kiosk" && !stationId) {
+    stationId = randomUUID();
+    await tx`insert into kiosk_stations(tenant_id,id,created_by) values(${s.tenantId},${stationId},${s.employeeId})`;
+  }
+  await tx`insert into public_links(tenant_id,id,token_hash,kind,channel,table_id,label,created_by,replaces_id,station_id)
     values(${s.tenantId},${id},${linkHash(token)},${link.kind},${channel},${link.tableId},${link.label},
-      ${s.employeeId},${link.replacesId ?? null})`;
+      ${s.employeeId},${link.replacesId ?? null},${link.kind === "kiosk" ? stationId : null})`;
   return {
     ...(await linkView(tx, id)),
     token,
@@ -164,8 +173,21 @@ export async function revokeLinkRow(
   const [row] = await tx`update public_links
     set revoked_at=now(),revoked_by=${s.employeeId},revoke_reason=${reason}
     where id=${linkId} and revoked_at is null
-    returning token_hash,kind,table_id`;
+    returning token_hash,kind,table_id,station_id`;
   if (!row) return false;
+  // Kiosk (039): deactivating a kiosk link (not replacing it) archives its station when no
+  // other active link uses it, and unpairs its tablet. Pending charges still settle.
+  if (row.station_id && reason !== "rotated") {
+    const [other] =
+      await tx`select 1 from public_links where station_id=${row.station_id} and revoked_at is null`;
+    if (!other) {
+      await tx`update kiosk_stations set archived_at=now(),updated_by=${s.employeeId},updated_at=now(),
+          version=version+1
+        where id=${row.station_id} and archived_at is null`;
+      await tx`update kiosk_devices set revoked_at=now(),revoked_by=${s.employeeId}
+        where station_id=${row.station_id} and revoked_at is null`;
+    }
+  }
   // In-memory and idempotent: safe in a replayed tenant() body (rule 0.7). A
   // rollback only costs the next diner request one lookup, because the cache
   // never extends a link's validity (linkContext re-reads revoked_at).
@@ -267,6 +289,7 @@ async function rotateRow(
     table_id: string | null;
     label: string;
     token_hash: string;
+    station_id?: string | null;
   },
 ): Promise<RevealedLink> {
   await revokeLinkRow(tx, s, old.id, "rotated");
@@ -275,6 +298,7 @@ async function rotateRow(
     tableId: old.table_id,
     label: old.label,
     replacesId: old.id,
+    stationId: old.station_id ?? null,
   });
   await audit(tx, s, "public.link_rotated", link.id, {
     from: linkRef(old.token_hash),
@@ -363,7 +387,7 @@ export async function rotateLink(
     if (!t) throw new DomainError("invalid_table", 400);
   }
   const [old] =
-    await tx`select id,kind,table_id,label,token_hash from public_links where id=${linkId} and revoked_at is null for update`;
+    await tx`select id,kind,table_id,label,token_hash,station_id from public_links where id=${linkId} and revoked_at is null for update`;
   if (!old) throw new DomainError("not_found", 404);
   return rotateRow(tx, s, old as Parameters<typeof rotateRow>[2]);
 }

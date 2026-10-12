@@ -23,6 +23,7 @@ import {
   submitHold,
 } from "./public-diner.js";
 import { DomainError } from "../shared/domain.js";
+import { kioskDinerRouter } from "./kiosk-routes.js";
 import {
   LINK_HEADER,
   PUBLIC_TOKEN,
@@ -183,6 +184,8 @@ export function publicOrdering(sql: postgres.Sql) {
       );
     }),
   );
+  // Kiosk self-checkout (039): device binding, card charges, the checkout and the club lookup.
+  router.use("/kiosk", kioskDinerRouter(sql));
   // Old signed routes (/:token/catalog, /receipt/:token, …) and anything else.
   router.use((_req, res) => {
     res.status(404).json({ error: "not_found" });

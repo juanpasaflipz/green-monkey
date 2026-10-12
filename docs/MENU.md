@@ -355,11 +355,28 @@ stock with a count or a receipt in Existencias so the movement, its reason and i
 actor are recorded. A manual UPDATE would be refused for the runtime role and
 would make the drift check fail.
 
+## Photos, descriptions and suggestions (kiosk 039)
+
+- **Foto**: Subir / Cambiar / Quitar in the product editor (owners and managers). The browser
+  re-encodes three WebP variants (160, 480, 1200 px), or JPEG on Safari, iPad and iPhone, and the
+  server validates and rebuilds each container without metadata (LD-88, LD-91; [KIOSK.md](KIOSK.md)
+  §7). The product stores `image: {id, w, h}` (plus `type: "image/jpeg"` for a JPEG); only the photo commands set it (a product save keeps it), and every change
+  bumps the menu revision. The QR menu shows a thumbnail, the kiosk a card and a hero; receipts,
+  comandas and reports never show photos.
+- **Importar fotos** (Productos toolbar, owners and managers): the old system's photos from a
+  `gm-menu-media-v1` manifest plus the downloaded files, mapped by name, reviewed by the owner and
+  sent through the same upload one by one; replay-safe and audited per photo and per run
+  ([KIOSK.md](KIOSK.md) §7, critic R42/Q7).
+- **Descripción** (es/en, 300 characters, plain text: the diner-note character rule) is saved with
+  the product (`productInput.description`, optional; absent keeps the stored value).
+- **Sugerir con este producto** (up to 4) and the kiosk's cart set (up to 6): `menu_suggestions`,
+  one row per set, replaced by UPDATE (never deleted); unavailable, archived and open-price
+  products are filtered when the kiosk reads them.
+
 ## Known deferrals
 
 - Routing combo choices to different stations (a line belongs to one station).
 - Kitchen or cashier "86" (the switch is owner/manager only).
-- Product photos (no storage provider configured).
 - Time-scheduled menus and price reductions on choices (discounts area).
 - Substitutions, yields, lots and purchase orders.
 

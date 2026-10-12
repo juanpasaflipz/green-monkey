@@ -841,6 +841,34 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
       /\.\.\.\(production \? \{\} : \{ PAYMENTS_PROVIDERS: "mercadopago,clip" \}\)/,
     );
     expect(names(web).has("PAYMENTS_PROVIDERS")).toBe(false);
+    // Kiosk switches (039; KIOSK-OPS-1, LD-95): the web's only. Unset means on, so production
+    // declares "false" until the field checks and the R44a rehearsal pass; staging preserves
+    // them (on, and a kill switch set by hand survives an apply).
+    for (const name of ["KIOSK_SELF_CHECKOUT_ENABLED", "MENU_PHOTOS_ENABLED"]) {
+      expect(code.match(new RegExp(`\\b${name}\\b`, "g")), name).toHaveLength(
+        2,
+      );
+      expect(names(worker).has(name), `worker declares ${name}`).toBe(false);
+    }
+    expect(web).toMatch(
+      /\.\.\.\(production\s*\?\s*\{\s*KIOSK_SELF_CHECKOUT_ENABLED: "false",\s*MENU_PHOTOS_ENABLED: "false"\s*\}\s*:\s*\{\s*KIOSK_SELF_CHECKOUT_ENABLED: preserve\(\),\s*MENU_PHOTOS_ENABLED: preserve\(\),?\s*\}\)/,
+    );
+    // The menu photos bucket: web only, preserve() in both environments, never a literal (so
+    // never MEDIA_STORE=fs); MEDIA_FS_ROOT is development and CI only and never declared.
+    for (const name of [
+      "MEDIA_STORE",
+      "MEDIA_R2_ACCOUNT_ID",
+      "MEDIA_R2_BUCKET",
+      "MEDIA_R2_ACCESS_KEY_ID",
+      "MEDIA_R2_SECRET_ACCESS_KEY",
+    ]) {
+      expect(code.match(new RegExp(`\\b${name}\\b`, "g")), name).toHaveLength(
+        1,
+      );
+      expect(web).toMatch(new RegExp(`^\\s*${name}: preserve\\(\\),$`, "m"));
+      expect(names(worker).has(name), `worker declares ${name}`).toBe(false);
+    }
+    expect(names(code).has("MEDIA_FS_ROOT")).toBe(false);
     // DEMO_TENANT_ID: staging only (access A2, contracts D22).
     expect(code.match(/DEMO_TENANT_ID/g)).toHaveLength(1);
     expect(web).toMatch(
@@ -900,6 +928,14 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
         "SAAS_TAX_PROFILE_ENABLED",
         "PUBLIC_ORDERING_ENABLED",
         "DEMO_TENANT_ID",
+        // kiosk (039): KIOSK-OPS-1.
+        "KIOSK_SELF_CHECKOUT_ENABLED",
+        "MENU_PHOTOS_ENABLED",
+        "MEDIA_STORE",
+        "MEDIA_R2_ACCOUNT_ID",
+        "MEDIA_R2_BUCKET",
+        "MEDIA_R2_ACCESS_KEY_ID",
+        "MEDIA_R2_SECRET_ACCESS_KEY",
       ],
       worker: [
         "PROCESS_KIND",

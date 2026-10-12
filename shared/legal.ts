@@ -142,17 +142,37 @@ const PAYMENTS_VERSION = {
   effectiveFrom: "2026-10-10",
 } as const;
 
+/**
+ * The kiosk version of the privacy notice and the DPA (039, critic R40, KIOSK-OPS-2, LD-95): the
+ * gm_kiosk device-binding cookie of a paired self-service tablet (privacy §9, DPA §2) and
+ * Cloudflare's role widened from encrypted backups to backups and menu photos (privacy §5, DPA
+ * §6). A new id because PR #13 shipped 2026-10-10 with the payments text: a shipped version's
+ * text never changes. Versions are plain dates, so this is the next day. The terms do not change
+ * (they stay at 2026-10-10). Counsel reviews the text before the legal set is published (LD-3).
+ * Not a material change, for the reason PAYMENTS_VERSION gives (no acceptance of a published
+ * version exists in production yet); were there acceptances when it deploys, set
+ * requiresAcceptanceSince to this version and effectiveFrom 15 days after announcedAt instead.
+ */
+const KIOSK_VERSION = {
+  version: "2026-10-11",
+  requiresAcceptanceSince: FIRST_VERSION.requiresAcceptanceSince,
+  announcedAt: "2026-10-11",
+  effectiveFrom: "2026-10-11",
+} as const;
+
 export const LEGAL_DOCUMENTS: Record<LegalDocumentKey, LegalDocumentMeta> = {
   privacy: {
-    ...PAYMENTS_VERSION,
-    previousVersion: CLUB_VERSION.version,
-    previousRequiresAcceptanceSince: CLUB_VERSION.requiresAcceptanceSince,
+    ...KIOSK_VERSION,
+    previousVersion: PAYMENTS_VERSION.version,
+    previousRequiresAcceptanceSince: PAYMENTS_VERSION.requiresAcceptanceSince,
     changes: {
       es: [
-        "Cobros con terminal integrada (Mercado Pago, Clip): datos de tarjeta y credenciales del restaurante (§6).",
+        "Tabletas de autoservicio (kiosco): la cookie gm_kiosk (§9).",
+        "Cloudflare también guarda las fotos del menú (§5).",
       ],
       en: [
-        "Integrated terminal payments (Mercado Pago, Clip): card data and the restaurant's credentials (§6).",
+        "Self-service tablets (kiosks): the gm_kiosk cookie (§9).",
+        "Cloudflare also stores menu photos (§5).",
       ],
     },
     path: "/legal/privacidad",
@@ -174,15 +194,17 @@ export const LEGAL_DOCUMENTS: Record<LegalDocumentKey, LegalDocumentMeta> = {
     enPath: "/legal/terms",
   },
   dpa: {
-    ...PAYMENTS_VERSION,
-    previousVersion: CLUB_VERSION.version,
-    previousRequiresAcceptanceSince: CLUB_VERSION.requiresAcceptanceSince,
+    ...KIOSK_VERSION,
+    previousVersion: PAYMENTS_VERSION.version,
+    previousRequiresAcceptanceSince: PAYMENTS_VERSION.requiresAcceptanceSince,
     changes: {
       es: [
-        "Cobros con terminal integrada: datos de tarjeta y credenciales (§2) y envío a Mercado Pago o Clip por instrucción del restaurante (§11).",
+        "Tabletas de autoservicio (kiosco): la cookie gm_kiosk y los datos de la tableta (§2).",
+        "Cloudflare también guarda las fotos del menú (§6).",
       ],
       en: [
-        "Integrated terminal payments: card data and credentials (§2) and sending to Mercado Pago or Clip on the restaurant's instructions (§11).",
+        "Self-service tablets (kiosks): the gm_kiosk cookie and the tablet's data (§2).",
+        "Cloudflare also stores menu photos (§6).",
       ],
     },
     path: "/legal/encargo-de-datos",
@@ -197,7 +219,8 @@ export const CLUB_LEGAL_EFFECTIVE_FROM = CLUB_VERSION.effectiveFrom;
 /**
  * Whether the platform documents in force cover the loyalty club: published, and the privacy
  * notice and DPA at CLUB_LEGAL_VERSION or later, with the club's version in effect (a later
- * version, such as the payments one, keeps every club paragraph). Enabling the club waits for it.
+ * version, such as the payments or the kiosk one, keeps every club paragraph). Enabling the club
+ * waits for it.
  */
 export function clubLegalCovered(
   status: LegalStatus,
