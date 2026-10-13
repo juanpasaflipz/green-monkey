@@ -280,6 +280,10 @@ export function normalizeSalesHistory(file: SalesHistoryExport): Normalized {
       lineDiscount += ld;
       return { name: productName(l.name), quantity: l.quantity, amount: g - ld };
     });
+    if (lines.some((l) => l.amount < 0)) {
+      reject("money");
+      continue;
+    }
     const discount = orderDiscount + lineDiscount;
     if (gross - discount !== total) linesMismatch++;
     rounded += localRounded;
