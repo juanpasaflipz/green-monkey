@@ -163,6 +163,8 @@ const operations: Record<string, Key> = {
   "loyalty.order.relinked": "loyaltyOpRelinked",
   "loyalty.reward.redeemed": "loyaltyOpRedeemed",
   "loyalty.import.page": "loyaltyOpImport",
+  // Histórico POS Lite (040)
+  "sales_history.import": "historyOpImport",
   // kiosk (039, critic R27)
   "kiosk.settings_saved": "kioskOpSettings",
   "kiosk.station_saved": "kioskOpStation",

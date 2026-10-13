@@ -319,7 +319,8 @@ export const AUDIT_GROUPS = {
     "payment.device_terminal",
   ],
   fiscal: ["fiscal.", "cfdi."],
-  reports: ["reports."],
+  // Histórico POS Lite (040): its import is report history, so it sits with the reports.
+  reports: ["reports.", "sales_history."],
   // loyalty (038, R27): settings, members (ARCO included), links, rewards and the import.
   loyalty: ["loyalty."],
   // kiosk (039, R27): settings, stations, tablets, charges; menu.media.* is in "menu".

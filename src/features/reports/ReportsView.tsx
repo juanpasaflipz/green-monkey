@@ -22,6 +22,7 @@ import { StaffTab } from "./tabs/StaffTab";
 import { SummaryTab } from "./tabs/SummaryTab";
 import { LoyaltyReport } from "../loyalty/LoyaltyReport";
 import { KioskReport } from "../public/KioskReport";
+import { SalesHistory } from "../history/SalesHistory";
 import "./reports.css";
 
 export const REPORT_TABS = [
@@ -37,6 +38,8 @@ export const REPORT_TABS = [
   "loyalty",
   // kiosk (039, R27): after the club.
   "kiosk",
+  // Histórico POS Lite (040): pos-lite report history, never Green Monkey sales; last.
+  "history",
 ] as const;
 export type ReportTab = (typeof REPORT_TABS)[number];
 const TAB_KEYS: Record<ReportTab, Key> = {
@@ -50,6 +53,7 @@ const TAB_KEYS: Record<ReportTab, Key> = {
   audit: "reportsTabAudit",
   loyalty: "loyaltyReportTitle",
   kiosk: "kioskReportTitle",
+  history: "historyTitle",
 };
 /** Row lists read at most 31 days; summaries, breakdowns and cortes 92 (D9). */
 const LIST_TABS: readonly ReportTab[] = ["payments", "exceptions", "audit"];
@@ -118,9 +122,11 @@ export function ReportsView({
   const maxDays = LIST_TABS.includes(tab)
     ? LIMITS.listDays
     : LIMITS.aggregateDays;
+  // Histórico POS Lite has its own, wider range (pos-lite history predates the 92-day picker).
+  const ownRange = tab === "history";
   let rangeError = false;
   try {
-    parseRange(range, maxDays);
+    if (!ownRange) parseRange(range, maxDays);
   } catch {
     rangeError = true;
   }
@@ -147,13 +153,15 @@ export function ReportsView({
   const props = { session, locale, range, online };
   return (
     <div className="reports-view">
-      <RangePicker
-        value={range}
-        onChange={setRange}
-        maxDays={maxDays}
-        settings={settings}
-        locale={locale}
-      />
+      {!ownRange && (
+        <RangePicker
+          value={range}
+          onChange={setRange}
+          maxDays={maxDays}
+          settings={settings}
+          locale={locale}
+        />
+      )}
       <div
         className="report-tablist"
         role="tablist"
@@ -215,6 +223,8 @@ export function ReportsView({
             <LoyaltyReport {...props} />
           ) : tab === "kiosk" ? (
             <KioskReport {...props} />
+          ) : tab === "history" ? (
+            <SalesHistory session={session} locale={locale} online={online} />
           ) : (
             <AuditTab {...props} />
           )}

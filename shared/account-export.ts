@@ -182,6 +182,27 @@ export const EXPORT_TABLE_LABELS: Readonly<
   restaurant_entitlements: ["Plan", "Plan"],
   restaurant_fiscal_profiles: ["Datos fiscales", "Fiscal profile"],
   rounds: ["Rondas", "Rounds"],
+  // Histórico POS Lite (040): report history imported from pos-lite, not Green Monkey sales.
+  sales_history_batches: [
+    "Histórico POS Lite: importaciones",
+    "POS Lite history: imports",
+  ],
+  sales_history_coverage: [
+    "Histórico POS Lite: días vigentes",
+    "POS Lite history: current days",
+  ],
+  sales_history_days: [
+    "Histórico POS Lite: ventas por día",
+    "POS Lite history: sales by day",
+  ],
+  sales_history_payments: [
+    "Histórico POS Lite: formas de pago",
+    "POS Lite history: payment methods",
+  ],
+  sales_history_products: [
+    "Histórico POS Lite: productos",
+    "POS Lite history: products",
+  ],
   shifts: ["Turnos", "Shifts"],
   source_mappings: ["Correspondencias de importación", "Import mappings"],
   stock_items: ["Insumos", "Stock items"],

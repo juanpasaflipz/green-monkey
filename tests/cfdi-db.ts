@@ -5192,7 +5192,11 @@ try {
     });
     // One restaurant per window, set before its ticket is sold: a window shortened after a sale
     // waits until the printed deadline ends (LD-55 CFDIFIX-FISCAL-5, checked below), while each
-    // periodicity of this loop only lengthens the ticket's deadline and applies at once.
+    // periodicity of this loop only lengthens the ticket's deadline and applies at once. The loop
+    // visits the periodicities by the close of the ticket's period under each, so every step is
+    // a lengthening whatever the run's date: day → week → fortnight → month is not, when the
+    // ticket's week ends after the 15th (a sale on Monday the 12th: week closes on the 18th,
+    // fortnight on the 15th, so week → fortnight shortens and is rightly deferred).
     let tk!: Ticket;
     for (const [policy, days] of [
       ["month", 30],
@@ -5207,7 +5211,13 @@ try {
         selfInvoiceDays: days,
       });
       tk = await makeTicket(F);
-      for (const p of ["day", "week", "fortnight", "month"] as const) {
+      const lengthening = (["day", "week", "fortnight", "month"] as const)
+        .map((p, i) => ({ p, i, to: globalPeriodFor(tk.businessDate, p).to }))
+        .sort((x, y) => x.to.localeCompare(y.to) || x.i - y.i)
+        .map((x) => x.p);
+      assert.equal(lengthening[0], "day");
+      assert.equal(lengthening[3], "month");
+      for (const p of lengthening) {
         const saved = await saveSettings(F, {
           globalPeriodicity: p,
           selfInvoicePolicy: policy,

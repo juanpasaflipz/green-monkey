@@ -241,3 +241,16 @@ DO $$ BEGIN
   GRANT UPDATE (decision_source) ON public_order_holds TO gm_app;
  END IF;
 END $$;
+
+-- 040 sales-history (Histórico POS Lite). Guarded: this manifest also runs on schemas before 040
+-- (the 036 pattern). Aggregate rows and batches are INSERT-only; the only UPDATE is the coverage
+-- pointer (which batch owns a business date) when a newer export replaces the dates it covers.
+-- No DELETE on any sales-history table. Nothing for the worker, support or backup roles (the
+-- backup reader's SELECT comes from the blanket grant).
+DO $$ BEGIN
+ IF to_regclass('public.sales_history_coverage') IS NOT NULL THEN
+  GRANT SELECT, INSERT ON sales_history_batches, sales_history_days, sales_history_payments,
+    sales_history_products, sales_history_coverage TO gm_app;
+  GRANT UPDATE (batch_id, updated_at) ON sales_history_coverage TO gm_app;
+ END IF;
+END $$;
