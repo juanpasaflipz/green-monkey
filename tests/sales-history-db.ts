@@ -562,6 +562,24 @@ try {
       const res = await fetch(origin + "/api/sales-history?from=2026-04-01&to=2026-04-01");
       assert.equal(res.headers.get("cache-control"), "no-store");
       assert.equal((await res.json()).days[0].total, 11600);
+      // A realistic history (about 1.3 MB) is far above the app's 256 KB JSON limit: it passes as raw bytes.
+      const big = bytes(
+        exportFile(
+          h.tenantId,
+          "2026-04-03T00:00:00.000Z",
+          Array.from({ length: 3000 }, (_, i) => ({
+            id: 1000 + i,
+            at: new Date(Date.parse("2025-10-01T19:00:00.000Z") + i * 3 * 3600_000).toISOString(),
+            subtotal: 100 + (i % 7),
+            product: "Producto Ficticio " + (i % 40),
+          })),
+        ),
+      );
+      assert.ok(big.length > 256 * 1024, `${big.length} bytes`);
+      const bp = await post("/api/sales-history/preview", big);
+      assert.equal(bp.status, 200);
+      assert.equal(bp.body.orders, 3000);
+      assert.equal(bp.body.reconciliation.matches, true);
       const wide = await fetch(origin + "/api/sales-history?from=2024-01-01&to=2026-04-01");
       assert.equal(wide.status, 400);
       // A JSON content type is not the upload: the body is not read as the file.
