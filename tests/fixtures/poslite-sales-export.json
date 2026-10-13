@@ -1,0 +1,354 @@
+{
+ "source": "pos-lite-sales",
+ "sourceTenantId": "taqueria-ficticia",
+ "sourceName": "Taquería Ficticia",
+ "targetTenantId": "00000000-0000-4000-8000-0000000000aa",
+ "exportedAt": "2026-05-04T12:00:00.000Z",
+ "currency": "MXN",
+ "summary": {
+  "orders": 13,
+  "total": "1160.40",
+  "tax": "159.40",
+  "tip": "50.50"
+ },
+ "orders": [
+  {
+   "id": 9001,
+   "created_at": "2026-05-01T19:00:00.000Z",
+   "paid_at": "2026-05-01T19:01:00.000Z",
+   "completed_at": "2026-05-01T19:00:00.000Z",
+   "source": "customer_kiosk",
+   "payment_method": "card",
+   "subtotal": "100.00",
+   "tax": "16.00",
+   "tip": "10.00",
+   "total": "116.00",
+   "discount_amount": null,
+   "refund_total": "0.00",
+   "lines": [
+    {
+     "name": "Taco Ficticio",
+     "quantity": 2,
+     "unit_price": "58.00",
+     "discount_amount": null
+    }
+   ],
+   "payments": [
+    {
+     "method": "card",
+     "amount": "116.00",
+     "tip": "10.00",
+     "status": "paid"
+    }
+   ]
+  },
+  {
+   "id": 9002,
+   "created_at": "2026-05-01T20:00:00.000Z",
+   "paid_at": null,
+   "completed_at": "2026-05-01T20:00:00.000Z",
+   "source": "pos",
+   "payment_method": "cash",
+   "subtotal": "50.00",
+   "tax": "8.00",
+   "tip": null,
+   "total": "58.00",
+   "discount_amount": null,
+   "refund_total": "0.00",
+   "lines": [
+    {
+     "name": "Agua de Prueba",
+     "quantity": 1,
+     "unit_price": "58.00",
+     "discount_amount": null
+    }
+   ],
+   "payments": []
+  },
+  {
+   "id": 9003,
+   "created_at": "2026-05-01T21:00:00.000Z",
+   "paid_at": "2026-05-01T21:05:00.000Z",
+   "completed_at": "2026-05-01T21:00:00.000Z",
+   "source": "pos",
+   "payment_method": "split",
+   "subtotal": "200.00",
+   "tax": "32.00",
+   "tip": "20.00",
+   "total": "232.00",
+   "discount_amount": null,
+   "refund_total": "0.00",
+   "lines": [
+    {
+     "name": "Burrito Demo",
+     "quantity": 2,
+     "unit_price": "116.00",
+     "discount_amount": null
+    }
+   ],
+   "payments": [
+    {
+     "method": "card",
+     "amount": "132.00",
+     "tip": "20.00",
+     "status": "paid"
+    },
+    {
+     "method": "cash",
+     "amount": "100.00",
+     "tip": "0.00",
+     "status": "succeeded"
+    },
+    {
+     "method": "card",
+     "amount": "50.00",
+     "tip": "0.00",
+     "status": "pending"
+    }
+   ]
+  },
+  {
+   "id": 9004,
+   "created_at": "2026-05-01T22:00:00.000Z",
+   "paid_at": "2026-05-01T22:00:30.000Z",
+   "completed_at": "2026-05-01T22:00:00.000Z",
+   "source": "customer_kiosk",
+   "payment_method": "card",
+   "subtotal": "90.00",
+   "tax": "14.40",
+   "tip": "0.00",
+   "total": "104.40",
+   "discount_amount": "0.00",
+   "refund_total": "0.00",
+   "lines": [
+    {
+     "name": "Torta Ejemplo",
+     "quantity": 1,
+     "unit_price": "116.00",
+     "discount_amount": "11.60"
+    }
+   ],
+   "payments": []
+  },
+  {
+   "id": 9005,
+   "created_at": "2026-05-02T05:30:00.000Z",
+   "paid_at": "2026-05-02T05:31:00.000Z",
+   "completed_at": "2026-05-02T05:30:00.000Z",
+   "source": "pos",
+   "payment_method": "card",
+   "subtotal": "50.00",
+   "tax": "8.00",
+   "tip": "5.00",
+   "total": "58.00",
+   "discount_amount": null,
+   "refund_total": "0.00",
+   "lines": [
+    {
+     "name": "Taco Ficticio",
+     "quantity": 1,
+     "unit_price": "58.00",
+     "discount_amount": null
+    }
+   ],
+   "payments": []
+  },
+  {
+   "id": 9006,
+   "created_at": "2026-05-02T09:30:00.000Z",
+   "paid_at": null,
+   "completed_at": "2026-05-02T09:30:00.000Z",
+   "source": "pos",
+   "payment_method": "cash",
+   "subtotal": "50.00",
+   "tax": "8.00",
+   "tip": null,
+   "total": "58.00",
+   "discount_amount": null,
+   "refund_total": "0.00",
+   "lines": [
+    {
+     "name": "Taco Ficticio",
+     "quantity": 1,
+     "unit_price": "58.00",
+     "discount_amount": null
+    }
+   ],
+   "payments": []
+  },
+  {
+   "id": 9007,
+   "created_at": "2026-05-02T18:00:00.000Z",
+   "paid_at": "2026-05-02T18:00:00.000Z",
+   "completed_at": "2026-05-02T18:00:00.000Z",
+   "source": "didi_food",
+   "payment_method": "didi_food",
+   "subtotal": "100.00",
+   "tax": "16.00",
+   "tip": null,
+   "total": "116.00",
+   "discount_amount": null,
+   "refund_total": "0.00",
+   "lines": [
+    {
+     "name": "Taco Ficticio",
+     "quantity": 2,
+     "unit_price": "58.00",
+     "discount_amount": null
+    }
+   ],
+   "payments": []
+  },
+  {
+   "id": 9008,
+   "created_at": "2026-05-02T18:10:00.000Z",
+   "paid_at": null,
+   "completed_at": "2026-05-02T18:10:00.000Z",
+   "source": "pos",
+   "payment_method": "cash",
+   "subtotal": "10.00",
+   "tax": "1.00",
+   "tip": null,
+   "total": "12.00",
+   "discount_amount": null,
+   "refund_total": "0.00",
+   "lines": [
+    {
+     "name": "Agua de Prueba",
+     "quantity": 1,
+     "unit_price": "12.00",
+     "discount_amount": null
+    }
+   ],
+   "payments": []
+  },
+  {
+   "id": 9009,
+   "created_at": "2026-05-02T18:20:00.000Z",
+   "paid_at": "2026-05-02T18:20:00.000Z",
+   "completed_at": "2026-05-02T18:20:00.000Z",
+   "source": "pos",
+   "payment_method": "split",
+   "subtotal": "100.00",
+   "tax": "16.00",
+   "tip": null,
+   "total": "116.00",
+   "discount_amount": null,
+   "refund_total": "0.00",
+   "lines": [
+    {
+     "name": "Taco Ficticio",
+     "quantity": 2,
+     "unit_price": "58.00",
+     "discount_amount": null
+    }
+   ],
+   "payments": [
+    {
+     "method": "card",
+     "amount": "16.00",
+     "tip": "0.00",
+     "status": "paid"
+    }
+   ]
+  },
+  {
+   "id": 9001,
+   "created_at": "2026-05-02T18:30:00.000Z",
+   "paid_at": null,
+   "completed_at": "2026-05-02T18:30:00.000Z",
+   "source": "pos",
+   "payment_method": "cash",
+   "subtotal": "50.00",
+   "tax": "8.00",
+   "tip": null,
+   "total": "58.00",
+   "discount_amount": null,
+   "refund_total": "0.00",
+   "lines": [
+    {
+     "name": "Taco Ficticio",
+     "quantity": 1,
+     "unit_price": "58.00",
+     "discount_amount": null
+    }
+   ],
+   "payments": []
+  },
+  {
+   "id": 9011,
+   "created_at": "2026-05-02T18:40:00.000Z",
+   "paid_at": null,
+   "completed_at": "2026-05-02T18:40:00.000Z",
+   "source": "pos",
+   "payment_method": "cash",
+   "subtotal": "-50.00",
+   "tax": "-8.00",
+   "tip": null,
+   "total": "-58.00",
+   "discount_amount": null,
+   "refund_total": "0.00",
+   "lines": [
+    {
+     "name": "Taco Ficticio",
+     "quantity": 1,
+     "unit_price": "58.00",
+     "discount_amount": null
+    }
+   ],
+   "payments": []
+  },
+  {
+   "id": 9012,
+   "created_at": "2026-05-03T19:00:00.000Z",
+   "paid_at": "2026-05-03T19:00:00.000Z",
+   "completed_at": "2026-05-03T19:00:00.000Z",
+   "source": "pos",
+   "payment_method": "transfer",
+   "subtotal": "150.00",
+   "tax": "24.00",
+   "tip": null,
+   "total": "174.00",
+   "discount_amount": null,
+   "refund_total": "0.00",
+   "lines": [
+    {
+     "name": "Burrito Demo",
+     "quantity": 1,
+     "unit_price": "116.00",
+     "discount_amount": null
+    },
+    {
+     "name": "Agua de Prueba",
+     "quantity": 1,
+     "unit_price": "58.00",
+     "discount_amount": null
+    }
+   ],
+   "payments": []
+  },
+  {
+   "id": 9013,
+   "created_at": "2026-05-03T19:30:00.000Z",
+   "paid_at": "2026-05-03T19:31:00.000Z",
+   "completed_at": "2026-05-03T19:30:00.000Z",
+   "source": "pos",
+   "payment_method": "mp_terminal",
+   "subtotal": "100.00",
+   "tax": "16.00",
+   "tip": "15.50",
+   "total": "116.00",
+   "discount_amount": null,
+   "refund_total": "0.00",
+   "lines": [
+    {
+     "name": "Taco Ficticio",
+     "quantity": 2,
+     "unit_price": "58.00",
+     "discount_amount": null
+    }
+   ],
+   "payments": []
+  }
+ ]
+}
