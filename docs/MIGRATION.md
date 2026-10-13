@@ -20,7 +20,7 @@ Never deduplicate tenants, people, menu items, or recipes by name alone. Restaur
 | Modifier groups/options and item links | `dish_modifier_groups`, `modifier_groups`, `modifiers` | Shared modifiers with group constraints and price deltas |
 | `combo_definitions`, `combo_slots`, discounts | `promotions`, courtesy amounts | Canonical offer/discount records; retain historical snapshots |
 | Order service references/fulfillment fields | `restaurant_tables`, `waiter_orders`, waiter names | Tables, waiter attribution, service mode, ordered rounds |
-| `orders`, `order_items`, `order_item_modifiers` | JSON items in `waiter_orders` | Normalized orders/lines/modifiers with unchanged legacy payload retained for audit |
+| `orders`, `order_items`, `order_item_modifiers` | JSON items in `waiter_orders` | Normalized orders/lines/modifiers with unchanged legacy payload retained for audit. Juanberto's pos-lite kiosk and POS-terminal sales are **not** migrated as orders: they import as report history only through [Histórico POS Lite](SALES_HISTORY.md) (`scripts/history/poslite-sales-export.sql`, then Finanzas › Histórico POS Lite), separate from every Green Monkey sale, IVA, corte and CFDI |
 | `order_payments`, payment groups, refunds | Order payment_method/status and available split history | Tender/refund ledger; never invent missing allocations |
 | `inventory_items`, menu ingredient links, prep/portion ledger | `ingredients`, `recipes`, recipe ingredients/substitutes | Stable ingredient/recipe IDs, units and versions, raw/prepared model |
 | Purchase orders/vendors/receipt records | `merchandise_entries` | Suppliers/receiving/stock lots where data exists |
@@ -53,6 +53,8 @@ POS Lite orders, Luma paid orders, weekly entries, manual sales, CSV imports, an
 - A genuinely separate manual/legacy summary becomes an explicitly labeled historical adjustment only after its scope is established.
 - Delivery settlement net receipts are not a second sale; preserve commissions/fees and reconcile to marketplace order gross value when supported.
 - Refunds retain their own dates and links. Never deduct the same refund through both a net summary and imported refund rows.
+
+Histórico POS Lite ([SALES_HISTORY.md](SALES_HISTORY.md), migration 040) applies this to Juanberto's pos-lite kiosk and POS-terminal sales: they are daily aggregates in their own tables that no Green Monkey report, cash close, fiscal ticket or factura global reads, so they can never be counted or invoiced a second time. Each import batch records its file hash (the same file is a no-op) and its business-date coverage; a newer export replaces exactly the dates it covers, and an older one is refused.
 
 Require review when overlap cannot be established confidently. File hashes, source row IDs, external order IDs, and period coverage support deduplication; a matching amount/date alone is insufficient.
 
@@ -224,5 +226,10 @@ Watch Cobros en terminal and the inbox for the first hour.
 3. Delete pos-lite's `tenant_credentials` rows for MP and Clip.
 4. The final pos-lite wallet-pass update (the members now live in Green Monkey), then delete or
    anonymise that tenant's `loyalty_customers` rows in pos-lite and log it.
-5. Delete the export files (members, photos manifest) from every machine they touched.
-6. Post the counter sign (the club and the kiosk now live in Green Monkey).
+5. Sales history: once pos-lite has stopped selling (step 1), run
+   `scripts/history/poslite-sales-export.sql` (read-only; `-v tenant=… -v target=…`) and import it
+   in Finanzas › Histórico POS Lite; check three days against pos-lite's Reportes and log the batch
+   ([SALES_HISTORY.md](SALES_HISTORY.md) §6). An earlier import is replaced for the days this one
+   covers.
+6. Delete the export files (members, sales history, photos manifest) from every machine they touched.
+7. Post the counter sign (the club and the kiosk now live in Green Monkey).
