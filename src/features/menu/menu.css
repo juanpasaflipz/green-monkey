@@ -508,3 +508,78 @@
 .menu-confirm-actions {
   margin-top: 16px;
 }
+
+/* «Importar menú de POS Lite» (MenuPosLiteImport). */
+.poslite-import {
+  display: grid;
+  gap: 8px;
+}
+.poslite-import p {
+  margin: 0;
+}
+.poslite-import h3 {
+  margin: 12px 0 0;
+  font-size: 16px;
+}
+.poslite-import section.error h3,
+.poslite-import section.warning-panel h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+.poslite-import section ul {
+  margin: 6px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 4px;
+}
+.poslite-scroll {
+  max-height: 320px;
+  overflow: auto;
+}
+.poslite-import .data-table {
+  margin-top: 4px;
+}
+.poslite-import .data-table td {
+  padding: 8px 16px;
+}
+.poslite-import select {
+  min-height: 48px;
+  min-width: 8rem;
+}
+.poslite-products {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 16px;
+}
+.poslite-products h4 {
+  margin: 12px 0 4px;
+  font-size: 14px;
+  color: var(--text-2);
+}
+.poslite-products ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.poslite-products li {
+  display: grid;
+  gap: 2px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+.poslite-products li:last-child {
+  border-bottom: 0;
+}
+.poslite-product-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  overflow-wrap: anywhere;
+}
+.poslite-import-done {
+  background: var(--positive-bg);
+  color: var(--positive);
+  padding: 14px 16px;
+  border-radius: 8px;
+  font-weight: 500;
+}
