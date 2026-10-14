@@ -74,6 +74,7 @@ const operations: Record<string, Key> = {
   "menu.group.saved": "menuOpGroupSaved",
   "menu.group.archived": "menuOpGroupArchived",
   "menu.option.availability": "menuOpOptionAvailability",
+  "menu.import": "menuOpImport",
   "floor.area.saved": "menuOpAreaSaved",
   "floor.area.reordered": "menuOpAreaReordered",
   "floor.area.archived": "menuOpAreaArchived",

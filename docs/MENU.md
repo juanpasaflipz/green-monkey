@@ -355,6 +355,56 @@ stock with a count or a receipt in Existencias so the movement, its reason and i
 actor are recorded. A manual UPDATE would be refused for the runtime role and
 would make the drift check fail.
 
+## Importar el menú de POS Lite
+
+Brings one pos-lite restaurant's whole menu into Green Monkey in one reviewed step:
+categories, products (es/en names and descriptions, price, station, order), reusable option
+groups with their options and prices, and each product's groups. The older «Importar menú»
+in Configuración (name, price and category only) is unchanged.
+
+**What carries over.**
+
+| pos-lite | Green Monkey |
+| --- | --- |
+| Active items (not `is_example`) | Products, `kind: "item"`, available, version 1, no recipe, no cost |
+| The categories they use | Categories; an active one with the same Spanish name is reused |
+| `name_en`, `description`, `description_en` | `name.en` (else the Spanish name), `description` (es/en, 300 characters) |
+| `price`, `price_adjustment` (pesos, IVA included) | Centavos |
+| Active groups attached to an item, with active modifiers | Reusable option groups (fresh ids); a group left with no options is skipped |
+| `required`, `min_selections`, `max_selections`, `selection_type` | `min` (required: at least 1; optional: 0), `max` (single: 1; multi: its max, or the option count when it was 0), capped at the option count and at 30 |
+| `ai_category_roles.role`, else the category name | Station per category (Bebidas, drinks, cerveza → Barra; else Cocina), editable on the import screen |
+
+Not carried: photos (use «Importar fotos», [KIOSK.md](KIOSK.md) §7), combos, virtual-brand
+overlays and platform prices (counted and named in the warnings), recipes, costs and fiscal keys.
+Every adjustment (a min ignored, a max capped, an inactive pos-lite category, an empty group) is
+a warning on the screen; anything Green Monkey cannot store (a name over 80 characters, a
+description over 300 or with control characters, a negative price, more than 12 groups or 30
+choices on a product, a menu limit) blocks the import and says what to fix.
+
+**Runbook.**
+
+1. The operator exports the menu read-only with
+   [scripts/menu/poslite-menu-export.sql](../scripts/menu/poslite-menu-export.sql) (the
+   invocation is in its header: `-v tenant=<pos-lite tenant id> -v target=<Green Monkey
+   restaurant id>`). The file holds the menu only, no personal data.
+2. The owner or a manager opens Menú e inventario → Productos → **Importar menú de POS Lite**,
+   chooses the file and reviews: counts, the price control total, each category's
+   **Estación**, the product list, warnings and products whose name already exists.
+3. «Confirmo que este archivo es del menú de …» → **Importar menú** (a recent PIN). One
+   transaction creates everything; the menu revision moves once, so the QR menu and the kiosk
+   refresh on their next poll.
+4. Afterwards, in the editor: compare prices line by line with pos-lite, check each product's
+   option groups, and create the "Varios" open-price product
+   ([LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) §4.1).
+
+**Safety.** The file names its target restaurant (`menu_import_scope` otherwise) and currency.
+The same file again returns the stored result (`import_batches`, source `pos-lite-menu`); a
+different file from the same pos-lite restaurant is refused (`menu_import_existing_mapping`):
+one import per restaurant, later changes are made in the editor. Every created category, group,
+option and product has a `source_mappings` row, and the run writes one `menu.import` audit row
+(Bitácora «Menú de POS Lite importado») with counts, stations and warnings. The file travels as
+a JSON body (256 kB), ample for a few hundred products.
+
 ## Photos, descriptions and suggestions (kiosk 039)
 
 - **Foto**: Subir / Cambiar / Quitar in the product editor (owners and managers). The browser

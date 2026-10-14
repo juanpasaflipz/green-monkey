@@ -146,6 +146,106 @@ export default defineArea({
     menuImportNotImported: "Sin importar",
     menuImportReportSaved: "El reporte quedó en la bitácora.",
     menuImportClose: "Cerrar",
+    menuPosLiteOpen: "Importar menú de POS Lite",
+    menuPosLiteTitle: "Importar menú de POS Lite",
+    menuPosLiteIntro:
+      "Elige el archivo de exportación del menú (JSON). Verás las categorías, productos y modificadores antes de importar; nada se guarda hasta que confirmes.",
+    menuPosLiteFile: "Archivo del menú (JSON)",
+    menuPosLiteFileUnreadable: "El archivo no es un JSON válido.",
+    menuPosLiteReading: "Leyendo el archivo…",
+    menuPosLiteSource: "Menú de «{source}» → {restaurant}",
+    menuPosLiteSourceUnknown: "restaurante sin nombre",
+    menuPosLiteCounts:
+      "{categories} categorías · {products} productos · {groups} grupos de opciones · {options} opciones",
+    menuPosLitePriceTotal: "Total de control de precios: {total}",
+    menuPosLitePriceTotalHint:
+      "Suma de los precios de todos los productos y opciones. Compárala con POS Lite.",
+    menuPosLiteCategories: "Categorías",
+    menuPosLiteCategory: "Categoría",
+    menuPosLiteProductCount: "Productos",
+    menuPosLiteStation: "Estación",
+    menuPosLiteStationFor: "Estación de {name}",
+    menuPosLiteInactive: "inactiva en POS Lite",
+    menuPosLiteProducts: "Productos",
+    menuPosLiteProductsRegion: "Productos a importar",
+    menuPosLiteNoGroups: "Sin modificadores",
+    menuPosLiteWarnings: "Avisos",
+    menuPosLiteErrors: "Hay que corregir el archivo antes de importar",
+    menuPosLiteErrorsHint:
+      "Corrige estos datos en POS Lite, exporta el menú de nuevo y vuelve a elegir el archivo.",
+    menuPosLiteClashes:
+      "Ya existen productos con estos nombres; se crearán como productos aparte: {names}",
+    menuPosLiteAlready:
+      "Este archivo ya se importó. Puedes revisarlo; Importar muestra el resultado guardado.",
+    menuPosLiteImportedBefore:
+      "Este restaurante ya importó un menú de POS Lite. No se puede importar otro.",
+    menuPosLiteConfirm: "Confirmo que este archivo es del menú de {restaurant}",
+    menuPosLiteCommit: "Importar menú",
+    menuPosLiteImporting: "Importando el menú…",
+    menuPosLiteDone:
+      "Listo: {categories} categorías ({reused} ya existían), {products} productos, {groups} grupos de opciones y {options} opciones.",
+    menuPosLiteReplayed: "Este archivo ya se había importado; este es su resultado.",
+    menuPosLiteBackToProducts: "Volver a Productos",
+    menuPosLiteChooseAnother: "Elegir otro archivo",
+    menuPosLiteWarnMinIgnored:
+      "«{name}» pedía un mínimo de {from} si se elegía algo, pero no era obligatorio; quedará opcional.",
+    menuPosLiteWarnMaxZero:
+      "«{name}» no tenía máximo de opciones; quedará en {to} (todas sus opciones).",
+    menuPosLiteWarnMaxClamped:
+      "«{name}» permitía {from} opciones y tiene {to}; quedará en {to}.",
+    menuPosLiteWarnEmptyGroup: "«{name}» no tiene opciones; no se importa.",
+    menuPosLiteWarnInactiveCategory:
+      "La categoría «{name}» está inactiva en POS Lite; se importa igual. Archívala después si no la usas.",
+    menuPosLiteWarnDuplicateCategory:
+      "Hay dos categorías llamadas «{name}»; sus productos quedarán en una sola.",
+    menuPosLiteWarnVirtualBrands:
+      "Marcas virtuales en POS Lite: {from}. No se importan; configúralas aparte.",
+    menuPosLiteWarnCombos:
+      "Combos en POS Lite: {from}. No se importan; créalos en Productos como combos.",
+    menuPosLiteWarnPhotos:
+      "Las fotos no vienen en este archivo. Después usa «Importar fotos».",
+    menuPosLiteErrCurrency:
+      "La moneda del archivo ({name}) no usa dos decimales como POS Lite.",
+    menuPosLiteErrDuplicateId:
+      "El id {ref} aparece dos veces. Exporta el menú de nuevo.",
+    menuPosLiteErrCategoryName:
+      "La categoría «{name}» no tiene nombre o pasa de 80 caracteres. Corrige su nombre.",
+    menuPosLiteErrProductName:
+      "El producto «{name}» no tiene nombre o es demasiado largo. Corrige su nombre.",
+    menuPosLiteErrGroupName:
+      "El grupo «{name}» no tiene nombre o es demasiado largo. Corrige su nombre.",
+    menuPosLiteErrOptionName:
+      "La opción «{name}» no tiene nombre o es demasiado larga. Corrige su nombre.",
+    menuPosLiteErrDescriptionLong:
+      "La descripción de «{name}» es demasiado larga. Acórtala.",
+    menuPosLiteErrDescriptionForbidden:
+      "La descripción de «{name}» tiene caracteres no permitidos (por ejemplo, enlaces o código). Corrígela.",
+    menuPosLiteErrInvalidMoney:
+      "El precio de «{name}» no es válido (negativo, con más de dos decimales o demasiado alto). Corrige el precio.",
+    menuPosLiteErrUnknownCategory:
+      "El producto «{name}» está en una categoría que no viene en el archivo. Asígnale una categoría.",
+    menuPosLiteErrUnknownGroup:
+      "El producto {ref} usa un grupo de opciones ({name}) que no viene en el archivo. Quita el enlace o exporta de nuevo.",
+    menuPosLiteErrUnknownItem:
+      "Un grupo de opciones está ligado a un producto ({ref}) que no viene en el archivo. Exporta de nuevo.",
+    menuPosLiteErrSelectionType:
+      "El grupo «{name}» tiene un tipo de selección desconocido. Ponlo como única o múltiple.",
+    menuPosLiteErrGroupUnsatisfiable:
+      "El grupo «{name}» pide al menos {from} opciones pero solo tiene {to}. Baja el mínimo o agrega opciones.",
+    menuPosLiteErrDuplicateOption:
+      "La opción «{name}» está repetida en su grupo. Cambia o quita una.",
+    menuPosLiteErrTooManyGroups:
+      "«{name}» tiene más de 12 grupos de opciones. Quítale algunos.",
+    menuPosLiteErrTooManyChoices:
+      "«{name}» suma {from} elecciones entre sus grupos; el máximo es {to}. Baja los máximos de sus grupos.",
+    menuPosLiteErrLimitCategories:
+      "Con este menú habría {from} categorías; el máximo es {to}. Archiva o quita categorías.",
+    menuPosLiteErrLimitProducts:
+      "Con este menú habría {from} productos; el máximo es {to}. Archiva o quita productos.",
+    menuPosLiteErrLimitGroups:
+      "Con este menú habría {from} grupos de opciones; el máximo es {to}. Archiva o quita grupos.",
+    menuPosLiteErrLimitOptions:
+      "El grupo «{name}» tiene {from} opciones; el máximo es {to}. Quítale opciones.",
     menuDescriptionEs: "Descripción (español)",
     menuDescriptionEn: "Descripción (inglés, opcional)",
     menuSuggestWith: "Sugerir con este producto",
@@ -300,6 +400,7 @@ export default defineArea({
     menuOpGroupSaved: "Grupo de modificadores guardado",
     menuOpGroupArchived: "Grupo de modificadores archivado o restaurado",
     menuOpOptionAvailability: "Disponibilidad de opción",
+    menuOpImport: "Menú de POS Lite importado",
     menuOpAreaSaved: "Área guardada",
     menuOpAreaReordered: "Áreas reordenadas",
     menuOpAreaArchived: "Área archivada o restaurada",
@@ -493,6 +594,106 @@ export default defineArea({
     menuImportNotImported: "Not imported",
     menuImportReportSaved: "The report is in the activity log.",
     menuImportClose: "Close",
+    menuPosLiteOpen: "Import POS Lite menu",
+    menuPosLiteTitle: "Import POS Lite menu",
+    menuPosLiteIntro:
+      "Choose the menu export file (JSON). You will see the categories, items and modifiers before importing; nothing is saved until you confirm.",
+    menuPosLiteFile: "Menu file (JSON)",
+    menuPosLiteFileUnreadable: "The file is not valid JSON.",
+    menuPosLiteReading: "Reading the file…",
+    menuPosLiteSource: "Menu of “{source}” → {restaurant}",
+    menuPosLiteSourceUnknown: "unnamed restaurant",
+    menuPosLiteCounts:
+      "{categories} categories · {products} items · {groups} option groups · {options} options",
+    menuPosLitePriceTotal: "Price control total: {total}",
+    menuPosLitePriceTotalHint:
+      "Sum of every item and option price. Compare it with POS Lite.",
+    menuPosLiteCategories: "Categories",
+    menuPosLiteCategory: "Category",
+    menuPosLiteProductCount: "Items",
+    menuPosLiteStation: "Station",
+    menuPosLiteStationFor: "Station for {name}",
+    menuPosLiteInactive: "inactive in POS Lite",
+    menuPosLiteProducts: "Items",
+    menuPosLiteProductsRegion: "Items to import",
+    menuPosLiteNoGroups: "No modifiers",
+    menuPosLiteWarnings: "Notes",
+    menuPosLiteErrors: "The file must be fixed before importing",
+    menuPosLiteErrorsHint:
+      "Fix these in POS Lite, export the menu again and choose the new file.",
+    menuPosLiteClashes:
+      "Items with these names already exist; they will be created as separate items: {names}",
+    menuPosLiteAlready:
+      "This file was already imported. You can review it; Import shows the saved result.",
+    menuPosLiteImportedBefore:
+      "This restaurant already imported a POS Lite menu. Another one cannot be imported.",
+    menuPosLiteConfirm: "I confirm this file is {restaurant}'s menu",
+    menuPosLiteCommit: "Import menu",
+    menuPosLiteImporting: "Importing the menu…",
+    menuPosLiteDone:
+      "Done: {categories} categories ({reused} already existed), {products} items, {groups} option groups and {options} options.",
+    menuPosLiteReplayed: "This file had already been imported; this is its result.",
+    menuPosLiteBackToProducts: "Back to Items",
+    menuPosLiteChooseAnother: "Choose another file",
+    menuPosLiteWarnMinIgnored:
+      "“{name}” asked for a minimum of {from} when anything was picked, but was not required; it will be optional.",
+    menuPosLiteWarnMaxZero:
+      "“{name}” had no maximum; it will be {to} (all of its options).",
+    menuPosLiteWarnMaxClamped:
+      "“{name}” allowed {from} options and has {to}; it will be {to}.",
+    menuPosLiteWarnEmptyGroup: "“{name}” has no options; it is not imported.",
+    menuPosLiteWarnInactiveCategory:
+      "The category “{name}” is inactive in POS Lite; it is imported anyway. Archive it later if you do not use it.",
+    menuPosLiteWarnDuplicateCategory:
+      "Two categories are called “{name}”; their items will share one.",
+    menuPosLiteWarnVirtualBrands:
+      "Virtual brands in POS Lite: {from}. They are not imported; set them up separately.",
+    menuPosLiteWarnCombos:
+      "Combos in POS Lite: {from}. They are not imported; create them under Items as combos.",
+    menuPosLiteWarnPhotos:
+      "Photos are not in this file. Use “Import photos” afterwards.",
+    menuPosLiteErrCurrency:
+      "The file's currency ({name}) does not use two decimals like POS Lite.",
+    menuPosLiteErrDuplicateId:
+      "The id {ref} appears twice. Export the menu again.",
+    menuPosLiteErrCategoryName:
+      "The category “{name}” has no name or is over 80 characters. Fix its name.",
+    menuPosLiteErrProductName:
+      "The item “{name}” has no name or it is too long. Fix its name.",
+    menuPosLiteErrGroupName:
+      "The group “{name}” has no name or it is too long. Fix its name.",
+    menuPosLiteErrOptionName:
+      "The option “{name}” has no name or it is too long. Fix its name.",
+    menuPosLiteErrDescriptionLong:
+      "The description of “{name}” is too long. Shorten it.",
+    menuPosLiteErrDescriptionForbidden:
+      "The description of “{name}” has characters that are not allowed (for example links or code). Fix it.",
+    menuPosLiteErrInvalidMoney:
+      "The price of “{name}” is not valid (negative, more than two decimals or too high). Fix the price.",
+    menuPosLiteErrUnknownCategory:
+      "The item “{name}” is in a category that is not in the file. Give it a category.",
+    menuPosLiteErrUnknownGroup:
+      "Item {ref} uses an option group ({name}) that is not in the file. Remove the link or export again.",
+    menuPosLiteErrUnknownItem:
+      "An option group is linked to an item ({ref}) that is not in the file. Export again.",
+    menuPosLiteErrSelectionType:
+      "The group “{name}” has an unknown selection type. Set it to single or multiple.",
+    menuPosLiteErrGroupUnsatisfiable:
+      "The group “{name}” requires at least {from} options but has only {to}. Lower the minimum or add options.",
+    menuPosLiteErrDuplicateOption:
+      "The option “{name}” is repeated in its group. Rename or remove one.",
+    menuPosLiteErrTooManyGroups:
+      "“{name}” has more than 12 option groups. Remove some.",
+    menuPosLiteErrTooManyChoices:
+      "“{name}” adds up to {from} choices across its groups; the maximum is {to}. Lower its groups' maximums.",
+    menuPosLiteErrLimitCategories:
+      "This menu would make {from} categories; the maximum is {to}. Archive or remove categories.",
+    menuPosLiteErrLimitProducts:
+      "This menu would make {from} items; the maximum is {to}. Archive or remove items.",
+    menuPosLiteErrLimitGroups:
+      "This menu would make {from} option groups; the maximum is {to}. Archive or remove groups.",
+    menuPosLiteErrLimitOptions:
+      "The group “{name}” has {from} options; the maximum is {to}. Remove some options.",
     menuDescriptionEs: "Description (Spanish)",
     menuDescriptionEn: "Description (English, optional)",
     menuSuggestWith: "Suggest with this product",
@@ -646,6 +847,7 @@ export default defineArea({
     menuOpGroupSaved: "Modifier group saved",
     menuOpGroupArchived: "Modifier group archived or restored",
     menuOpOptionAvailability: "Choice availability",
+    menuOpImport: "POS Lite menu imported",
     menuOpAreaSaved: "Area saved",
     menuOpAreaReordered: "Areas reordered",
     menuOpAreaArchived: "Area archived or restored",
@@ -694,6 +896,30 @@ export default defineArea({
     menuSaveAndNew: "Save and add another",
   },
   errors: {
+    menu_import_file_invalid: [
+      "El archivo no es una exportación de menú de POS Lite.",
+      "The file is not a POS Lite menu export.",
+    ],
+    menu_import_scope: [
+      "Este archivo se exportó para otro restaurante.",
+      "This file was exported for another restaurant.",
+    ],
+    menu_import_currency: [
+      "La moneda del archivo no es la de este restaurante.",
+      "The file's currency is not this restaurant's.",
+    ],
+    menu_import_file_changed: [
+      "El archivo cambió desde la vista previa. Elígelo de nuevo.",
+      "The file changed since the preview. Choose it again.",
+    ],
+    menu_import_invalid: [
+      "El menú tiene datos que hay que corregir antes de importar. Revisa la lista.",
+      "The menu has data to fix before importing. Check the list.",
+    ],
+    menu_import_existing_mapping: [
+      "Este restaurante ya importó un menú de POS Lite. No se puede importar otro.",
+      "This restaurant already imported a POS Lite menu. Another one cannot be imported.",
+    ],
     menu_changed: [
       "Alguien más cambió este elemento. Recarga para ver la versión actual.",
       "Someone else changed this item. Reload to see the current version.",
