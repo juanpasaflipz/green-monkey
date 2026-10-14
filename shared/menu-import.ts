@@ -322,7 +322,8 @@ export function planMenuImport(file: MenuImportFile, opts: MenuImportOptions = {
   const categories: PlannedCategory[] = ordered(file.categories).map((c, index) => {
     const ref = String(c.id);
     const es = c.name.trim();
-    if (!es || es.length > 200)
+    // The editor's categoryInput (bilingual): 80, so an imported name stays editable.
+    if (!es || es.length > 80)
       errors.push({ code: "category_name", entity: "category", ref, name: shortName(c.name) });
     const key = es.toLocaleLowerCase("es-MX");
     if (names.has(key))

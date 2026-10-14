@@ -268,13 +268,13 @@ describe("planMenuImport: blocking errors", () => {
     );
   });
 
-  it("category names: empty or longer than 200", () => {
-    const ok = "C".repeat(200);
+  it("category names: empty or longer than 80 (the editor's limit)", () => {
+    const ok = "C".repeat(80);
     const p = planMenuImport(
       variant({
         categories: [
           { ...file.categories[0], name: "   " },
-          { ...file.categories[1], name: "C".repeat(201) },
+          { ...file.categories[1], name: "C".repeat(81) },
           { ...file.categories[2], name: ok },
         ],
       }),
