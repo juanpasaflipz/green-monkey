@@ -14,6 +14,7 @@ import {
   setOptionAvailability,
   setProductAvailability,
 } from "../menu.js";
+import { commitMenuImport, previewMenuImport } from "../menu-import.js";
 import {
   archiveArea,
   archiveTable,
@@ -39,8 +40,20 @@ export function registerPreAuth(_ctx: PreAuthContext) {}
  * Menu editor, floor plan and stock item setup. Paths do not collide with the
  * legacy /inventory/:id route registered earlier in index.ts.
  */
-export function register({ route }: RouteContext) {
+export function register({ app, route }: RouteContext) {
   route("get", "/menu", (tx, s) => menuEditor(tx, s));
+  // «Importar menú de POS Lite» (server/menu-import.ts): the file travels as the JSON body
+  // (a pos-lite menu is a few kB, far below express.json's 256 kB). Never cached.
+  app.use("/api/menu/import", (_req, res, next) => {
+    res.set("Cache-Control", "no-store");
+    next();
+  });
+  route("post", "/menu/import/preview", (tx, s, req) =>
+    previewMenuImport(tx, s, req.body),
+  );
+  route("post", "/menu/import/commit", (tx, s, req) =>
+    commitMenuImport(tx, s, req.body),
+  );
   // Every signed-in role polls this so 86'd items leave the POS promptly.
   route("get", "/menu/revision", (tx) => menuRevision(tx));
   route("post", "/menu/categories/save", (tx, s, req) =>

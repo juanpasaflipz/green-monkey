@@ -903,12 +903,14 @@ is updated when they reach production.
 
 ### 4.1 Before day one
 
-1. **Menu, re-keyed by hand.** pos-lite's catalog has about 52 products, 17 modifier
-   groups and 71 options. Green Monkey has no pos-lite importer: its JSON import takes only
-   name, price, category and availability and puts every product on the kitchen station
-   ([MIGRATION.md](MIGRATION.md), [MENU.md](MENU.md)). In the menu editor:
+1. **Menu, imported from pos-lite.** «Importar menú de POS Lite» brings the categories,
+   products, option groups and options in one reviewed step
+   ([MENU.md, «Importar el menú de POS Lite»](MENU.md#importar-el-menú-de-pos-lite)). On
+   2026-10-14 pos-lite's active menu was 6 categories, 28 products and 5 attached groups with
+   19 options. Then, in the menu editor:
    - check every price line by line against pos-lite, products and options alike;
-   - set every bar item's station to the bar (a line, combos included, belongs to one
+   - confirm each category's station on the import screen (Bebidas → Barra) and fix any
+     product that belongs to the other station (a line, combos included, belongs to one
      station);
    - create a "Varios" open-price product with its ceiling, for anything not on the menu.
      QR and kiosk catalogs never show open-price products

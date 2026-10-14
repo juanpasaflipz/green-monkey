@@ -33,6 +33,7 @@ import {
   availabilityInput,
   categoryInput,
   groupInput,
+  type GroupInput,
   legacyProductInput,
   optionAvailabilityInput,
   productInput,
@@ -48,21 +49,21 @@ type CategoryRow = {
   version: number;
   archived_at: Date | null;
 };
-type GroupData = {
+export type GroupData = {
   name: Label;
   min: number;
   max: number;
   repeat: boolean;
   options: Option[];
 };
-type GroupRow = {
+export type GroupRow = {
   id: string;
   version: number;
   archived_at: Date | null;
   data: GroupData;
 };
-/** Normalized product command shared by the editor and the legacy adapter. */
-type ProductDraft = {
+/** Normalized product command shared by the editor, the legacy adapter and the menu import. */
+export type ProductDraft = {
   id: string;
   expectedVersion: number;
   name: Label;
@@ -117,7 +118,7 @@ function toGroup(r: GroupRow, usedBy: string[] = []): MenuGroup {
   };
 }
 
-async function activeCount(
+export async function activeCount(
   tx: Tx,
   table: "menu_categories" | "modifier_groups",
 ): Promise<number> {
@@ -302,22 +303,37 @@ export async function findOrCreateCategory(
   label: Label,
 ): Promise<MenuCategory> {
   await bumpMenuRevision(tx);
+  return (await placeCategory(tx, s, label)).category;
+}
+
+/**
+ * findOrCreateCategory under a menu_state lock the caller already holds: the active category
+ * with this Spanish name (case-insensitive, FOR SHARE), or a new one at the end. `audited:
+ * false` leaves the record to the caller's own audit row (the POS Lite menu import).
+ */
+export async function placeCategory(
+  tx: Tx,
+  s: Session,
+  label: Label,
+  audited = true,
+): Promise<{ category: MenuCategory; created: boolean }> {
   const es = label.es.trim().slice(0, 200) || "General";
   const en = label.en.trim().slice(0, 200) || es;
   const [found] = await tx<
     CategoryRow[]
   >`select * from menu_categories where archived_at is null and lower(name_es)=lower(${es}) order by position limit 1 for share`;
-  if (found) return toCategory(found);
+  if (found) return { category: toCategory(found), created: false };
   if ((await activeCount(tx, "menu_categories")) >= MENU_LIMITS.categories)
     throw new DomainError("menu_limit", 409);
   const [row] = await tx<
     CategoryRow[]
   >`insert into menu_categories(tenant_id,id,name_es,name_en,position) values(${s.tenantId},${randomUUID()},${es},${en},${await nextCategoryPosition(tx)}) returning *`;
-  await audit(tx, s, "menu.category.saved", row.id, {
-    before: null,
-    after: { name: { es, en } },
-  });
-  return toCategory(row);
+  if (audited)
+    await audit(tx, s, "menu.category.saved", row.id, {
+      before: null,
+      after: { name: { es, en } },
+    });
+  return { category: toCategory(row), created: true };
 }
 
 export async function saveCategory(tx: Tx, s: Session, raw: unknown) {
@@ -433,12 +449,15 @@ export async function archiveCategory(tx: Tx, s: Session, raw: unknown) {
 /**
  * Validates and writes one product document. `keepAvailability` keeps the
  * live availability of an existing product (the editor never changes it).
+ * The caller holds the menu_state lock (bumpMenuRevision). `audited: false`
+ * leaves the record to the caller's own audit row (the POS Lite menu import).
  */
-async function writeProduct(
+export async function writeProduct(
   tx: Tx,
   s: Session,
   p: ProductDraft,
   keepAvailability: boolean,
+  audited = true,
 ): Promise<Product> {
   const groups = p.groupIds.length
     ? await tx<
@@ -508,13 +527,14 @@ async function writeProduct(
   };
   await writeDoc(tx, s, data);
   await recordRecipeVersion(tx, s, data);
-  await audit(tx, s, "menu.product.saved", p.id, {
-    version: data.version,
-    price: data.price,
-    openMax: data.openMax,
-    groupIds: data.groupIds,
-    taxCategory: p.fiscal?.taxCategory,
-  });
+  if (audited)
+    await audit(tx, s, "menu.product.saved", p.id, {
+      version: data.version,
+      price: data.price,
+      openMax: data.openMax,
+      groupIds: data.groupIds,
+      taxCategory: p.fiscal?.taxCategory,
+    });
   return data;
 }
 
@@ -734,6 +754,39 @@ async function recompileLinked(
   return docs.length;
 }
 
+/** A group save's stored document: a saved option keeps its live availability, a new one is available. */
+export function groupDocument(p: GroupInput, before: Option[]): GroupData {
+  return {
+    name: p.name,
+    min: p.min,
+    max: p.max,
+    repeat: p.repeat,
+    options: p.options.map((o) => ({
+      id: o.id,
+      name: o.name,
+      price: o.price,
+      available: before.find((b) => b.id === o.id)?.available ?? true,
+      cost: o.cost,
+      recipe: o.recipe,
+    })),
+  };
+}
+/** Writes the group row at expectedVersion + 1 (a new group: version 1). */
+export async function storeGroup(
+  tx: Tx,
+  s: Session,
+  p: GroupInput,
+  data: GroupData,
+): Promise<GroupRow> {
+  const [row] = await tx<
+    GroupRow[]
+  >`insert into modifier_groups(tenant_id,id,data,version)
+    values(${s.tenantId},${p.id},${tx.json(data as never)},${p.expectedVersion + 1})
+    on conflict(tenant_id,id) do update set data=excluded.data,version=excluded.version
+    returning id,version,archived_at,data`;
+  return row;
+}
+
 export async function saveGroup(tx: Tx, s: Session, raw: unknown) {
   permit(s, managers);
   const p = groupInput.parse(raw);
@@ -767,26 +820,7 @@ export async function saveGroup(tx: Tx, s: Session, raw: unknown) {
       })
     )
       await requirePro(tx);
-    const data: GroupData = {
-      name: p.name,
-      min: p.min,
-      max: p.max,
-      repeat: p.repeat,
-      options: p.options.map((o) => ({
-        id: o.id,
-        name: o.name,
-        price: o.price,
-        available: before.find((b) => b.id === o.id)?.available ?? true,
-        cost: o.cost,
-        recipe: o.recipe,
-      })),
-    };
-    const [row] = await tx<
-      GroupRow[]
-    >`insert into modifier_groups(tenant_id,id,data,version)
-      values(${s.tenantId},${p.id},${tx.json(data as never)},${p.expectedVersion + 1})
-      on conflict(tenant_id,id) do update set data=excluded.data,version=excluded.version
-      returning id,version,archived_at,data`;
+    const row = await storeGroup(tx, s, p, groupDocument(p, before));
     const recompiled = row.archived_at
       ? 0
       : await recompileLinked(tx, s, p.id, true);

@@ -126,7 +126,7 @@ gm-delivery-sales v1 document is `delivery_history_file_invalid`; a file with no
 
 **Concurrency.** The import takes the class-0 advisory key (tenant + `delivery-platforms`), then
 the restaurants row `FOR SHARE` (the currency the file is checked against), then inserts. It takes
-no ordered row lock (ARCHITECTURE LO table row 64), like 040's import.
+no ordered row lock (ARCHITECTURE LO table row 65), like 040's import.
 
 ## 5. API and screen
 
