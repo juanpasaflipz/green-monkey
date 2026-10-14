@@ -57,9 +57,8 @@ days use the same rule: `(COALESCE(paid_at, created_at) AT TIME ZONE tenant.time
 | `cancelled` | Cancelled orders, informational, not in `orders`. |
 | `chargebacks` | Amounts charged back, ≥ 0. |
 
-**Stores.** A platform account can sell for more than one brand or location: DiDi had a second
-brand («Rollbertos»), and the owner's Uber account also lists a second restaurant
-(«Albufera (Roma Sur)») that the owner excluded. The builder only includes the stores it is told
+**Stores.** A platform account can sell for more than one brand or location: DiDi can carry a second
+brand, and an Uber account can also list another restaurant that the owner wants excluded. The builder only includes the stores it is told
 to (`--store`); the server stores each row under its store label (1–80 characters).
 
 **pos-lite's delivery days** (`scripts/history/poslite-delivery-export.sql`): orders with
@@ -188,7 +187,7 @@ The history is included in the owner's data export («Exportar datos del restaur
 
    Per platform, pos-lite rows **before** `--cutover` and portal rows **from** it on (required when
    a platform has both inputs). Rows of any store not given with `--store` are left out and listed
-   («excluded … (store)») — Albufera (Roma Sur) stays out this way. Check the printed
+   («excluded … (store)») — an excluded store stays out this way. Check the printed
    per-platform/month table against each portal's monthly figures before going on.
 3. **Upload** in Finanzas › Histórico de plataformas › «Importar histórico de plataformas» (owner
    or manager). Check the restaurant name, the coverage per platform, «Cuadra» and the rejected
