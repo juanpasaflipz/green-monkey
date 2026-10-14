@@ -1,0 +1,100 @@
+{
+  "source": "pos-lite-menu",
+  "sourceTenantId": "fictional-pos-location",
+  "sourceName": "Taquería Ficticia",
+  "targetTenantId": "10000000-0000-4000-8000-000000000001",
+  "exportedAt": "2026-10-14T12:00:00.000Z",
+  "currency": "MXN",
+  "summary": {
+    "categories": 3,
+    "items": 5,
+    "groups": 6,
+    "modifiers": 11,
+    "itemGroups": 6,
+    "virtualBrands": 2,
+    "combos": 1
+  },
+  "categories": [
+    { "id": 11, "name": "Tacos de prueba", "sortOrder": 1, "active": true, "role": null, "printerTarget": "kitchen" },
+    { "id": 12, "name": "Bebidas de ejemplo", "sortOrder": 2, "active": true, "role": null, "printerTarget": "kitchen" },
+    { "id": 13, "name": "Postres ficticios", "sortOrder": null, "active": false, "role": null, "printerTarget": null }
+  ],
+  "items": [
+    {
+      "id": 101, "categoryId": 11, "name": "Taco de prueba", "nameEn": "Test taco", "price": "45.00",
+      "description": "Tortilla de maíz con relleno de ejemplo", "descriptionEn": "Corn tortilla with a sample filling",
+      "sortOrder": 1
+    },
+    {
+      "id": 102, "categoryId": 11, "name": "Quesadilla ficticia", "nameEn": null, "price": "52.50",
+      "description": "Queso de ejemplo", "descriptionEn": "", "sortOrder": 2
+    },
+    {
+      "id": 103, "categoryId": 11, "name": "Gringa de muestra", "nameEn": "", "price": "60.00",
+      "description": null, "descriptionEn": null, "sortOrder": null
+    },
+    {
+      "id": 201, "categoryId": 12, "name": "Agua de ejemplo", "nameEn": "Sample agua fresca", "price": "30.00",
+      "description": "", "descriptionEn": null, "sortOrder": 1, "image_url": "https://example.invalid/agua.jpg"
+    },
+    {
+      "id": 301, "categoryId": 13, "name": "Flan ficticio", "nameEn": "Fictional flan", "price": "35.00",
+      "description": null, "descriptionEn": "Sample custard", "sortOrder": 1
+    }
+  ],
+  "groups": [
+    {
+      "id": 21, "name": "Salsa de prueba", "selectionType": "single", "required": false, "min": 0, "max": 1,
+      "sortOrder": 1,
+      "modifiers": [
+        { "id": 211, "name": "Verde", "price": "0.00", "sortOrder": 1 },
+        { "id": 212, "name": "Roja", "price": "0.00", "sortOrder": 2 }
+      ]
+    },
+    {
+      "id": 22, "name": "Extras de ejemplo", "selectionType": "multi", "required": false, "min": 0, "max": 5,
+      "sortOrder": 2,
+      "modifiers": [
+        { "id": 221, "name": "Queso extra", "price": "10.00", "sortOrder": 1 },
+        { "id": 222, "name": "Aguacate", "price": "15.50", "sortOrder": 2 },
+        { "id": 223, "name": "Cebolla", "price": "0.00", "sortOrder": 3 }
+      ]
+    },
+    {
+      "id": 23, "name": "Tortilla", "selectionType": "single", "required": true, "min": 1, "max": 1,
+      "sortOrder": 3,
+      "modifiers": [
+        { "id": 231, "name": "Maíz", "price": "0.00", "sortOrder": 1 },
+        { "id": 232, "name": "Harina", "price": "5.00", "sortOrder": 2 }
+      ]
+    },
+    {
+      "id": 24, "name": "Grupo vacío", "selectionType": "multi", "required": false, "min": 0, "max": 3,
+      "sortOrder": 4, "modifiers": []
+    },
+    {
+      "id": 25, "name": "Hielo", "selectionType": "multi", "required": false, "min": 0, "max": 0,
+      "sortOrder": 5,
+      "modifiers": [
+        { "id": 251, "name": "Con hielo", "price": "0.00", "sortOrder": 1 },
+        { "id": 252, "name": "Sin hielo", "price": "0.00", "sortOrder": 2 }
+      ]
+    },
+    {
+      "id": 26, "name": "Toppings de muestra", "selectionType": "single", "required": false, "min": 1, "max": 1,
+      "sortOrder": 6,
+      "modifiers": [
+        { "id": 261, "name": "Cajeta", "price": "8.00", "sortOrder": 2 },
+        { "id": 262, "name": "Chocolate", "price": "8.00", "sortOrder": 1 }
+      ]
+    }
+  ],
+  "itemGroups": [
+    { "itemId": 101, "groupId": 22, "sortOrder": 2 },
+    { "itemId": 101, "groupId": 23, "sortOrder": 1 },
+    { "itemId": 102, "groupId": 21, "sortOrder": 1 },
+    { "itemId": 102, "groupId": 24, "sortOrder": 2 },
+    { "itemId": 201, "groupId": 25, "sortOrder": 1 },
+    { "itemId": 301, "groupId": 26, "sortOrder": 1 }
+  ]
+}
