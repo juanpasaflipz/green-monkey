@@ -1,0 +1,72 @@
+name: GreenMonkeyKiosk
+options:
+  bundleIdPrefix: online.greenmonkey
+  deploymentTarget:
+    iOS: "26.0"
+  developmentLanguage: es
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "26.0"
+    TARGETED_DEVICE_FAMILY: "2"
+    SUPPORTS_MACCATALYST: NO
+    DEVELOPMENT_TEAM: U76V8DL3W4
+    CODE_SIGN_STYLE: Automatic
+targets:
+  GreenMonkeyKiosk:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: GreenMonkeyKiosk
+    info:
+      path: GreenMonkeyKiosk/Info.plist
+      properties:
+        CFBundleDevelopmentRegion: es-MX
+        CFBundleDisplayName: Kiosco
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        ITSAppUsesNonExemptEncryption: false
+        NSCameraUsageDescription: La cámara escanea el código QR del kiosco que muestra Green Monkey en la caja.
+        NSFaceIDUsageDescription: Face ID protege la configuración del kiosco.
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: online.greenmonkey.kiosk
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        GENERATE_INFOPLIST_FILE: NO
+  GreenMonkeyKioskTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: GreenMonkeyKioskTests
+    dependencies:
+      - target: GreenMonkeyKiosk
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: online.greenmonkey.kiosk.tests
+        GENERATE_INFOPLIST_FILE: YES
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/GreenMonkeyKiosk.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/GreenMonkeyKiosk"
+schemes:
+  GreenMonkeyKiosk:
+    build:
+      targets:
+        GreenMonkeyKiosk: all
+        GreenMonkeyKioskTests: [test]
+    test:
+      targets:
+        - GreenMonkeyKioskTests
