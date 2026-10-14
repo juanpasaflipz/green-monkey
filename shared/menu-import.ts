@@ -533,9 +533,15 @@ export const productNameKey = matchKey;
 
 /** POST /api/menu/import/preview: the plan plus what the restaurant already has. */
 export type MenuImportPreview = MenuImportPlan & {
-  /** sha256 of the canonical file the server parsed; the commit sends it back. */
+  /**
+   * sha256 hex of JSON.stringify(file) as the server received it (parsed, unknown keys kept);
+   * the commit sends it back with the same file.
+   */
   fileHash: string;
+  /** This very file was imported here: Importar returns its stored report. */
   alreadyImported: boolean;
+  /** Another file of the same pos-lite restaurant was imported here (one import per restaurant). */
+  importedBefore: boolean;
   /** Active products whose Spanish name equals an imported one (accents and case ignored). */
   existingNameClashes: { legacyId: string; name: string; productId: string }[];
 };
