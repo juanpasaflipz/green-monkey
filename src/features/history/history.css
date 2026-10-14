@@ -1,5 +1,6 @@
-/* Finanzas › Histórico POS Lite (040). */
-.sales-history .history-range {
+/* Finanzas › Histórico POS Lite (040) and Histórico de plataformas (041). */
+.sales-history .history-range,
+.delivery-history .history-range {
   gap: 0.75rem;
   align-items: end;
 }
@@ -48,4 +49,9 @@
   display: grid;
   gap: 0.5rem;
   margin-top: 0.75rem;
+}
+/* Histórico de plataformas (041): a day with orders whose payout is not settled yet. */
+.history-pending {
+  color: var(--warning);
+  font-weight: 600;
 }

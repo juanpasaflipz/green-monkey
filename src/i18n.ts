@@ -15,6 +15,7 @@ import payments from "./i18n/payments";
 import loyalty from "./i18n/loyalty";
 import kiosk from "./i18n/kiosk";
 import history from "./i18n/history";
+import delivery from "./i18n/delivery";
 
 /** Area modules, merged after the base strings. */
 export const areas = {
@@ -35,6 +36,8 @@ export const areas = {
   kiosk,
   // Histórico POS Lite (040), after the Wave 4 areas.
   history,
+  // Histórico de plataformas (041), after 040.
+  delivery,
 };
 const base = {
   es: {
@@ -568,6 +571,7 @@ export const strings = {
     ...loyalty.es,
     ...kiosk.es,
     ...history.es,
+    ...delivery.es,
   },
   en: {
     ...base.en,
@@ -586,6 +590,7 @@ export const strings = {
     ...loyalty.en,
     ...kiosk.en,
     ...history.en,
+    ...delivery.en,
   },
 };
 export type Key = keyof typeof strings.es;
@@ -728,6 +733,7 @@ export const errorText: Record<string, readonly [string, string]> = {
   ...loyalty.errors,
   ...kiosk.errors,
   ...history.errors,
+  ...delivery.errors,
 };
 export function translateError(code: string, locale: Locale) {
   return errorText[code]?.[locale === "es" ? 0 : 1] ?? strings[locale].error;
