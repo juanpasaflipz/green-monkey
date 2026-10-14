@@ -188,7 +188,7 @@ export default defineArea({
     menuPosLiteBackToProducts: "Volver a Productos",
     menuPosLiteChooseAnother: "Elegir otro archivo",
     menuPosLiteWarnMinIgnored:
-      "«{name}» pedía al menos {from} opciones pero no es obligatorio; quedará opcional.",
+      "«{name}» pedía un mínimo de {from} si se elegía algo, pero no era obligatorio; quedará opcional.",
     menuPosLiteWarnMaxZero:
       "«{name}» no tenía máximo de opciones; quedará en {to} (todas sus opciones).",
     menuPosLiteWarnMaxClamped:
@@ -199,9 +199,9 @@ export default defineArea({
     menuPosLiteWarnDuplicateCategory:
       "Hay dos categorías llamadas «{name}»; sus productos quedarán en una sola.",
     menuPosLiteWarnVirtualBrands:
-      "{from} marcas virtuales no se importan; configúralas aparte.",
+      "Marcas virtuales en POS Lite: {from}. No se importan; configúralas aparte.",
     menuPosLiteWarnCombos:
-      "{from} combos no se importan; créalos en Productos como combos.",
+      "Combos en POS Lite: {from}. No se importan; créalos en Productos como combos.",
     menuPosLiteWarnPhotos:
       "Las fotos no vienen en este archivo. Después usa «Importar fotos».",
     menuPosLiteErrCurrency:
@@ -636,7 +636,7 @@ export default defineArea({
     menuPosLiteBackToProducts: "Back to Items",
     menuPosLiteChooseAnother: "Choose another file",
     menuPosLiteWarnMinIgnored:
-      "“{name}” asked for at least {from} options but is not required; it will be optional.",
+      "“{name}” asked for a minimum of {from} when anything was picked, but was not required; it will be optional.",
     menuPosLiteWarnMaxZero:
       "“{name}” had no maximum; it will be {to} (all of its options).",
     menuPosLiteWarnMaxClamped:
@@ -647,9 +647,9 @@ export default defineArea({
     menuPosLiteWarnDuplicateCategory:
       "Two categories are called “{name}”; their items will share one.",
     menuPosLiteWarnVirtualBrands:
-      "{from} virtual brands are not imported; set them up separately.",
+      "Virtual brands in POS Lite: {from}. They are not imported; set them up separately.",
     menuPosLiteWarnCombos:
-      "{from} combos are not imported; create them under Items as combos.",
+      "Combos in POS Lite: {from}. They are not imported; create them under Items as combos.",
     menuPosLiteWarnPhotos:
       "Photos are not in this file. Use “Import photos” afterwards.",
     menuPosLiteErrCurrency:
