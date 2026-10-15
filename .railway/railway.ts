@@ -103,9 +103,11 @@ export default defineRailway((ctx) => {
       // (LD-96). Staging keeps them on, and a "false" set there as the
       // RUNBOOK kill switch survives an apply. Switching production on is one reviewed change
       // here (production declares "true"; preserve() would keep the "false" already applied),
-      // then a deploy (RUNBOOK.md "Kiosk self-checkout and menu photos").
+      // then a deploy (RUNBOOK.md "Kiosk self-checkout and menu photos"). Menu photos went on
+      // ahead of card at the kiosk on the owner's decision (2026-10-15): photos need only the
+      // production media bucket, not the payments rehearsals.
       ...(production
-        ? { KIOSK_SELF_CHECKOUT_ENABLED: "false", MENU_PHOTOS_ENABLED: "false" }
+        ? { KIOSK_SELF_CHECKOUT_ENABLED: "false", MENU_PHOTOS_ENABLED: "true" }
         : {
             KIOSK_SELF_CHECKOUT_ENABLED: preserve(),
             MENU_PHOTOS_ENABLED: preserve(),
