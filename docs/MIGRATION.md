@@ -56,6 +56,8 @@ POS Lite orders, Luma paid orders, weekly entries, manual sales, CSV imports, an
 
 Histórico POS Lite ([SALES_HISTORY.md](SALES_HISTORY.md), migration 040) applies this to Juanberto's pos-lite kiosk and POS-terminal sales: they are daily aggregates in their own tables that no Green Monkey report, cash close, fiscal ticket or factura global reads, so they can never be counted or invoiced a second time. Each import batch records its file hash (the same file is a no-op) and its business-date coverage; a newer export replaces exactly the dates it covers, and an older one is refused.
 
+Histórico de plataformas ([DELIVERY_HISTORY.md](DELIVERY_HISTORY.md), migration 041) applies it to the Uber Eats, Rappi and DiDi Food sales (pos-lite's manual batches before each platform's cutover, the portals' daily totals from it on): daily rows per platform calendar date and store, gross with commission and net kept apart (net receipts are never a second sale), in tables of their own that neither the Green Monkey reports nor Histórico POS Lite read. Each batch records its file hash and its coverage per platform; a newer file replaces exactly the platforms and dates it covers, an older one is refused. Only the stores the operator names are included.
+
 Require review when overlap cannot be established confidently. File hashes, source row IDs, external order IDs, and period coverage support deduplication; a matching amount/date alone is insufficient.
 
 ## Dry-run and cutover gates
@@ -231,5 +233,11 @@ Watch Cobros en terminal and the inbox for the first hour.
    in Finanzas › Histórico POS Lite; check three days against pos-lite's Reportes and log the batch
    ([SALES_HISTORY.md](SALES_HISTORY.md) §6). An earlier import is replaced for the days this one
    covers.
-6. Delete the export files (members, sales history, photos manifest) from every machine they touched.
-7. Post the counter sign (the club and the kiosk now live in Green Monkey).
+6. Delivery-platform history: build the gm-delivery-sales file with
+   `scripts/history/delivery-sales-build.ts` (pos-lite's delivery days before each platform's
+   cutover, the portals' daily totals from it on, only the restaurant's own stores) and import it
+   in Finanzas › Histórico de plataformas; check three days against the portals and log the batch
+   ([DELIVERY_HISTORY.md](DELIVERY_HISTORY.md) §6).
+7. Delete the export files (members, sales history, delivery history, photos manifest) from every
+   machine they touched.
+8. Post the counter sign (the club and the kiosk now live in Green Monkey).

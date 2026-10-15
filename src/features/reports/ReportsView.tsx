@@ -23,6 +23,7 @@ import { SummaryTab } from "./tabs/SummaryTab";
 import { LoyaltyReport } from "../loyalty/LoyaltyReport";
 import { KioskReport } from "../public/KioskReport";
 import { SalesHistory } from "../history/SalesHistory";
+import { DeliveryHistory } from "../history/DeliveryHistory";
 import "./reports.css";
 
 export const REPORT_TABS = [
@@ -40,6 +41,8 @@ export const REPORT_TABS = [
   "kiosk",
   // Histórico POS Lite (040): pos-lite report history, never Green Monkey sales; last.
   "history",
+  // Histórico de plataformas (041): delivery-platform report history, never Green Monkey sales; last.
+  "delivery",
 ] as const;
 export type ReportTab = (typeof REPORT_TABS)[number];
 const TAB_KEYS: Record<ReportTab, Key> = {
@@ -54,6 +57,7 @@ const TAB_KEYS: Record<ReportTab, Key> = {
   loyalty: "loyaltyReportTitle",
   kiosk: "kioskReportTitle",
   history: "historyTitle",
+  delivery: "deliveryTitle",
 };
 /** Row lists read at most 31 days; summaries, breakdowns and cortes 92 (D9). */
 const LIST_TABS: readonly ReportTab[] = ["payments", "exceptions", "audit"];
@@ -122,8 +126,9 @@ export function ReportsView({
   const maxDays = LIST_TABS.includes(tab)
     ? LIMITS.listDays
     : LIMITS.aggregateDays;
-  // Histórico POS Lite has its own, wider range (pos-lite history predates the 92-day picker).
-  const ownRange = tab === "history";
+  // Histórico POS Lite and Histórico de plataformas have their own, wider range (their history
+  // predates the 92-day picker).
+  const ownRange = tab === "history" || tab === "delivery";
   let rangeError = false;
   try {
     if (!ownRange) parseRange(range, maxDays);
@@ -225,6 +230,8 @@ export function ReportsView({
             <KioskReport {...props} />
           ) : tab === "history" ? (
             <SalesHistory session={session} locale={locale} online={online} />
+          ) : tab === "delivery" ? (
+            <DeliveryHistory session={session} locale={locale} online={online} />
           ) : (
             <AuditTab {...props} />
           )}

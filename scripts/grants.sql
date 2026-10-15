@@ -254,3 +254,16 @@ DO $$ BEGIN
   GRANT UPDATE (batch_id, updated_at) ON sales_history_coverage TO gm_app;
  END IF;
 END $$;
+
+-- 041 delivery-history (Histórico de plataformas). Guarded: this manifest also runs on schemas
+-- before 041 (the 036 pattern). Day rows and batches are INSERT-only; the only UPDATE is the
+-- coverage pointer (which batch owns a platform's date) when a newer file replaces the dates it
+-- covers. No DELETE on any delivery-history table. Nothing for the worker, support or backup
+-- roles (the backup reader's SELECT comes from the blanket grant).
+DO $$ BEGIN
+ IF to_regclass('public.delivery_history_coverage') IS NOT NULL THEN
+  GRANT SELECT, INSERT ON delivery_history_batches, delivery_history_days,
+    delivery_history_coverage TO gm_app;
+  GRANT UPDATE (batch_id, updated_at) ON delivery_history_coverage TO gm_app;
+ END IF;
+END $$;

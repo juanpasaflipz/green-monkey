@@ -1,0 +1,31 @@
+{
+  "format": "gm-delivery-sales",
+  "version": 1,
+  "exportedAt": "2026-05-04T12:00:00.000Z",
+  "currency": "MXN",
+  "targetTenantId": "00000000-0000-4000-8000-0000000000aa",
+  "sourceName": "Taquería Demo",
+  "sources": [
+    { "platform": "uber_eats", "origin": "pos-lite", "from": "2026-05-01", "to": "2026-05-01", "note": "ficticio" },
+    { "platform": "uber_eats", "origin": "portal", "from": "2026-05-02", "to": "2026-05-03" },
+    { "platform": "rappi", "origin": "portal", "from": "2026-05-01", "to": "2026-05-02" },
+    { "platform": "didi_food", "origin": "pos-lite", "from": "2026-05-01", "to": "2026-05-03" }
+  ],
+  "days": [
+    { "date": "2026-05-01", "platform": "uber_eats", "store": "Taquería Demo", "orders": 4, "gross": "400.00", "commission": "100.00", "net": "300.00", "unsettledOrders": 0, "cancelled": 0, "chargebacks": "0.00" },
+    { "date": "2026-05-02", "platform": "uber_eats", "store": "Taquería Demo", "orders": 2, "gross": "200.00", "commission": "50.00", "net": "150.00", "unsettledOrders": 0, "cancelled": 1, "chargebacks": "0.00" },
+    { "date": "2026-05-03", "platform": "uber_eats", "store": "Taquería  Demo ", "orders": 3, "gross": "300.00", "commission": "75.00", "net": "225.00", "unsettledOrders": 1, "cancelled": 0, "chargebacks": "0.00" },
+    { "date": "2026-05-01", "platform": "rappi", "store": "Taquería Demo", "orders": 1, "gross": "100.00", "commission": null, "net": null, "unsettledOrders": 0, "cancelled": 0, "chargebacks": "0.00" },
+    { "date": "2026-05-02", "platform": "rappi", "store": "Taquería Demo", "orders": 2, "gross": "250.00", "commission": "50.00", "net": "-20.00", "unsettledOrders": 0, "cancelled": 0, "chargebacks": "220.00" },
+    { "date": "2026-05-03", "platform": "didi_food", "store": "Rollos Demo", "orders": 1, "gross": "50.00", "commission": "10.00", "net": "40.00", "unsettledOrders": 0, "cancelled": 0, "chargebacks": "0.00" },
+    { "date": "2026-05-02", "platform": "ifood", "store": "Taquería Demo", "orders": 1, "gross": "10.00", "commission": "1.00", "net": "9.00", "unsettledOrders": 0, "cancelled": 0, "chargebacks": "0.00" },
+    { "date": "2026-05-32", "platform": "rappi", "store": "Taquería Demo", "orders": 1, "gross": "10.00", "commission": "1.00", "net": "9.00", "unsettledOrders": 0, "cancelled": 0, "chargebacks": "0.00" },
+    { "date": "2026-05-03", "platform": "rappi", "store": "", "orders": 1, "gross": "10.00", "commission": "1.00", "net": "9.00", "unsettledOrders": 0, "cancelled": 0, "chargebacks": "0.00" },
+    { "date": "2026-05-03", "platform": "rappi", "store": "Taquería Demo", "orders": 1, "gross": "12,00", "commission": "1.00", "net": "9.00", "unsettledOrders": 0, "cancelled": 0, "chargebacks": "0.00" },
+    { "date": "2026-05-03", "platform": "rappi", "store": "Taquería Demo", "orders": 0, "gross": "10.00", "commission": "1.00", "net": "9.00", "unsettledOrders": 0, "cancelled": 0, "chargebacks": "0.00" },
+    { "date": "2026-05-03", "platform": "rappi", "store": "Taquería Demo", "orders": 1, "gross": "10.00", "commission": "11.00", "net": "-1.00", "unsettledOrders": 0, "cancelled": 0, "chargebacks": "0.00" },
+    { "date": "2026-05-03", "platform": "rappi", "store": "Taquería Demo", "orders": 1, "gross": "10.00", "commission": "0.00", "net": "11.00", "unsettledOrders": 0, "cancelled": 0, "chargebacks": "0.00" },
+    { "date": "2026-05-01", "platform": "uber_eats", "store": "Taquería Demo", "orders": 1, "gross": "10.00", "commission": "1.00", "net": "9.00", "unsettledOrders": 0, "cancelled": 0, "chargebacks": "0.00" }
+  ],
+  "summary": { "days": 14, "orders": 20, "gross": "1370.00", "commission": "302.00", "net": "759.00" }
+}

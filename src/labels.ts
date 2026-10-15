@@ -166,6 +166,8 @@ const operations: Record<string, Key> = {
   "loyalty.import.page": "loyaltyOpImport",
   // Histórico POS Lite (040)
   "sales_history.import": "historyOpImport",
+  // Histórico de plataformas (041)
+  "delivery_history.import": "deliveryOpImport",
   // kiosk (039, critic R27)
   "kiosk.settings_saved": "kioskOpSettings",
   "kiosk.station_saved": "kioskOpStation",

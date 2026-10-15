@@ -86,6 +86,7 @@ import { configureWake } from "./payments/wake.js";
 import * as loyaltyRoutes from "./routes/loyalty.js";
 import * as kioskRoutes from "./routes/kiosk.js";
 import * as salesHistoryRoutes from "./routes/sales-history.js";
+import * as deliveryHistoryRoutes from "./routes/delivery-history.js";
 import { MEDIA_ROUTE, mediaRoute } from "./media.js";
 import { kioskCapabilities } from "./kiosk-config.js";
 import { publicLimiter } from "./public-limits.js";
@@ -512,6 +513,8 @@ loyaltyRoutes.register({ app, sql, route });
 kioskRoutes.register({ app, sql, route });
 // Histórico POS Lite (040): report history imported from pos-lite, after the Wave 4 areas.
 salesHistoryRoutes.register({ app, sql, route });
+// Histórico de plataformas (041): delivery-platform report history, after 040.
+deliveryHistoryRoutes.register({ app, sql, route });
 // kiosk (039): menu photos, same origin (no CSP change), outside /api and before the static and
 // SPA fallback; no session (the menu_media_lookup policy resolves the asset).
 app.get(MEDIA_ROUTE, publicLimiter("media", { limit: 600 }), mediaRoute(sql));

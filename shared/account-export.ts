@@ -66,6 +66,19 @@ export const EXPORT_TABLE_LABELS: Readonly<
     "Issuing organization (CFDI)",
   ],
   cfdi_settings: ["Configuración de facturación", "Invoicing settings"],
+  // Histórico de plataformas (041): delivery-platform report history, not Green Monkey sales.
+  delivery_history_batches: [
+    "Histórico de plataformas: importaciones",
+    "Delivery platforms history: imports",
+  ],
+  delivery_history_coverage: [
+    "Histórico de plataformas: días vigentes",
+    "Delivery platforms history: current days",
+  ],
+  delivery_history_days: [
+    "Histórico de plataformas: ventas por día",
+    "Delivery platforms history: sales by day",
+  ],
   device_pairing_codes: ["Códigos de vinculación", "Pairing codes"],
   devices: ["Dispositivos", "Devices"],
   dining_areas: ["Áreas", "Dining areas"],
