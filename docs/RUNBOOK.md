@@ -1000,7 +1000,9 @@ Area doc: [KIOSK.md](KIOSK.md) (troubleshooting table in §11).
   la terminal». The drawer cannot close until it is resolved.
 - **Variables (KIOSK-OPS-1, LD-95).** `.railway/railway.ts` declares all seven on web only.
   `KIOSK_SELF_CHECKOUT_ENABLED` and `MENU_PHOTOS_ENABLED` are `preserve()` on staging (unset means
-  on) and the literal `"false"` in production until the switch-on below. `MEDIA_STORE` and the
+  on). In production `KIOSK_SELF_CHECKOUT_ENABLED` is the literal `"false"` until the switch-on
+  below; `MENU_PHOTOS_ENABLED` is `"true"` there since 2026-10-15 (the owner switched photos on
+  ahead of card at the kiosk: they need only the media bucket). `MEDIA_STORE` and the
   four `MEDIA_R2_*` are `preserve()` in both environments. They are set with railway-vars.sh
   once the owner provides the media bucket (LAUNCH_HANDOFF 1.16a): `MEDIA_STORE=r2` together
   with the four values. Never set `MEDIA_STORE=fs` or `MEDIA_FS_ROOT` on Railway. Without the

@@ -652,7 +652,9 @@ outside the repository. **Yours:** take the offline copy of `CREDENTIAL_ENCRYPTI
   change to `railway.ts` (production declares `"true"`)
   and a production deploy switch them on: [RUNBOOK.md](RUNBOOK.md) "Kiosk self-checkout and
   menu photos". Never set them by hand in production: the next deploy's apply puts back what
-  `railway.ts` says.
+  `railway.ts` says. Exception (owner's decision, 2026-10-15): `MENU_PHOTOS_ENABLED` is `"true"`
+  in production ahead of these steps, since photos need only step 3's media bucket; card at the
+  kiosk stays `"false"` until steps 1–5 pass.
 - **Counsel.** The kiosk's club lookup shows counts and a masked phone only (no name, no
   enrolment, critic R21); the tablet stores one binding cookie and no IP. Counsel confirms the
   restaurant's privacy notice covers the club lookup at a public screen (LD-3 list), and reviews

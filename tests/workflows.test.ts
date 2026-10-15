@@ -842,8 +842,9 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
     );
     expect(names(web).has("PAYMENTS_PROVIDERS")).toBe(false);
     // Kiosk switches (039; KIOSK-OPS-1, LD-95): the web's only. Unset means on, so production
-    // declares "false" until the field checks and the R44a rehearsal pass; staging preserves
-    // them (on, and a kill switch set by hand survives an apply).
+    // declares card at the kiosk "false" until the field checks and the R44a rehearsal pass, and
+    // menu photos "true" (the owner's decision, 2026-10-15); staging preserves them (on, and a
+    // kill switch set by hand survives an apply).
     for (const name of ["KIOSK_SELF_CHECKOUT_ENABLED", "MENU_PHOTOS_ENABLED"]) {
       expect(code.match(new RegExp(`\\b${name}\\b`, "g")), name).toHaveLength(
         2,
@@ -851,7 +852,7 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
       expect(names(worker).has(name), `worker declares ${name}`).toBe(false);
     }
     expect(web).toMatch(
-      /\.\.\.\(production\s*\?\s*\{\s*KIOSK_SELF_CHECKOUT_ENABLED: "false",\s*MENU_PHOTOS_ENABLED: "false"\s*\}\s*:\s*\{\s*KIOSK_SELF_CHECKOUT_ENABLED: preserve\(\),\s*MENU_PHOTOS_ENABLED: preserve\(\),?\s*\}\)/,
+      /\.\.\.\(production\s*\?\s*\{\s*KIOSK_SELF_CHECKOUT_ENABLED: "false",\s*MENU_PHOTOS_ENABLED: "true"\s*\}\s*:\s*\{\s*KIOSK_SELF_CHECKOUT_ENABLED: preserve\(\),\s*MENU_PHOTOS_ENABLED: preserve\(\),?\s*\}\)/,
     );
     // The menu photos bucket: web only, preserve() in both environments, never a literal (so
     // never MEDIA_STORE=fs); MEDIA_FS_ROOT is development and CI only and never declared.
