@@ -620,7 +620,7 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     // region, focus lands on the status heading, and the status region was
     // mounted before its text arrived.
     await expect(
-      customer.locator('main > p.sr-only[aria-live="polite"]'),
+      customer.locator('main p.sr-only[aria-live="polite"]'),
     ).toHaveText(
       `Pedido ${label} enviado. Esperando confirmación del personal.`,
     );
@@ -1000,7 +1000,10 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
     await addTaco(kiosk, 1);
     await kiosk.getByRole("button", { name: /^Taco de hongos/ }).click();
     await expect(kiosk.locator(".diner-line")).toHaveCount(3);
-    const name = kiosk.getByLabel("Nombre (opcional)");
+    await kiosk
+      .getByRole("button", { name: "Revisar pedido →", exact: true })
+      .click();
+    const name = kiosk.getByLabel(/¿A nombre de quién/);
     const note = kiosk.getByLabel("Indicaciones para la cocina (opcional)");
     await name.fill(`Kiosco ${f.id}`);
     await note.fill("sin cebolla");
@@ -1008,6 +1011,7 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
       name: "Enviar pedido",
       exact: true,
     });
+    await sendButton.scrollIntoViewIfNeeded();
     await expect(sendButton).toBeInViewport();
     await expect(kiosk.locator(".diner-total").first()).toBeInViewport();
     await sendButton.click();
@@ -1031,7 +1035,7 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
     // UX-6: a plain heading; the page's live region announces the code.
     await expect(code).not.toHaveAttribute("role", "status");
     await expect(
-      kiosk.locator('main > p.sr-only[aria-live="polite"]'),
+      kiosk.locator('main p.sr-only[aria-live="polite"]'),
     ).toHaveText(
       `Tu código es ${label}. Paga en caja con este código para que preparemos tu pedido.`,
     );
@@ -1043,7 +1047,11 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
     await expect(
       kiosk.getByRole("button", { name: /^Taco de asada/ }),
     ).toBeVisible();
-    // PRIVACY-7: the next customer finds no name or note.
+    // PRIVACY-7: the next customer finds no name or note in the review.
+    await addTaco(kiosk);
+    await kiosk
+      .getByRole("button", { name: "Revisar pedido →", exact: true })
+      .click();
     await expect(name).toHaveValue("");
     await expect(note).toHaveValue("");
 
@@ -1191,6 +1199,83 @@ test("pay-first refusal after a terminal charge: the cashier is told to record t
   });
 });
 
+test("approved kiosk: edits keep one cart line, touch keyboard and reset clear guest details @cross", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const link = await f.link({ kind: "kiosk", label: `Design ${f.id}` });
+    const kiosk = await context.newPage();
+    await kiosk.setViewportSize({ width: 1024, height: 768 });
+    await kiosk.goto(link.path);
+    await expect(
+      kiosk.locator('[data-kiosk-design="approved-2026-10"]'),
+    ).toBeVisible();
+    await addTaco(kiosk);
+    await kiosk
+      .locator(".diner-line")
+      .getByRole("button", { name: "Editar", exact: true })
+      .click();
+    const picker = kiosk.getByRole("dialog");
+    await picker.getByRole("radio").last().check();
+    await picker.getByRole("button", { name: "Agregar a la orden" }).click();
+    await expect(kiosk.locator(".diner-line")).toHaveCount(1);
+    const review = kiosk.getByRole("button", {
+      name: "Revisar pedido →",
+      exact: true,
+    });
+    await review.scrollIntoViewIfNeeded();
+    await expect(kiosk.locator(".diner-total")).toBeInViewport();
+    await review.click();
+    const name = kiosk.getByLabel(/¿A nombre de quién/);
+    await name.click();
+    const keyboard = kiosk.getByRole("group", {
+      name: "Teclado para el nombre",
+    });
+    await keyboard.getByRole("button", { name: "A", exact: true }).click();
+    await keyboard.getByRole("button", { name: "N", exact: true }).click();
+    await keyboard.getByRole("button", { name: "A", exact: true }).click();
+    await expect(name).toHaveValue("Ana");
+    await keyboard.getByRole("button", { name: /Listo/ }).click();
+    await expect(keyboard).toHaveCount(0);
+    await kiosk
+      .getByLabel("Indicaciones para la cocina (opcional)")
+      .fill("sin cebolla");
+    await axe(kiosk);
+    await kiosk.screenshot({
+      path: "docs/evidence/approved-kiosk-review-1024.png",
+      fullPage: true,
+    });
+    for (const viewport of [
+      { width: 800, height: 1280 },
+      { width: 390, height: 844 },
+    ]) {
+      await kiosk.setViewportSize(viewport);
+      expect(
+        await kiosk.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      await axe(kiosk);
+    }
+    await kiosk
+      .getByRole("button", { name: "Empezar de nuevo", exact: true })
+      .click();
+    await kiosk
+      .getByRole("dialog", { name: "¿Empezamos de nuevo?" })
+      .getByRole("button", { name: "Empezar de nuevo", exact: true })
+      .click();
+    await expect(kiosk.locator(".diner-line")).toHaveCount(0);
+    await addTaco(kiosk);
+    await review.click();
+    await expect(name).toHaveValue("");
+    await expect(
+      kiosk.getByLabel("Indicaciones para la cocina (opcional)"),
+    ).toHaveValue("");
+  });
+});
+
 test("kiosk idle: a warning at 70 s keeps the cart; at 95 s idle the kiosk clears it and returns to Spanish (25 s to answer, kiosk 039 §2.12)", async ({
   page,
   context,
@@ -1203,7 +1288,10 @@ test("kiosk idle: a warning at 70 s keeps the cart; at 95 s idle the kiosk clear
     await kiosk.goto(link.path);
     await addTaco(kiosk);
     await expect(kiosk.locator(".diner-line")).toHaveCount(1);
-    const name = kiosk.getByLabel("Nombre (opcional)");
+    await kiosk
+      .getByRole("button", { name: "Revisar pedido →", exact: true })
+      .click();
+    const name = kiosk.getByLabel(/¿A nombre de quién/);
     const note = kiosk.getByLabel("Indicaciones para la cocina (opcional)");
     await name.fill(`Idle ${f.id}`);
     await note.fill("sin cebolla");
@@ -1223,13 +1311,17 @@ test("kiosk idle: a warning at 70 s keeps the cart; at 95 s idle the kiosk clear
     await kiosk.clock.fastForward(95_000);
     await expect(kiosk.locator(".diner-line")).toHaveCount(0);
     // PRIVACY-7: the reset leaves no name or note for the next customer.
-    await expect(kiosk.getByLabel("Nombre (opcional)")).toHaveValue("");
+    await expect(
+      kiosk.getByRole("button", { name: "Revisar pedido →", exact: true }),
+    ).toBeDisabled();
+    await addTaco(kiosk);
+    await kiosk
+      .getByRole("button", { name: "Revisar pedido →", exact: true })
+      .click();
+    await expect(kiosk.getByLabel(/¿A nombre de quién/)).toHaveValue("");
     await expect(
       kiosk.getByLabel("Indicaciones para la cocina (opcional)"),
     ).toHaveValue("");
-    await expect(
-      kiosk.getByRole("button", { name: "Enviar pedido", exact: true }),
-    ).toBeDisabled();
     await expect(kiosk.getByRole("button", { name: "English" })).toBeVisible();
   });
 });

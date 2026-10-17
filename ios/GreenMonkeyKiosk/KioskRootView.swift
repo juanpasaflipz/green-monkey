@@ -81,7 +81,7 @@ private struct SetupView: View {
             BrandMark()
             Text("Configura este kiosco")
                 .font(.largeTitle.bold())
-            Text("En la caja, abre Configuración → Pedidos en línea → Agregar kiosco. Green Monkey muestra un código QR una sola vez: escanéalo con este iPad.")
+            Text("En la caja, abre Configuración → Pedidos en línea → Agregar kiosco. Escanea el QR del enlace o copia y pega el enlace completo (https://…/kiosk#…). El código de vinculación de 8 dígitos se ingresa después, dentro del menú del restaurante.")
                 .font(.title3)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 620)

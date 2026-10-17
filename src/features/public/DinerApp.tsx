@@ -29,12 +29,14 @@ import {
 import { useKioskIdle } from "./kioskIdle";
 import { IdleWarning } from "./IdleWarning";
 import { DinerMenu } from "./DinerMenu";
+import { ApprovedKioskMenu } from "../kiosk/ApprovedKioskMenu";
+import "../kiosk/kiosk.css";
 import { DinerCart } from "./DinerCart";
 import { DinerStatus } from "./DinerStatus";
 import { DinerNotice } from "./DinerNotice";
 import { KioskDone } from "./KioskDone";
 import { PrivacyDialog } from "./PrivacyDialog";
-import { Button, ModalRoot } from "../../components/ui";
+import { Button, Modal, ModalRoot } from "../../components/ui";
 import { PLATFORM_PRIVACY_PATH } from "./dinerRoute";
 import {
   KIOSK_LIMITS,
@@ -81,7 +83,11 @@ export type Draft = { lines: DraftLine[]; name: string; note: string };
  * suggestion line would read as invalid and block the cart). Diner lines carry no note.
  */
 /** The option picker's product and, when a suggestion opened it, that origin (KIOSK-UX-23). */
-export type PickerState = { product: Product; origin?: "suggestion" };
+export type PickerState = {
+  product: Product;
+  origin?: "suggestion";
+  lineId?: string;
+};
 
 /**
  * The line the option picker adds: a suggested product that needs choices keeps origin
@@ -159,6 +165,8 @@ export function DinerApp({
   token: string;
 }) {
   const kiosk = channel === "kiosk";
+  const [kioskReview, setKioskReview] = useState(false);
+  const [kioskDialog, setKioskDialog] = useState<"help" | "reset" | null>(null);
   const [locale, setLocale] = useState<Locale>("es");
   const t = (k: Key, values?: Record<string, string | number>) =>
     values ? fill(strings[locale][k], values) : strings[locale][k];
@@ -525,6 +533,8 @@ export function DinerApp({
 
   /** The next kiosk customer starts clean, on the current menu, in Spanish. */
   function resetKiosk() {
+    setKioskReview(false);
+    setKioskDialog(null);
     key.current = null;
     setUnknown(null);
     setDraft(emptyDraft());
@@ -719,118 +729,108 @@ export function DinerApp({
         ref={setModalRoot}
         className={
           "diner" +
-          (kiosk ? " kiosk" : "") +
+          (kiosk ? " kiosk kiosk-experience" : "") +
           (a11y.large ? " kiosk-large" : "") +
           (a11y.reach ? " kiosk-reach" : "")
         }
         lang={locale}
+        data-kiosk-design={kiosk ? "approved-2026-10" : undefined}
       >
-        {view !== "menu" && header}
-        <p className="sr-only" aria-live="polite">
-          {announce}
-        </p>
-        {view === "status" && current ? (
-          <DinerStatus
-            focusHeading={focusStatus}
-            token={token}
-            locale={locale}
-            menu={menu}
-            statusKey={current}
-            holds={holds}
-            onSelect={setCurrent}
-            onForget={(k) => {
-              const next = holds.filter((h) => h.key !== k);
-              writeStored(token, next);
-              setHolds(next);
-              setCurrent(next[0]?.key ?? null);
-              if (!next.length) setView("menu");
-            }}
-            onNewOrder={toMenu}
-            onRestore={(k) => restore(holds.find((h) => h.key === k))}
-          />
-        ) : kiosk && welcome && view === "menu" ? (
-          <KioskWelcome
-            restaurant={menu.restaurant.name}
-            locale={locale}
-            loyalty={!!kioskState?.loyalty}
-            onStart={() => {
-              enterFullscreen();
-              setWelcome(false);
-            }}
-            onLanguage={() => setLocale(locale === "es" ? "en" : "es")}
-            onAccessibility={() => setA11yOpen(true)}
-            onMember={() => setMemberOpen(true)}
-            onSetup={() => setSetup(true)}
-          />
-        ) : view === "checkout" && kioskState ? (
-          <KioskCheckout
-            token={token}
-            locale={locale}
-            currency={menu.restaurant.currency}
-            kiosk={kioskState}
-            body={{
-              lines: draft.lines,
-              name: draft.name.trim(),
-              note: draft.note.trim(),
-              expectedTotal: cart.total,
-              ...(memberToken ? { memberToken } : {}),
-            }}
-            announce={setAnnounce}
-            onStep={setCheckoutStep}
-            onDone={resetKiosk}
-            onBack={() => setView("menu")}
-            onRefused={(message, code) => {
-              setView("menu");
-              setError(message);
-              if (
-                CATALOG_ERRORS.has(code) ||
-                code === "public_price_changed" ||
-                code === "unavailable"
-              )
-                refreshCatalog();
-            }}
-          />
-        ) : view === "kiosk-done" && done ? (
-          <KioskDone
-            hold={done}
-            locale={locale}
-            currency={menu.restaurant.currency}
-            onReset={resetKiosk}
-          />
-        ) : (
-          <div className="diner-layout">
-            {/* The header sits in the menu column, so the side cart starts at
-              the top of the page and fits the viewport (UX-4). */}
-            <div className="diner-main">
-              {header}
-              <DinerMenu
-                menu={menu}
-                ordering={ordering ?? menu.ordering}
-                locale={locale}
-                kiosk={kiosk}
-                onPick={(p) =>
-                  kiosk
-                    ? pickKiosk(p)
-                    : pickerNeeded(p)
-                      ? setPicker({ product: p })
-                      : add(p)
-                }
-              />
-            </div>
-            <DinerCart
+        <div className={kiosk ? "kiosk-shell" : undefined}>
+          {view !== "menu" && header}
+          <p className="sr-only" aria-live="polite">
+            {announce}
+          </p>
+          {view === "status" && current ? (
+            <DinerStatus
+              focusHeading={focusStatus}
+              token={token}
+              locale={locale}
+              menu={menu}
+              statusKey={current}
+              holds={holds}
+              onSelect={setCurrent}
+              onForget={(k) => {
+                const next = holds.filter((h) => h.key !== k);
+                writeStored(token, next);
+                setHolds(next);
+                setCurrent(next[0]?.key ?? null);
+                if (!next.length) setView("menu");
+              }}
+              onNewOrder={toMenu}
+              onRestore={(k) => restore(holds.find((h) => h.key === k))}
+            />
+          ) : kiosk && welcome && view === "menu" ? (
+            <KioskWelcome
+              restaurant={menu.restaurant.name}
+              locale={locale}
+              loyalty={!!kioskState?.loyalty}
+              onStart={() => {
+                enterFullscreen();
+                setWelcome(false);
+              }}
+              onLanguage={() => setLocale(locale === "es" ? "en" : "es")}
+              onAccessibility={() => setA11yOpen(true)}
+              onMember={() => setMemberOpen(true)}
+              onSetup={() => setSetup(true)}
+            />
+          ) : view === "checkout" && kioskState ? (
+            <KioskCheckout
+              token={token}
+              locale={locale}
+              currency={menu.restaurant.currency}
+              kiosk={kioskState}
+              body={{
+                lines: draft.lines,
+                name: draft.name.trim(),
+                note: draft.note.trim(),
+                expectedTotal: cart.total,
+                ...(memberToken ? { memberToken } : {}),
+              }}
+              announce={setAnnounce}
+              onStep={setCheckoutStep}
+              onDone={resetKiosk}
+              onBack={() => setView("menu")}
+              onRefused={(message, code) => {
+                setView("menu");
+                setError(message);
+                if (
+                  CATALOG_ERRORS.has(code) ||
+                  code === "public_price_changed" ||
+                  code === "unavailable"
+                )
+                  refreshCatalog();
+              }}
+            />
+          ) : view === "kiosk-done" && done ? (
+            <KioskDone
+              hold={done}
+              locale={locale}
+              currency={menu.restaurant.currency}
+              onReset={resetKiosk}
+            />
+          ) : kiosk ? (
+            <ApprovedKioskMenu
               menu={menu}
               ordering={ordering ?? menu.ordering}
               locale={locale}
               draft={draft}
               cart={cart}
-              busy={busy}
-              error={error}
-              unknown={!!unknown}
-              kiosk={kiosk}
-              invalid={submitInvalid}
-              onShowOrders={submitInvalid ? showOrders : undefined}
               onPrivacy={() => setPrivacy(true)}
+              review={kioskReview}
+              onReview={setKioskReview}
+              busy={busy}
+              unknown={!!unknown}
+              error={error}
+              header={header}
+              onPick={pickKiosk}
               onQuantity={setQuantity}
+              onEdit={(id) => {
+                const line = draft.lines.find((l) => l.id === id);
+                const product = catalog.find((p) => p.id === line?.productId);
+                if (line && product)
+                  setPicker({ product, origin: line.origin, lineId: id });
+              }}
               onName={(name) => edit((d) => ({ ...d, name }))}
               onNote={(note) => edit((d) => ({ ...d, note }))}
               onSend={submit}
@@ -869,29 +869,151 @@ export function DinerApp({
                 </>
               }
             />
-          </div>
-        )}
-        <footer className="diner-footer">
-          {/* PRIVACY-2/UX-5: a kiosk never navigates away from /kiosk#token;
-            a phone opens the notice in a new tab and keeps its order. */}
-          {kiosk ? (
-            <button
-              type="button"
-              className="diner-link"
-              onClick={() => setPrivacy(true)}
-            >
-              {strings[locale].accountGuestPlatformPrivacy}
-            </button>
           ) : (
-            <a
-              href={PLATFORM_PRIVACY_PATH}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {strings[locale].accountGuestPlatformPrivacy}
-            </a>
+            <div className="diner-layout">
+              {/* The header sits in the menu column, so the side cart starts at
+              the top of the page and fits the viewport (UX-4). */}
+              <div className="diner-main">
+                {header}
+                <DinerMenu
+                  menu={menu}
+                  ordering={ordering ?? menu.ordering}
+                  locale={locale}
+                  kiosk={kiosk}
+                  onPick={(p) =>
+                    kiosk
+                      ? pickKiosk(p)
+                      : pickerNeeded(p)
+                        ? setPicker({ product: p })
+                        : add(p)
+                  }
+                />
+              </div>
+              <DinerCart
+                menu={menu}
+                ordering={ordering ?? menu.ordering}
+                locale={locale}
+                draft={draft}
+                cart={cart}
+                busy={busy}
+                error={error}
+                unknown={!!unknown}
+                kiosk={kiosk}
+                invalid={submitInvalid}
+                onShowOrders={submitInvalid ? showOrders : undefined}
+                onPrivacy={() => setPrivacy(true)}
+                onQuantity={setQuantity}
+                onName={(name) => edit((d) => ({ ...d, name }))}
+                onNote={(note) => edit((d) => ({ ...d, note }))}
+                onSend={submit}
+                onRetry={() => unknown && void send(unknown)}
+                onEditAnyway={() => {
+                  key.current = null;
+                  setUnknown(null);
+                  setError("");
+                }}
+                extra={
+                  <>
+                    {kiosk && member && (
+                      <p className="kiosk-member-chip" role="status">
+                        {t("kioskMemberChip", { phone: member.maskedPhone })}
+                      </p>
+                    )}
+                    {kiosk &&
+                    kioskState?.suggestions &&
+                    draft.lines.length > 0 ? (
+                      <SuggestionStrip
+                        title={
+                          kioskState.suggestions.cart.length
+                            ? t("kioskAnythingElse")
+                            : t("kioskPopularNow")
+                        }
+                        products={cartSuggestions}
+                        locale={locale}
+                        currency={menu.restaurant.currency}
+                        onAdd={(p) =>
+                          pickerNeeded(p)
+                            ? setPicker({ product: p, origin: "suggestion" })
+                            : add(p, [], "suggestion")
+                        }
+                      />
+                    ) : null}
+                  </>
+                }
+              />
+            </div>
           )}
-        </footer>
+          <footer className="diner-footer">
+            {kiosk && (
+              <button onClick={() => setKioskDialog("help")}>
+                {locale === "es" ? "¿Necesitas ayuda?" : "Need help?"}
+              </button>
+            )}
+            {kiosk && (
+              <img
+                className="approved-brand"
+                src="/brand/green-monkey-logo-v1.png"
+                alt="Green Monkey"
+                width="140"
+              />
+            )}
+            {kiosk && view === "menu" && !busy && !unknown && (
+              <button onClick={() => setKioskDialog("reset")}>
+                {locale === "es" ? "Empezar de nuevo" : "Start over"}
+              </button>
+            )}
+
+            {/* PRIVACY-2/UX-5: a kiosk never navigates away from /kiosk#token;
+            a phone opens the notice in a new tab and keeps its order. */}
+            {kiosk ? (
+              <button
+                type="button"
+                className="diner-link"
+                onClick={() => setPrivacy(true)}
+              >
+                {strings[locale].accountGuestPlatformPrivacy}
+              </button>
+            ) : (
+              <a
+                href={PLATFORM_PRIVACY_PATH}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {strings[locale].accountGuestPlatformPrivacy}
+              </a>
+            )}
+          </footer>
+        </div>
+        {kioskDialog && (
+          <Modal
+            title={
+              kioskDialog === "help"
+                ? locale === "es"
+                  ? "¿Necesitas ayuda?"
+                  : "Need help?"
+                : locale === "es"
+                  ? "¿Empezamos de nuevo?"
+                  : "Start a new order?"
+            }
+            close={() => setKioskDialog(null)}
+            closeLabel={strings[locale].close}
+          >
+            <p>
+              {kioskDialog === "help"
+                ? locale === "es"
+                  ? "Pide ayuda al equipo del restaurante. No intentes otro pago mientras confirmamos el resultado."
+                  : "Ask the restaurant team for help. Do not pay again while we confirm the result."
+                : locale === "es"
+                  ? "Se quitarán los productos y el nombre de este pedido."
+                  : "The items and name will be removed from this order."}
+            </p>
+            {kioskDialog === "reset" && (
+              <Button onClick={resetKiosk}>
+                {locale === "es" ? "Empezar de nuevo" : "Start over"}
+              </Button>
+            )}
+          </Modal>
+        )}
         {privacy && (
           <PrivacyDialog
             locale={locale}
@@ -906,7 +1028,27 @@ export function DinerApp({
             locale={locale}
             currency={menu.restaurant.currency}
             canOpen={false}
+            initial={
+              picker.lineId
+                ? {
+                    options:
+                      draft.lines.find((l) => l.id === picker.lineId)
+                        ?.options ?? [],
+                  }
+                : undefined
+            }
             onConfirm={(selection) => {
+              if (picker.lineId) {
+                const id = picker.lineId;
+                edit((d) => ({
+                  ...d,
+                  lines: d.lines.map((l) =>
+                    l.id === id ? { ...l, options: selection.options } : l,
+                  ),
+                }));
+                setPicker(null);
+                return;
+              }
               const l = pickedLine(picker, selection.options);
               add(l.product, l.options, l.origin);
             }}

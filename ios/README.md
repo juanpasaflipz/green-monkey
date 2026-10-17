@@ -60,3 +60,16 @@ Debug builds take a link at launch: `-kioskURL 'https://…/kiosk#…'` (scheme 
 - On a real iPad: the camera scan of the reveal's QR, Face ID inside Guided Access, and the
   pairing cookie surviving a relaunch. The simulator checks so far: the setup screen, the
   offline retry screen, and the production page loading full screen.
+
+## Link versus tablet pairing code
+
+The app's first screen accepts the full kiosk URL (`https://…/kiosk#…`). A station
+name such as `ios1` or an eight-digit tablet pairing code is not a kiosk URL.
+The app validates the link's 22-character base64url token before saving it.
+
+Only after the restaurant menu loads, hold the restaurant name for three seconds
+and enter the eight-digit code in **Configurar este kiosco**. Unpairing or creating
+a new tablet pairing code changes the tablet binding, not the kiosk URL. It cannot
+repair a missing, malformed or revoked URL. If the URL was replaced, update the
+app's stored URL through its staff settings (two fingers held for three seconds).
+Replacing a valid URL unnecessarily invalidates every tablet using the old URL.
