@@ -7,6 +7,26 @@ differ. This document describes what shipped.
 kiosk creates the order with no staff tap. A guest who pays at the counter is accepted by staff
 exactly as before 039. Fire-before-payment (`on_order`) is not built.
 
+## Approved design integration (October 2026)
+
+The kiosk route uses `src/features/kiosk/ApprovedKioskMenu.tsx`, adapted from the
+approved `prototypes/kiosk` design in commit `1265d4e`. The forest/ivory menu,
+category filters, photo cards, side cart, review screen and optional-name touch
+keyboard run inside the deployed `DinerApp` state machine. Guest review now
+precedes **Enviar pedido** and the existing fulfillment/payment screens.
+
+The design is independent of tablet pairing and `KIOSK_SELF_CHECKOUT_ENABLED`:
+counter-only and unbound kiosks receive the same presentation. Actual product
+photos use the existing media service, with placeholders when no photo exists.
+QR ordering retains its existing presentation. No backend or migration changes
+are needed; the prototype's alternate migration 039 must not be applied.
+
+For release verification, `/kiosk#<link-token>` renders
+`data-kiosk-design="approved-2026-10"` on the kiosk root. The iOS app is a web
+shell: the server release determines the menu design. Its setup field requires
+the full kiosk URL with the 22-character token; `ios1` is a station name and an
+8-digit pairing code belongs in the web menu's hidden setup dialog, not that URL.
+
 ## 1. Concepts
 
 | Term | Meaning | Where |

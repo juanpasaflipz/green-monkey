@@ -354,7 +354,7 @@ async function pairTablet(
     kiosk.getByRole("heading", { level: 1, name: r.name }),
   ).toBeVisible();
   // The hidden setup: a 3-second press on the restaurant's name.
-  await kiosk.getByRole("heading", { level: 1 }).hover();
+  await kiosk.getByRole("heading", { level: 1, name: r.name }).hover();
   await kiosk.mouse.down();
   await kiosk.waitForTimeout(3200);
   await kiosk.mouse.up();
@@ -499,12 +499,17 @@ async function guestPays(k: Device, state: RunState, o: OrderS) {
       }),
     );
   }
-  await fill(k, cartAside.getByLabel("Nombre (opcional)"), o.name);
+
   await expect(cartAside).toContainText(mxn(chargedS(o)));
   if (o.id === "S1") await kioskCheckpoint(k, "S5-kiosk-cart", cartAside);
   await tap(
     k,
-    cartAside.getByRole("button", { name: "Enviar pedido", exact: true }),
+    cartAside.getByRole("button", { name: "Revisar pedido →", exact: true }),
+  );
+  await fill(k, page.getByLabel(/¿A nombre de quién/), o.name);
+  await tap(
+    k,
+    page.getByRole("button", { name: "Enviar pedido", exact: true }),
   );
   await expect(
     page.getByRole("heading", { name: "¿Para aquí o para llevar?" }),
@@ -577,9 +582,11 @@ async function paidNoOrder(k: Device, state: RunState, o: OrderS, ref: string) {
   await approve(state, ref, o.card);
   // The screen's instructions; the persistent live region (KIOSK-UX-15) says the same words
   // to a screen reader, off screen.
-  const instructions = page.locator("section.kiosk-checkout").getByText(
-    /^Tu pago se registró\. Pasa a caja con tu código K-\d+ para confirmar tu pedido\.$/,
-  );
+  const instructions = page
+    .locator("section.kiosk-checkout")
+    .getByText(
+      /^Tu pago se registró\. Pasa a caja con tu código K-\d+ para confirmar tu pedido\.$/,
+    );
   await expect(instructions).toBeVisible({ timeout: 60_000 });
   const label = /K-\d+/.exec(await instructions.innerText())![0];
   (state.kioskLabels as Record<string, string>)[o.id] = label;

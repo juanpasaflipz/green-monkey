@@ -303,7 +303,7 @@ async function pairKiosk(page: Page, kiosk: Page, s: Setup) {
     .first()
     .click()
     .catch(() => {});
-  const title = kiosk.getByRole("heading", { level: 1 });
+  const title = kiosk.locator(".kiosk-setup-gesture").first();
   await title.hover();
   await kiosk.mouse.down();
   await kiosk.waitForTimeout(3200);
@@ -359,6 +359,16 @@ test("kiosk card payment: pairing from Configuración, para aquí, the card appr
     await expect(
       kiosk.getByRole("button", { name: /^Taco de asada/ }),
     ).toBeVisible();
+    await expect(
+      kiosk.locator('[data-kiosk-design="approved-2026-10"]'),
+    ).toBeVisible();
+    await expect(
+      kiosk.getByRole("heading", { name: /Algo rico/ }),
+    ).toBeVisible();
+    await kiosk.screenshot({
+      path: "docs/evidence/approved-kiosk-menu-1280.png",
+      fullPage: true,
+    });
     await pairKiosk(page, kiosk, s);
     // A bound tablet starts on the welcome screen.
     const start = kiosk.getByRole("button", {
@@ -369,6 +379,9 @@ test("kiosk card payment: pairing from Configuración, para aquí, the card appr
     await axe(kiosk);
     await start.click();
     await addTaco(kiosk);
+    await kiosk
+      .getByRole("button", { name: "Revisar pedido →", exact: true })
+      .click();
     await kiosk
       .getByRole("button", { name: "Enviar pedido", exact: true })
       .click();
@@ -491,6 +504,9 @@ test("kiosk card payment: pairing from Configuración, para aquí, the card appr
       document.fullscreenElement ? document.exitFullscreen() : undefined,
     );
     await addTaco(kiosk);
+    await kiosk
+      .getByRole("button", { name: "Revisar pedido →", exact: true })
+      .click();
     await kiosk
       .getByRole("button", { name: "Enviar pedido", exact: true })
       .click();
