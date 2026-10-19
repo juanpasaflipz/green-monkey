@@ -25,6 +25,10 @@ Wallet unregister now clears the push token and marks the registration inactive.
 
 The application and worker keep the existing no-DELETE invariant. The grants manifest removes obsolete DELETE and broad UPDATE rights and grants only the columns the new loyalty operations need. The ops and migration permission tests are unchanged. Main's export catalogue resolves the old kiosk label failure; new loyalty credential tables are excluded from account exports and exportable tables have Spanish/English labels.
 
+## Offline startup correction
+
+The first browser run exposed an integration failure: sharing loyalty CSS caused Vite to remove a CSS-only JavaScript chunk after the service-worker manifest was generated. The manifest then referenced a missing asset, preventing offline-cache installation. The manifest plugin now runs after Vite's cleanup. A real Vite-build regression reproduces the missing asset before the fix and passes afterward. The interrupted browser run is not counted as acceptance.
+
 ## Verification
 
 All local database tests use disposable PostgreSQL 18 and synthetic records, with Node 24.21.0. No production database was used.
@@ -32,7 +36,7 @@ All local database tests use disposable PostgreSQL 18 and synthetic records, wit
 - Main 001–041 → candidate 042 upgrade: passed as non-superuser migrator.
 - Fresh 001–042 installation: passed as non-superuser migrator.
 - Type checks, lint, production build: passed.
-- Unit tests: 111 files, 1,734 tests passed.
+- Unit tests: 112 files, 1,735 tests passed.
 - Full `test:db:qualification`: passed, including ops, migration runner, backup/restore, account, loyalty, kiosk, menu import and both history suites.
 - Compiled restart, access HTTP, account HTTP and graceful drain: passed.
 - Final restricted-grants regression: ops, migration runner, loyalty (41 checks) and account suites passed.
