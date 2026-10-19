@@ -234,6 +234,16 @@ Arts. 28–34) arrive at `LEGAL_PRIVACY_CONTACT_EMAIL`:
   account id or email digest. After any restore (Neon branch, PITR or dump,
   [BACKUP_RESTORE](BACKUP_RESTORE.md)), re-run every command in the register
   dated after the restored snapshot before the database serves traffic again.
+  For loyalty cancellations this is an application action, not a support CLI
+  command: keep the restored app isolated from customer traffic, sign in as an
+  authorized restaurant manager with recent authentication, and replay
+  Clientes → Eliminar datos del cliente for each registered tenant/member id.
+  Use the existing member-delete API when locating by id is necessary; it
+  enforces the same permission, version and audit checks. Confirm the member
+  is redacted and its digital card invalid before reopening traffic. Never
+  mark the restore complete merely because account CLI commands succeeded.
+  If any registered member cannot be located or replayed, keep traffic closed
+  and investigate. Record tenant id as well as member id in new cancellations.
   Backups themselves expire by lifecycle (daily 35 days, monthly 1,900 days);
   until then they are encrypted, access-restricted and used only to recover
   from a disaster, which the privacy notice and DPA state.

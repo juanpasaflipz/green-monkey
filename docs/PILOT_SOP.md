@@ -1,5 +1,8 @@
 # Guía de operación del piloto
 
+> Ensayo actual (2026-10-19): usar el candidato de PR #25 en un entorno de pruebas aislado. La web pública no ejecuta ese candidato. No seguir las instrucciones históricas de crear ventas de prueba en producción para este ensayo. La impresora `ghia-web` debe verificarse en la Mac de caja real; una cola compartida `termica` en otra Mac no demuestra compatibilidad. No instalar ni reemplazar colas desde otra máquina para simular esa prueba.
+
+
 Para el propietario y los gerentes de turno de un restaurante piloto, y para quien
 instala el equipo. Revisión del 9 de octubre de 2026 para el piloto de Juanberto's, que
 pasa de pos-lite (su sistema anterior) a Green Monkey. Escrita sobre `integration/v1`, la

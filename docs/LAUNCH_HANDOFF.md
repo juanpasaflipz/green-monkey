@@ -1,5 +1,8 @@
 # Launch hand-off
 
+> Current pilot preparation (2026-10-19): use `release/pilot-rc-2026-10-19` / PR #25, not the older `release/v1` merge instructions below. The live public endpoint currently reports commit `7066483`, legal documents published and signup open. Its unique marketing change is already present in the candidate. Today's production backup to `gm-prod-backups` succeeded at schema 041 but contained zero orders. Older unchecked owner-input lists, bucket names and deployment status below are historical; do not recreate infrastructure from them. Alert destination receipt, physical devices and a populated hosted restore still require verification. The candidate is not deployed.
+
+
 For the owner of the business, who launches production. The decision is **"we
 prepare, you launch"**: the team prepares code, scripts and runbooks; every step that
 needs your accounts, your credentials, your legal identity or your signature is yours.

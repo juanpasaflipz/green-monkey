@@ -54,3 +54,37 @@ This candidate is for supervised pilot preparation, not a general SaaS launch ap
 Before cutover: complete the real tablet/printer and full-shift rehearsal; qualify physical integrated readers if included; reconcile imported menu/prices, taxes, opening cash and balances; confirm support coverage, alert receipt, fallback register and recovery procedure. Automated fake-provider checks do not qualify real payment hardware. A populated local restore test does not establish production recovery time or backup-key custody. Follow [Pilot SOP](PILOT_SOP.md), [launch handoff](LAUNCH_HANDOFF.md) and [load-test procedure](LOAD_TEST.md).
 
 No deployment, main merge, production data change or external notification is authorized by this candidate document.
+
+## Rehearsal hardening after 489d987
+
+The 489d987 hosted baseline passed 1,735 unit tests, 307 browser tests (one
+existing skip), full database qualification, security, container and both
+restaurant-day jobs. Real CFDI was skipped. Those counts do not qualify the
+subsequent changes below until their own checks finish.
+
+Independent Claude review identified restore coverage gaps and a missing
+production acceptance guard. Restore manifests now fingerprint 24 fiscal,
+CFDI, loyalty, history and kiosk tables, including row content as well as
+counts. A populated local restore regression changes a member's name without
+changing counts or sales and requires verification to fail. Production dispatch
+now requires actual core and payment restaurant-day success from a manual run on the exact SHA. Not-yet-migrated domain tables are recorded as absent, keeping scheduled backups functional while main is ahead of production.
+Historical operational documents have current evidence notices; loyalty
+cancellation replay uses the existing audited manager deletion path before a
+restored app is reopened. No new support privileges or production changes.
+
+Public SaaS launch remains NO-GO: subscription billing is sandbox-only;
+physical restaurant qualification, populated hosted recovery, alert receipt,
+support coverage and hosted capacity including public ordering are not proven.
+The public account configuration currently reports legal documents published
+and signup open, so older claims that legal values are missing are stale.
+
+Local verification of the rehearsal hardening passed: typecheck, lint, build,
+112 unit files / 1,736 tests, and the fiscal, CFDI (fake provider), loyalty,
+kiosk, sales history, delivery history and ops database suites. The final
+restore source contained 2,267 orders, 231 tenders, 2,224 fiscal tickets,
+190 CFDI documents, 82 members and populated rows in all 24 fingerprinted
+tables. The negative corruption and missing-042-table regressions passed.
+Claude's final read-only review found both identified regressions resolved
+and no remaining introduced blocker; verdict: supervised rehearsal ready,
+public launch not ready. Fresh hosted qualification is tracked in PR #25;
+the old 489d987 browser result must not be reported as a new-head run.

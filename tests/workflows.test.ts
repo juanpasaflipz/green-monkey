@@ -1372,6 +1372,47 @@ describe("the Neon CLI is pinned to an exact version (OPS-R13)", () => {
 });
 
 describe("restaurant-day.yml: the go-live gate (specs/acceptance.md §13)", () => {
+  it("production refuses missing, skipped, failed or incomplete exact-SHA restaurant-day evidence", () => {
+    const guard = marked(deploy, "restaurant-day-production-guard");
+    const mock = `gh() {
+      case "$*" in
+        *workflows/restaurant-day.yml/runs*) printf '%s\\n' "$FAKE_RUN" ;;
+        *jobs*) printf '%s\\n' "$FAKE_JOBS" ;;
+        *) return 1 ;;
+      esac
+    }\n`;
+    const run = (id: string, jobs: string) =>
+      execFileSync("bash", ["-e", "-c", mock + guard], {
+        env: {
+          ...process.env,
+          SHA: "a".repeat(40),
+          GITHUB_REPOSITORY: "example/repo",
+          FAKE_RUN: id,
+          FAKE_JOBS: jobs,
+        },
+        stdio: "pipe",
+      });
+    expect(guard).toContain("head_sha=$SHA");
+    expect(guard).toContain("event=workflow_dispatch&head_sha=$SHA");
+    expect(guard).toContain(
+      'select(.status == "completed" and .conclusion == "success")',
+    );
+    expect(() =>
+      run("123", "restaurant-day\tsuccess\nrestaurant-day-payments\tsuccess"),
+    ).not.toThrow();
+    for (const jobs of [
+      "",
+      "restaurant-day\tsuccess",
+      "restaurant-day\tskipped\nrestaurant-day-payments\tsuccess",
+      "restaurant-day\tsuccess\nrestaurant-day-payments\tfailure",
+      "restaurant-day\tsuccess\nrestaurant-day-payments\t",
+    ]) {
+      expect(() => run("123", jobs)).toThrow();
+    }
+    expect(() =>
+      run("", "restaurant-day\tsuccess\nrestaurant-day-payments\tsuccess"),
+    ).toThrow();
+  });
   const day = read(".github/workflows/restaurant-day.yml");
   const job = (name: string) => {
     const start = day.indexOf(`\n  ${name}:\n`);
