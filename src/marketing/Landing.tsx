@@ -7,6 +7,10 @@ import {
   ShoppingBag,
   ChartNoAxesCombined,
   ArrowUpRight,
+  TabletSmartphone,
+  FileCheck2,
+  CreditCard,
+  Bike,
 } from "lucide-react";
 import { PRO_OFFER, PRO_ANNUAL_SAVING_MINOR } from "../../shared/plans";
 import type { Locale } from "../../shared/domain";
@@ -81,8 +85,8 @@ export default function Landing() {
       icon: ChefHat,
       n: "02",
       title: t(
-        "Que cocina sepa qué sigue.",
-        "Help the kitchen see what’s next.",
+        "KDS: cocina sabe qué sigue.",
+        "KDS: the kitchen knows what’s next.",
       ),
       body: t(
         "Tickets por estación y avances claros. Preparar una orden y cobrarla son pasos distintos, visibles para tu equipo.",
@@ -193,6 +197,9 @@ export default function Landing() {
         </a>
         <nav aria-label={t("Navegación principal", "Main navigation")}>
           <a href="#product">{t("Producto", "Product")}</a>
+          <a href="#integrations" className="gm-integrations-nav">
+            {t("Integraciones", "Integrations")}
+          </a>
           <a href="#pricing">{t("Precios", "Pricing")}</a>
           <button
             className="gm-language"
@@ -227,10 +234,21 @@ export default function Landing() {
             </h1>
             <p className="gm-lead">
               {t(
-                "Ventas, mesas, cocina y caja en un mismo lugar. Dale orden a tu operación y atención a lo que importa: tus comensales.",
-                "Sales, tables, kitchen and cash in one place. Bring order to your operation and attention to what matters: your guests.",
+                "Del pedido a la cocina y del cobro a la factura. Punto de venta, KDS y herramientas CFDI para una operación conectada.",
+                "From ordering to the kitchen, from payment to invoicing. Point of sale, KDS and CFDI tools for a connected operation.",
               )}
             </p>
+            <div
+              className="gm-feature-links"
+              aria-label={t("Explora las funciones", "Explore features")}
+            >
+              {ordering && (
+                <a href="#capabilities">{t("Kiosco + QR", "Kiosk + QR")}</a>
+              )}
+              <a href="#capabilities">KDS</a>
+              <a href="#capabilities">CFDI</a>
+              <a href="#integrations">Clip · Mercado Pago</a>
+            </div>
             <div className="gm-actions">
               <a className="gm-cta" href="/app?signup">
                 {t("Crear cuenta gratis", "Create a free account")}
@@ -414,6 +432,170 @@ export default function Landing() {
             </p>
           </div>
         </div>
+        <section
+          className="gm-capabilities gm-wrap"
+          id="capabilities"
+          aria-labelledby="capabilities-heading"
+        >
+          <div className="gm-section-intro">
+            <p className="gm-eyebrow">
+              {t("MÁS QUE UN PUNTO DE VENTA", "MORE THAN A POINT OF SALE")}
+            </p>
+            <h2 id="capabilities-heading">
+              {t(
+                "Del autoservicio a la factura.",
+                "From self-service to invoicing.",
+              )}
+            </h2>
+          </div>
+          <div className="gm-capability-grid">
+            {ordering && (
+              <article>
+                <TabletSmartphone size={28} aria-hidden="true" />
+                <span className="gm-feature-status">
+                  {t(
+                    "Pro · sujeto a disponibilidad",
+                    "Pro · subject to availability",
+                  )}
+                </span>
+                <h3>
+                  {t(
+                    "Tu menú. Su pedido. Tu kiosco.",
+                    "Your menu. Their order. Your kiosk.",
+                  )}
+                </h3>
+                <p>
+                  {t(
+                    "Tus clientes eligen desde el kiosco o un QR y envían su pedido para pagar en caja. Menos captura para tu equipo, más atención en el servicio.",
+                    "Guests choose from a kiosk or QR menu and submit their order to pay at the counter. Less order entry for your team, more attention to service.",
+                  )}
+                </p>
+                <small>
+                  {t(
+                    "Hardware y cobros integrados requieren configuración adicional.",
+                    "Hardware and integrated payments require additional setup.",
+                  )}
+                </small>
+              </article>
+            )}
+            <article>
+              <ChefHat size={28} aria-hidden="true" />
+              <span className="gm-feature-status">
+                {t("Cocina conectada", "Connected kitchen")}
+              </span>
+              <h3>
+                {t(
+                  "KDS: cada estación, al día.",
+                  "KDS: every station, up to date.",
+                )}
+              </h3>
+              <p>
+                {t(
+                  "Pantalla de cocina con tickets por estación, rondas y estados de preparación. El equipo ve qué sigue y qué está listo para servir.",
+                  "A kitchen display with station tickets, rounds and preparation status. Your team sees what is next and what is ready to serve.",
+                )}
+              </p>
+              <small>
+                {t(
+                  "Del pedido a la preparación, en el mismo sistema.",
+                  "From order to preparation, in the same system.",
+                )}
+              </small>
+            </article>
+            <article>
+              <FileCheck2 size={28} aria-hidden="true" />
+              <span className="gm-feature-status">
+                {t(
+                  "CFDI · activación fiscal requerida",
+                  "CFDI · fiscal activation required",
+                )}
+              </span>
+              <h3>
+                {t(
+                  "Facturación desde tus ventas.",
+                  "Invoicing from your sales.",
+                )}
+              </h3>
+              <p>
+                {t(
+                  "Herramientas para CFDI 4.0, factura por ticket, factura global y seguimiento de cancelaciones. Menos recaptura entre la operación y la facturación.",
+                  "Tools for CFDI 4.0, ticket invoices, global invoices and cancellation tracking. Less re-entry between operations and invoicing.",
+                )}
+              </p>
+              <small>
+                {t(
+                  "El timbrado real requiere datos fiscales, CSD y validación del servicio antes de activarse.",
+                  "Live stamping requires tax details, a CSD certificate and service validation before activation.",
+                )}
+              </small>
+            </article>
+          </div>
+        </section>
+        <section
+          className="gm-integrations"
+          id="integrations"
+          aria-labelledby="integrations-heading"
+        >
+          <div className="gm-wrap">
+            <div className="gm-section-intro">
+              <p className="gm-eyebrow">
+                {t(
+                  "COBROS Y CANALES, EN CONTEXTO",
+                  "PAYMENTS AND CHANNELS, IN CONTEXT",
+                )}
+              </p>
+              <h2 id="integrations-heading">
+                {t("Conecta tu operación.", "Connect your operation.")}
+              </h2>
+            </div>
+            <div className="gm-integration-grid">
+              <article>
+                <CreditCard size={28} aria-hidden="true" />
+                <h3>Clip + Mercado Pago</h3>
+                <span className="gm-feature-status">
+                  {t(
+                    "Integración sujeta a activación",
+                    "Integration subject to activation",
+                  )}
+                </span>
+                <p>
+                  {t(
+                    "Flujos de cobro con Clip PinPad y Mercado Pago Point para conectar la cuenta con la terminal. Requieren una cuenta compatible, vinculación y validación antes de operar.",
+                    "Payment flows with Clip PinPad and Mercado Pago Point to connect the bill to the terminal. A compatible account, linking and validation are required before use.",
+                  )}
+                </p>
+                <p className="gm-integration-note">
+                  {t(
+                    "Stripe Terminal · Próximamente en Green Monkey. Aún no disponible en la app.",
+                    "Stripe Terminal · Coming to Green Monkey. Not yet available in the app.",
+                  )}
+                </p>
+              </article>
+              <article>
+                <Bike size={28} aria-hidden="true" />
+                <h3>Uber Eats · Rappi · DiDi Food</h3>
+                <span className="gm-feature-status">
+                  {t(
+                    "Registro disponible · sincronización planeada",
+                    "Recording available · sync planned",
+                  )}
+                </span>
+                <p>
+                  {t(
+                    "Registra ventas pagadas por plataforma, precios por canal y comisiones estimadas. Hoy, los pedidos se capturan en Green Monkey; no se importan automáticamente.",
+                    "Record platform-paid sales, channel prices and estimated commissions. Today, orders are entered in Green Monkey; they are not imported automatically.",
+                  )}
+                </p>
+                <p className="gm-integration-note">
+                  {t(
+                    "Estamos evaluando una conexión mediante un integrador para centralizar pedidos sin que cada restaurante gestione claves de desarrollador. Sujeta a disponibilidad y autorización del proveedor.",
+                    "We are evaluating an integrator connection to centralize orders without each restaurant managing developer keys. Subject to provider availability and authorization.",
+                  )}
+                </p>
+              </article>
+            </div>
+          </div>
+        </section>
         <section
           className="gm-workflow gm-wrap"
           aria-labelledby="workflow-heading"
