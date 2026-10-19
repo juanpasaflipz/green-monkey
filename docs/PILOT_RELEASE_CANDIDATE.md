@@ -41,7 +41,9 @@ All local database tests use disposable PostgreSQL 18 and synthetic records, wit
 - Compiled restart, access HTTP, account HTTP and graceful drain: passed.
 - Final restricted-grants regression: ops, migration runner, loyalty (41 checks) and account suites passed.
 - Production dependency audit: zero reported vulnerabilities.
-- Browser acceptance and exact-commit release CI: pending; consult the candidate pull request before acceptance.
+- Focused access, offline, kiosk and loyalty browser run: 105 passed, with one new WebKit test-harness failure. After aligning the local plain-HTTP WebKit harness with existing suites, all three card tests passed (Chromium and iPad/WebKit). No production CSP change.
+- Three-tenant, 61-second local load smoke: 1,132 requests, 73 completed orders, zero errors; read p95 15 ms, mutation p95 19 ms. This is not production capacity qualification.
+- Exact-commit release CI: consult [draft PR #25](https://github.com/juanpasaflipz/green-monkey/pull/25) for final qualification and restaurant-day results. No main merge or deployment.
 
 Claude reviewed the integration and soft unregister implementation independently in two passes and found no remaining integration blockers. The preservation check found zero changes to all 1,048 original tracked/untracked files and zero changes to main migrations 001–041. Accepted follow-ups for disabled Wallet: enforce inactive-state consistency with a database constraint, bound lifetime registration rows, and add real-device acceptance. Existing installed Apple passes can retain a cached display after member redaction (their checkout scan is invalid); card reissue requires adding the new pass. See [Loyalty](LOYALTY.md#engagement-extension-042).
 

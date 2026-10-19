@@ -1,5 +1,22 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+// Match the existing kiosk/offline harness for WebKit on local plain HTTP.
+// Production HTTPS keeps its CSP; the public card does not use session cookies.
+test.beforeEach(async ({ context, browserName, baseURL }) => {
+  if (browserName !== "webkit" || !baseURL?.startsWith("http:")) return;
+  await context.route("**/*", async (route) => {
+    if (route.request().resourceType() !== "document") return route.fallback();
+    const response = await route.fetch();
+    const headers = response.headers();
+    if (headers["content-security-policy"])
+      headers["content-security-policy"] = headers["content-security-policy"]
+        .split(";")
+        .filter((part) => part.trim() !== "upgrade-insecure-requests")
+        .join(";");
+    await route.fulfill({ response, headers });
+  });
+});
+
 const token =
   "10000000-0000-4000-8000-000000000001.20000000-0000-4000-8000-000000000001." +
   "a".repeat(43);
