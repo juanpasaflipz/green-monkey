@@ -1407,8 +1407,11 @@ test("OWNER-2/OWNER-11: QR and kiosk pages follow menu changes, flag a stale lin
     const kiosk = await context.newPage();
     await kiosk.goto(kioskLink.path);
     await kiosk
-      .locator(".diner-products")
+      .locator(".products")
       .getByRole("button", { name: new RegExp("^" + tepache) })
+      .click();
+    await kiosk
+      .getByRole("button", { name: "Revisar pedido →", exact: true })
       .click();
     await setAvailable(page, second.id, false);
     await kiosk

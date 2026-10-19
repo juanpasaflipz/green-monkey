@@ -1226,7 +1226,7 @@
   font: inherit;
 }
 .kiosk-experience .kiosk-checkout,
-.kiosk-done {
+.kiosk-experience .kiosk-done {
   padding: 48px 24px;
   min-height: 55dvh;
 }
@@ -1315,4 +1315,11 @@
 
 .kiosk-experience .total {
   gap: 24px;
+}
+
+.kiosk-experience .approved-unavailable {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
 }

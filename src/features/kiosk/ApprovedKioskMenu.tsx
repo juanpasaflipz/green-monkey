@@ -8,6 +8,7 @@ import type {
 } from "../../../shared/public-ordering";
 import type { Draft } from "../public/DinerApp";
 import type { CartLine } from "../menu/cart";
+import { UnavailableLines } from "../menu/UnavailableLines";
 import { moneyFormatter } from "../menu/format";
 import { ProductPhoto } from "../public/kiosk/KioskProduct";
 import { NameEntry } from "./NameEntry";
@@ -59,56 +60,66 @@ export function ApprovedKioskMenu(p: {
   ];
   const lines = (
     <div className="approved-lines">
-      {p.cart.lines.map(({ input, priced }) => {
-        const name =
-          priced?.name[p.locale] ??
-          p.menu.catalog.find((product) => product.id === input.productId)
-            ?.name[p.locale] ??
-          t.unavailable;
-        return (
-          <div className="line diner-line" key={input.id}>
-            <div className="line-top">
-              <span className="diner-line-name">
-                {input.quantity} × {name}
-              </span>
-              <strong>{priced ? money(priced.total) : "—"}</strong>
+      {p.cart.lines
+        .filter((line) => !line.error)
+        .map(({ input, priced }) => {
+          const name =
+            priced?.name[p.locale] ??
+            p.menu.catalog.find((product) => product.id === input.productId)
+              ?.name[p.locale] ??
+            t.unavailable;
+          return (
+            <div className="line diner-line" key={input.id}>
+              <div className="line-top">
+                <span className="diner-line-name">
+                  {input.quantity} × {name}
+                </span>
+                <strong>{priced ? money(priced.total) : "—"}</strong>
+              </div>
+              <p>
+                {priced
+                  ? priced.optionNames
+                      .map((option) => option[p.locale])
+                      .join(" · ")
+                  : t.unavailable}
+              </p>
+              <div className="line-actions">
+                <button
+                  disabled={locked}
+                  aria-label={`${existing.publicLess.replace("{name}", name)}`}
+                  onClick={() => p.onQuantity(input.id, input.quantity - 1)}
+                >
+                  −
+                </button>
+                <button
+                  disabled={locked || input.quantity >= 20}
+                  aria-label={`${existing.publicMore.replace("{name}", name)}`}
+                  onClick={() => p.onQuantity(input.id, input.quantity + 1)}
+                >
+                  +
+                </button>
+                <button disabled={locked} onClick={() => p.onEdit(input.id)}>
+                  {t.edit}
+                </button>
+                <button
+                  className="remove"
+                  disabled={locked}
+                  onClick={() => p.onQuantity(input.id, 0)}
+                >
+                  {t.remove}
+                </button>
+              </div>
             </div>
-            <p>
-              {priced
-                ? priced.optionNames
-                    .map((option) => option[p.locale])
-                    .join(" · ")
-                : t.unavailable}
-            </p>
-            <div className="line-actions">
-              <button
-                disabled={locked}
-                aria-label={`${existing.publicLess.replace("{name}", name)}`}
-                onClick={() => p.onQuantity(input.id, input.quantity - 1)}
-              >
-                −
-              </button>
-              <button
-                disabled={locked || input.quantity >= 20}
-                aria-label={`${existing.publicMore.replace("{name}", name)}`}
-                onClick={() => p.onQuantity(input.id, input.quantity + 1)}
-              >
-                +
-              </button>
-              <button disabled={locked} onClick={() => p.onEdit(input.id)}>
-                {t.edit}
-              </button>
-              <button
-                className="remove"
-                disabled={locked}
-                onClick={() => p.onQuantity(input.id, 0)}
-              >
-                {t.remove}
-              </button>
-            </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      <fieldset disabled={locked} className="approved-unavailable">
+        <UnavailableLines
+          lines={p.cart.lines}
+          catalog={p.menu.catalog}
+          locale={p.locale}
+          onRemove={(id) => p.onQuantity(id, 0)}
+        />
+      </fieldset>
     </div>
   );
   const totals = (
@@ -132,7 +143,7 @@ export function ApprovedKioskMenu(p: {
         ))}
       </nav>
       {p.error && (
-        <p className="alert" role="alert">
+        <p className="alert diner-error" role="alert">
           {p.error}
         </p>
       )}
