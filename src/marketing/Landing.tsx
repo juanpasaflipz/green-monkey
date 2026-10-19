@@ -117,6 +117,10 @@ export default function Landing() {
   ];
   const proFeatures = [
     t("Todo lo incluido en Free", "Everything in Free"),
+    t(
+      "Programa de lealtad integrado: sellos y recompensas",
+      "Integrated loyalty program: stamps and rewards",
+    ),
     ...(ordering ? [t("Kiosco y pedidos QR", "Kiosk and QR ordering")] : []),
     t(
       "Inventario, recetas y compras avanzadas",
