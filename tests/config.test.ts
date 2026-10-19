@@ -70,6 +70,9 @@ describe("process configuration", () => {
       "FACTURAPI_TEST_KEY",
       "CREDENTIAL_ENCRYPTION_KEY",
       "CFDI_LIVE_ENABLED",
+      "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_MESSAGING_SERVICE_SID",
+      "LOYALTY_SMS_SEND", "APPLE_PASS_KEY_BASE64", "APPLE_PASS_CERT_BASE64",
+      "APPLE_PASS_KEY_PASSPHRASE", "GOOGLE_WALLET_SA_KEY_BASE64", "LOYALTY_WALLET_SIGNING_SECRET",
     ]);
     expect(loadConfig(deployedWeb, "web").deployed).toBe(true);
     for (const name of forbiddenCredentials.web)

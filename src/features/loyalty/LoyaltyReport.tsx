@@ -77,6 +77,7 @@ export function LoyaltyReport({
             {tile(t("loyaltyReportStamps"), String(r.stamps.earned))}
             {tile(t("loyaltyReportReversed"), String(r.stamps.reversed))}
             {tile(t("loyaltyReportAdjusted"), String(r.stamps.adjusted))}
+            {tile(locale === "es" ? "Sellos por recomendaciones" : "Referral stamps", String(r.referralStamps ?? 0))}
             {tile(t("loyaltyReportRewardsEarned"), String(r.rewards.earned))}
             {tile(t("loyaltyReportRewardsRedeemed"), String(r.rewards.redeemed))}
             {tile(t("loyaltyReportRate"), pctText(r.rewards.rateBps, locale))}

@@ -1,3 +1,5 @@
+import { MemberCardControl } from "./Engagement";
+import { api } from "../../api";
 /**
  * "Cliente del club" (038 §2.5): find a member by phone (or by name, ≥ 3 letters, masked phones)
  * and "Usar"; or enroll them with the staff attestation that they heard the privacy notice
@@ -34,12 +36,14 @@ export function LoyaltyLookupDialog({
   onClose: () => void;
 }) {
   const t = tr(locale);
+  const [scan, setScan] = useState("");
   const [country, setCountry] = useState<LoyaltyCountry>("MX");
   const [phone, setPhone] = useState("");
   const [result, setResult] = useState<MemberSummary | null | undefined>(undefined);
   const [query, setQuery] = useState("");
   const [matches, setMatches] = useState<MemberSummary[] | null>(null);
   const [name, setName] = useState("");
+  const [referral, setReferral] = useState("");
   const [consent, setConsent] = useState(false);
   const [marketing, setMarketing] = useState(false);
   const [showQr, setShowQr] = useState(false);
@@ -83,6 +87,7 @@ export function LoyaltyLookupDialog({
         name,
         consent,
         marketingOptIn: marketing,
+        ...(referral.trim() ? { referralCode: referral.trim() } : {}),
       });
       onUse(r.member);
     });
@@ -176,6 +181,9 @@ export function LoyaltyLookupDialog({
             />
           </Field>
           <p className="muted">{t("loyaltyNicknameHint")}</p>
+          <Field label={locale === "es" ? "Código de recomendación (opcional)" : "Referral code (optional)"}>
+            <input value={referral} maxLength={16} onChange={e => setReferral(e.target.value.toUpperCase())} />
+          </Field>
           <p className="loyalty-script">{t("loyaltyConsentScript")}</p>
           {club.privacyUrl && (
             <Button variant="ghost" onClick={() => setShowQr((v) => !v)} aria-expanded={showQr}>
@@ -246,6 +254,11 @@ export function LoyaltyLookupDialog({
           <p role="status">{t("loyaltyNoResults")}</p>
         )
       )}
+      <Field label={locale === "es" ? "Escanear QR de tarjeta" : "Scan card QR"}>
+        <input value={scan} placeholder="gm-club:…" disabled={!online || busy} onChange={e => setScan(e.target.value)} onKeyDown={e => { if(e.key === "Enter") { e.preventDefault(); void run(async () => { const m = await api<MemberSummary | null>("/loyalty/members/scan", {code: scan}); setResult(m); setScan(""); }); } }} />
+      </Field>
+      <Button disabled={!online || busy || !scan} onClick={() => void run(async () => {setResult(await api<MemberSummary | null>("/loyalty/members/scan", {code: scan}));setScan("");})}>{locale === "es" ? "Buscar tarjeta" : "Find card"}</Button>
+      {result && <MemberCardControl memberId={result.id} locale={locale} online={online} />}
       {error && (
         <p role="alert" className="error">
           {error}

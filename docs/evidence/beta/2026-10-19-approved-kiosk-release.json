@@ -1,0 +1,38 @@
+{
+  "base": "https://app.greenmonkey.online",
+  "commit": "8890b529d25056d8eb83aa79e6b2b5089aa25dcb",
+  "entry": "/assets/index-Cx_f8SUg.js",
+  "kioskChunk": "PublicOrdering-CnuH5kOQ.js",
+  "approvedDesign": true,
+  "checkedAt": "2026-10-19T13:52:00.248Z",
+  "smoke": {
+    "ok": true,
+    "checks": [
+      {
+        "name": "version",
+        "ok": true
+      },
+      {
+        "name": "health",
+        "ok": true
+      },
+      {
+        "name": "ops_status",
+        "ok": true
+      },
+      {
+        "name": "client_ip",
+        "ok": true
+      },
+      {
+        "name": "malformed_json",
+        "ok": true
+      },
+      {
+        "name": "session_required",
+        "ok": true
+      }
+    ]
+  },
+  "deploymentRun": "https://github.com/juanpasaflipz/green-monkey/actions/runs/39261749039"
+}

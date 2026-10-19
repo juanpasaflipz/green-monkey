@@ -1,3 +1,4 @@
+import { MemberEngagement } from "./Engagement";
 /**
  * Clientes (038 §2.9): owners and managers. A searchable list (name or phone, 50 per page,
  * keyset) and the member's detail: card, history, orders, consent; Editar datos (rectification),
@@ -253,6 +254,7 @@ function MemberDetailView({
           {t("loyaltyMarketingToggle")}
         </label>
       )}
+      {!m.deleted && clubOn && <MemberEngagement onBalanceChanged={() => void loyaltyApi.member(m.id).then(setM).catch(e => setError(errorNotice(e, locale)))} memberId={m.id} locale={locale} timezone={tz} online={online} />}
       <div className="loyalty-card" aria-label={t("loyaltyCard")}>
         <p>
           <strong>{fill(t("loyaltyCardProgress"), { stamps: m.stamps, required: m.required })}</strong>

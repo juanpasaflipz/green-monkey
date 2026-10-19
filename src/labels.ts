@@ -155,6 +155,10 @@ const operations: Record<string, Key> = {
   "payment.provider_disabled": "payOpProviderDisabled",
   "payment.device_mode_requested": "payOpDeviceModeRequested",
   // loyalty (038)
+  "loyalty.card.issued": "loyaltyOpCardIssued",
+  "loyalty.card.revoked": "loyaltyOpCardRevoked",
+  "loyalty.engagement.settings": "loyaltyOpEngagement",
+  "loyalty.referral.applied": "loyaltyOpReferral",
   "loyalty.settings.saved": "loyaltyOpSettings",
   "loyalty.member.enrolled": "loyaltyOpEnrolled",
   "loyalty.member.updated": "loyaltyOpUpdated",

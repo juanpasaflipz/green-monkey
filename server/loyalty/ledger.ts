@@ -10,6 +10,7 @@
  * retries, double taps, job redelivery and races cannot double-stamp. A link that changed between
  * the first read and the lock throws loyalty_retry (the job retries; an HTTP caller retries).
  */
+import { queueLoyaltyEvent } from "./engagement-events.js";
 import { randomUUID } from "node:crypto";
 import type { Tx } from "../db.js";
 import { DomainError } from "../../shared/domain.js";
@@ -50,6 +51,7 @@ export async function postLedger(
       ${r.orderId ?? null},${r.discountId ?? null},${r.stampsRequired ?? null},${r.base ?? null},
       ${r.rule?.stampThreshold ?? null},${r.rule?.maxStampsPerOrder ?? null},
       ${r.reason ?? null},${r.note ?? ""},${r.actorId ?? null},${r.operationId ?? null})`;
+  await queueLoyaltyEvent(tx, tenantId, r.memberId, r.kind, ledgerId);
   return ledgerId;
 }
 

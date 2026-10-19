@@ -258,3 +258,90 @@ code directly.
   member's cached balances differ from their ledger. That should be impossible (only the trigger writes
   balances); the alert gives the count only: escalate to support with the restaurant and the day,
   and support finds the members by comparing `loyalty_members` with the sums of `loyalty_ledger`.
+
+## Engagement extension (042)
+
+Migration `042_loyalty_engagement.sql` adds the remaining core POS Lite engagement
+flows. These options are independent of the stamp rules and start disabled.
+Configure them in **Configuración › Club de lealtad › Recomendaciones, tarjetas y
+mensajes** while the club is active.
+
+- **Referrals:** an issued card has a shareable referral code. A new member can
+  enter it on their card page, or staff can apply it at enrollment or in Clientes, within seven
+  days of enrollment. Both receive the configured bonus (default two stamps).
+  Self-referrals and a second referrer are refused. Concurrent claims produce
+  one award. The two members lock in UUID order; bonuses and card completion use
+  the append-only ledger. Referral stamps appear separately in the club report.
+- **Digital card:** staff issue or replace a card from Clientes or the checkout
+  member lookup. The customer scans its private link and sees their live card at
+  `/club/card#…`, with a checkout QR, referral code, review link and message
+  preference. A public phone lookup cannot issue access to an existing account.
+  The access credential travels in a header; only its SHA-256 digest is stored.
+  The checkout QR contains a separate random identifier, not a portal credential
+  or phone number. A keyboard barcode scanner can enter it in the checkout
+  lookup; pressing Enter searches. Replacement invalidates the old link and QR.
+- **Wallet:** the member page offers signed Apple passes and Google Wallet save
+  links when their provider artifacts are ready. Passes contain the restaurant,
+  balances, reward and scan identifier, without the member's name or phone.
+  Ledger and settings changes queue updates. Apple device registration and update
+  routes are scoped by restaurant and member. Google object identity includes
+  the issued card's scan identifier, so replacing a card cannot update a stolen
+  older pass with the replacement QR. Member revocation invalidates checkout
+  lookup immediately and queues provider deactivation.
+- **Messages:** opted-in members receive welcome, stamp, reward and referral
+  messages, with a delayed reminder for an available reward (default seven
+  days). Queued messages recheck current consent, redaction, Pro entitlement and
+  the club setting before sending. Reminder deliveries are limited to one per
+  member per 24 hours. The member page and Clientes can withdraw consent.
+  Twilio's Messaging Service must have its STOP handling configured. The worker
+  polls sent-message status; Clientes shows delivery state. An ambiguous send
+  becomes `unknown` and is never blindly resent. Message rows and jobs do not
+  retain the destination phone or rendered message body.
+- **Reviews:** an owner-supplied HTTPS review link appears on the card and in
+  configured messages. Review requests are not conditioned on a positive rating.
+
+### Provider setup and activation
+
+The web process refuses provider secrets. Configure these on the **worker only**:
+
+| Provider | Configuration |
+| --- | --- |
+| Twilio | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_MESSAGING_SERVICE_SID`; set `LOYALTY_SMS_SEND=1` only for intentional delivery |
+| Google Wallet | `GOOGLE_WALLET_ISSUER_ID`, `GOOGLE_WALLET_SA_KEY_BASE64` (service-account JSON authorized for that issuer) |
+| Apple Wallet | `APPLE_TEAM_ID`, `APPLE_PASS_TYPE_ID`, `APPLE_PASS_CERT_BASE64`, `APPLE_PASS_KEY_BASE64`, `APPLE_WWDR_CERT_BASE64`, optional `APPLE_PASS_KEY_PASSPHRASE`, and a stable random `LOYALTY_WALLET_SIGNING_SECRET` of at least 32 characters |
+| Both wallets | HTTPS `APP_URL` pointing to the web service |
+
+Apple passes are signed with system OpenSSL; the runtime Docker image installs
+it. No pass-signing npm dependency is required. Keep the Apple signing secret
+stable: rotating it requires members to download their passes again. Signing
+keys are written only to a private temporary directory and removed in `finally`.
+A per-member lease serializes wallet work without holding a database transaction
+across provider calls. Missing configuration blocks the job with a named reason;
+after setup, cancel the blocked job and requeue it through the existing job
+operations workflow (direct requeue applies to dead jobs).
+
+Apply migration 042 and the grants manifest before deploying both processes.
+Confirm provider accounts, sender/STOP configuration, privacy disclosures and
+actual Apple/Android devices before enabling these optional integrations for
+customers. Local tests use synthetic members, self-signed certificates and fake
+provider responses; they do not establish provider approval or live delivery.
+No provider has been enabled by the implementation work itself.
+
+### Verification
+
+`tests/loyalty-engagement.test.ts` verifies validation, credential separation,
+message text, versioned Google objects and an independently verified Apple CMS
+signature/ZIP. `tests/loyalty-db.ts` includes referral races and completion,
+restaurant isolation, card replacement/revocation, consent withdrawal, SMS
+success/uncertain outcomes, fake Google updates and public card authorization.
+`tests/browser/loyalty-card.spec.ts` covers the mobile card, referral/consent
+interaction, revoked-card handling and accessibility. The existing loyalty
+checkout, refunds, imports and ledger tests remain part of qualification.
+
+This extension follows POS Lite's stamp-based program. Points-based earning,
+VIP tiers, birthday rewards and cross-restaurant pooled balances are not part of
+this implementation.
+
+Wallet device unregistering clears the push token and records `unregistered_at`; registration reactivates the same device. Discovery and push delivery ignore inactive registrations. Runtime and jobs roles have no DELETE permission; member redaction physically removes registrations through the existing restricted trigger. A delayed APNs rejection only retires the token it attempted, preserving a newer registration.
+
+Pilot limitations: Apple Wallet and messaging remain disabled until provider and device qualification. Reissuing a card rotates its Wallet credential, requiring the member to add the new pass. Member redaction removes push registrations immediately; an already installed Apple pass may retain its cached display, although its checkout scan is invalid. Inactive registration hashes remain until member redaction; the five-device limit bounds active registrations, not lifetime registrations.

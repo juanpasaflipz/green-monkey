@@ -267,3 +267,29 @@ DO $$ BEGIN
   GRANT UPDATE (batch_id, updated_at) ON delivery_history_coverage TO gm_app;
  END IF;
 END $$;
+
+-- 042 loyalty engagement; providers run only on the jobs login.
+DO $$ BEGIN
+ IF to_regclass('public.loyalty_member_cards') IS NOT NULL THEN
+  REVOKE UPDATE ON loyalty_engagement_settings,loyalty_member_cards FROM gm_app;
+  REVOKE UPDATE ON loyalty_messages FROM gm_jobs_worker;
+  REVOKE DELETE ON loyalty_wallet_devices FROM gm_app,gm_jobs_worker;
+  GRANT SELECT,INSERT ON loyalty_engagement_settings,loyalty_member_cards TO gm_app;
+  GRANT UPDATE (settings,version) ON loyalty_engagement_settings TO gm_app;
+  GRANT UPDATE (access_hash,scan_token,revoked_at,updated_at) ON loyalty_member_cards TO gm_app;
+  GRANT SELECT,INSERT ON loyalty_referrals,loyalty_messages TO gm_app;
+  GRANT SELECT,INSERT ON loyalty_wallet_devices TO gm_app;
+  GRANT UPDATE (push_token,unregistered_at) ON loyalty_wallet_devices TO gm_app,gm_jobs_worker;
+  GRANT SELECT ON restaurant_entitlements,loyalty_members,loyalty_settings,loyalty_engagement_settings,loyalty_member_cards,loyalty_ledger,loyalty_wallet_devices TO gm_jobs_worker;
+  GRANT SELECT,INSERT ON loyalty_messages TO gm_jobs_worker;
+  GRANT UPDATE (state,provider_id,error_code,updated_at) ON loyalty_messages TO gm_jobs_worker;
+ END IF;
+END $$;
+DO $$ BEGIN
+ IF to_regclass('public.loyalty_wallet_passes') IS NOT NULL THEN
+  REVOKE UPDATE ON loyalty_wallet_passes FROM gm_jobs_worker;
+  GRANT SELECT ON loyalty_wallet_passes TO gm_app;
+  GRANT SELECT,INSERT ON loyalty_wallet_passes TO gm_jobs_worker;
+  GRANT UPDATE (generation_hash,apple_auth_hash,apple_pass_secret,google_url_secret,sync_job_id,sync_until,pass_type,updated_at) ON loyalty_wallet_passes TO gm_jobs_worker;
+ END IF;
+END $$;

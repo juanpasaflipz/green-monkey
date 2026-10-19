@@ -29,6 +29,9 @@ export const EXPORT_TABLE_DENYLIST: ReadonlySet<string> = new Set([
   // payments 037: provider credential ciphertext (the runtime role cannot read
   // it either; listed as for cfdi_secrets, critic R38).
   "payment_secrets",
+  "loyalty_member_cards",
+  "loyalty_wallet_devices",
+  "loyalty_wallet_passes",
 ]);
 /**
  * What the owner reads for each exportable table, [Spanish, English]: the
@@ -40,6 +43,9 @@ export const EXPORT_TABLE_DENYLIST: ReadonlySet<string> = new Set([
 export const EXPORT_TABLE_LABELS: Readonly<
   Record<string, readonly [string, string]>
 > = {
+  loyalty_engagement_settings: ["Opciones del club", "Club engagement settings"],
+  loyalty_referrals: ["Recomendaciones del club", "Club referrals"],
+  loyalty_messages: ["Mensajes del club", "Club messages"],
   audit: ["Bitácora", "Audit log"],
   business_day_settings: ["Día operativo", "Business day settings"],
   cash_count_reviews: [

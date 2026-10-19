@@ -27,6 +27,7 @@ import "./cfdi/worker/register.js";
 import { cfdiWorkerBoot } from "./cfdi/worker/boot.js";
 import "./payments/worker/register.js";
 import { paymentsWorkerBoot } from "./payments/worker/boot.js";
+import "./loyalty-worker/register.js";
 // <<< worker areas: imports
 
 const LOOP_STALE_MS = 120_000;

@@ -3,6 +3,7 @@
  * is the club off with LOYALTY_DEFAULTS. Lock order: saveLoyaltySettings is ARCHITECTURE row 52:
  * 1 → 2 → 3 (loyalty_settings FOR UPDATE; insert when absent). Every other reader takes no lock.
  */
+import { queueAllWallets } from "./engagement-events.js";
 import type { Tx } from "../db.js";
 import { managers, operators, permit } from "../auth.js";
 import { requireRecentAuth } from "../access.js";
@@ -238,6 +239,7 @@ export async function saveLoyaltySettings(
       fields: changed,
       enabled: p.enabled,
     });
+    await queueAllWallets(tx, s.tenantId, `program:${p.operationId}`);
     return getLoyaltySettings(tx, s, legal);
   });
 }

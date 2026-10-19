@@ -8,6 +8,7 @@ const SelfInvoicePortal = lazy(
 );
 const LegalPage = lazy(() => import("./legal/LegalPage"));
 const PublicOrdering = lazy(() => import("./features/PublicOrdering"));
+const CardPage = lazy(() => import("./features/loyalty/CardPage"));
 const JoinPage = lazy(() => import("./features/loyalty/JoinPage"));
 import { PlatformGate } from "./features/offline/PlatformGate";
 import { registerServiceWorker } from "./service-worker";
@@ -22,6 +23,8 @@ createRoot(document.getElementById("root")!).render(
         <SelfInvoicePortal />
       ) : /^\/(qr|kiosk)(\/|$)/.test(location.pathname) ? (
         <PublicOrdering />
+      ) : /^\/club\/card\/?$/.test(location.pathname) ? (
+        <CardPage />
       ) : /^\/club\/?$/.test(location.pathname) ? (
         <JoinPage />
       ) : location.pathname === "/" &&

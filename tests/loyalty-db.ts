@@ -1,3 +1,9 @@
+import { walletHandler, retireWalletDevice } from "../server/loyalty-worker/wallet.js";
+import { generateKeyPairSync } from "node:crypto";
+import { registerCards } from "../server/loyalty/card-routes.js";
+import { digest, saveEngagement, issueCard, cardView, authenticateCard, applyReferral, scanCard, revokeCard } from "../server/loyalty/engagement.js";
+import { ENGAGEMENT_DEFAULTS } from "../shared/loyalty-engagement.js";
+import { messageHandler } from "../server/loyalty-worker/messages.js";
 // Loyalty club (038) against PostgreSQL: the commands, the ledger and guard triggers, the hooks
 // inside money transactions, the reconcile job, the join page and the kiosk functions, the import,
 // retention and the role/RLS boundaries (specs/loyalty-w4.md §9.2, checks L1–L21 and H1).
@@ -2124,6 +2130,179 @@ try {
     } finally {
       await new Promise((r) => server.close(r));
     }
+  });
+
+  await test("E1 referral concurrency, card rotation, revocation and tenant isolation", async () => {
+    const f = await clubTenant("engagement"), other = await clubTenant("engagement-other");
+    await run(f.s.owner, tx => saveEngagement(tx, f.s.owner, {...ENGAGEMENT_DEFAULTS,referralsEnabled:true,operationId:randomUUID(),expectedVersion:0}));
+    const a=await enroll(f),b=await enroll(f);
+    const issued=await run(f.s.cashier,tx=>issueCard(tx,f.s.cashier,a.id));
+    const token=issued.path.split("#")[1];
+    const view=await run(f.s.owner,tx=>cardView(tx,token));
+    assert.equal(Object.hasOwn(view,"phone"),false);
+    assert.equal(Object.hasOwn(view,"name"),false);
+    assert.equal((await run(f.s.cashier,tx=>scanCard(tx,f.s.cashier,{code:view.scanCode})))?.id,a.id);
+    assert.equal(await run(other.s.cashier,tx=>scanCard(tx,other.s.cashier,{code:view.scanCode})),null);
+    await rejects(run(other.s.owner,tx=>authenticateCard(tx,token)),"unauthorized");
+    const results=await noRetries("concurrent referrals",()=>Promise.all([1,2,3].map(()=>run(f.s.owner,tx=>applyReferral(tx,f.tenantId,b.id,view.referralCode!)))));
+    assert.equal(results.filter(r=>r.awarded).length,1);
+    assert.equal((await member(f,a.id)).stamps,2);
+    assert.equal((await member(f,b.id)).stamps,2);
+    await rejects(run(f.s.owner,tx=>applyReferral(tx,f.tenantId,a.id,view.referralCode!)),"loyalty_referral_invalid");
+    await rejects(run(f.s.kitchen,tx=>issueCard(tx,f.s.kitchen,a.id)),"forbidden");
+    const next=await run(f.s.cashier,tx=>issueCard(tx,f.s.cashier,a.id));
+    await rejects(run(f.s.owner,tx=>authenticateCard(tx,token)),"unauthorized");
+    assert.equal(await run(f.s.cashier,tx=>scanCard(tx,f.s.cashier,{code:view.scanCode})),null);
+    const newToken=next.path.split("#")[1];
+    const newView=await run(f.s.owner,tx=>cardView(tx,newToken));
+    assert.equal(newView.referralCode,view.referralCode);
+    await run(f.s.owner,tx=>revokeCard(tx,f.s.owner,a.id));
+    await rejects(run(f.s.owner,tx=>authenticateCard(tx,newToken)),"unauthorized");
+  });
+  await test("E2 referral completion uses the ledger and preserves lifetime balances", async()=>{
+    const f=await clubTenant("referral-complete",{stampsRequired:2});
+    await run(f.s.owner,tx=>saveEngagement(tx,f.s.owner,{...ENGAGEMENT_DEFAULTS,referralsEnabled:true,operationId:randomUUID(),expectedVersion:0}));
+    const a=await enroll(f),b=await enroll(f);
+    const card=await run(f.s.owner,tx=>issueCard(tx,f.s.owner,a.id));
+    const v=await run(f.s.owner,tx=>cardView(tx,card.path.split("#")[1]));
+    await run(f.s.owner,tx=>applyReferral(tx,f.tenantId,b.id,v.referralCode!));
+    for(const m of [a,b]){
+      const detail=await member(f,m.id);assert.equal(detail.stamps,0);assert.equal(detail.rewards,1);
+      const [row]=await asAdmin(f.tenantId,tx=>tx`select lifetime_stamps from loyalty_members where id=${m.id}`);assert.equal(row.lifetime_stamps,2);
+    }
+  });
+  await test("E3 SMS rechecks withdrawn consent and never sends without provider setup",async()=>{
+    const f=await clubTenant("message-consent");
+    await run(f.s.owner,tx=>saveEngagement(tx,f.s.owner,{...ENGAGEMENT_DEFAULTS,smsEnabled:true,operationId:randomUUID(),expectedVersion:0}));
+    const m=await enroll(f,{marketing:true});
+    const [msg]=await run(f.s.owner,tx=>tx`select * from loyalty_messages where member_id=${m.id}`);assert.ok(msg);
+    const ctx:any={job:{tenantId:f.tenantId,payload:{messageId:msg.id},attempts:1},tenant:(fn:any)=>tenant(workerSql,f.tenantId,fn),signal:new AbortController().signal};
+    const keys=['TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_MESSAGING_SERVICE_SID','LOYALTY_SMS_SEND'];
+    const previous=keys.map(k=>process.env[k]);const oldFetch=globalThis.fetch;
+    try{
+      delete process.env.LOYALTY_SMS_SEND;
+      assert.equal((await messageHandler(ctx) as any).status,'blocked');
+      keys.forEach(k=>{process.env[k]=k==='LOYALTY_SMS_SEND'?'1':'synthetic';});
+      let calls=0;globalThis.fetch=(async()=>{calls++;throw Error('No external requests allowed');}) as typeof fetch;
+      await run(f.s.owner,tx=>updateMember(tx,f.s.owner,m.id,{operationId:randomUUID(),expectedVersion:1,marketingOptIn:false}));
+      await messageHandler(ctx);assert.equal(calls,0);
+      const [state]=await run(f.s.owner,tx=>tx`select state from loyalty_messages where id=${msg.id}`);assert.equal(state.state,'skipped');
+    }finally{globalThis.fetch=oldFetch;keys.forEach((k,i)=>{if(previous[i]===undefined)delete process.env[k];else process.env[k]=previous[i];});}
+  });
+
+  await test("E4 SMS delivery polling and ambiguous sends never duplicate a message",async()=>{
+    const f=await clubTenant("message-delivery");
+    await run(f.s.owner,tx=>saveEngagement(tx,f.s.owner,{...ENGAGEMENT_DEFAULTS,smsEnabled:true,operationId:randomUUID(),expectedVersion:0}));
+    const m=await enroll(f,{marketing:true}),n=await enroll(f,{marketing:true});
+    const rows=await run(f.s.owner,tx=>tx`select * from loyalty_messages order by created_at`);
+    const keys=['TWILIO_ACCOUNT_SID','TWILIO_AUTH_TOKEN','TWILIO_MESSAGING_SERVICE_SID','LOYALTY_SMS_SEND'];
+    const previous=keys.map(k=>process.env[k]);const oldFetch=globalThis.fetch;
+    const context=(messageId:string):any=>({job:{tenantId:f.tenantId,payload:{messageId},attempts:1},tenant:(fn:any)=>tenant(workerSql,f.tenantId,fn),signal:new AbortController().signal});
+    try{
+      keys.forEach(k=>{process.env[k]=k==='LOYALTY_SMS_SEND'?'1':'synthetic';});
+      const successful=rows.find(r=>r.member_id===m.id)!,uncertain=rows.find(r=>r.member_id===n.id)!;
+      let sends=0;
+      globalThis.fetch=(async(_url:any,init:any)=>{if(init?.method==='POST'){sends++;return new Response(JSON.stringify({sid:'SMsynthetic',status:'queued'}),{status:201});}return new Response(JSON.stringify({status:'delivered'}));}) as typeof fetch;
+      await messageHandler(context(successful.id));await messageHandler(context(successful.id));await messageHandler(context(successful.id));
+      assert.equal(sends,1);
+      assert.equal((await run(f.s.owner,tx=>tx`select state from loyalty_messages where id=${successful.id}`))[0].state,'delivered');
+      globalThis.fetch=(async()=>{sends++;throw Error('Synthetic lost response');}) as typeof fetch;
+      await messageHandler(context(uncertain.id));await messageHandler(context(uncertain.id));
+      assert.equal(sends,2);
+      assert.equal((await run(f.s.owner,tx=>tx`select state from loyalty_messages where id=${uncertain.id}`))[0].state,'unknown');
+    }finally{globalThis.fetch=oldFetch;keys.forEach((k,i)=>{if(previous[i]===undefined)delete process.env[k];else process.env[k]=previous[i];});}
+  });
+  await test("E5 Google Wallet upserts, serialization and revocation use synthetic provider responses",async()=>{
+    const f=await clubTenant("wallet-provider");
+    await run(f.s.owner,tx=>saveEngagement(tx,f.s.owner,{...ENGAGEMENT_DEFAULTS,walletEnabled:true,operationId:randomUUID(),expectedVersion:0}));
+    const m=await enroll(f);await run(f.s.owner,tx=>issueCard(tx,f.s.owner,m.id));
+    const keys=['GOOGLE_WALLET_ISSUER_ID','GOOGLE_WALLET_SA_KEY_BASE64','APP_URL','APPLE_TEAM_ID'];
+    const previous=keys.map(k=>process.env[k]),oldFetch=globalThis.fetch;
+    const {privateKey}=generateKeyPairSync('rsa',{modulusLength:2048});
+    const context=():any=>({job:{id:randomUUID(),tenantId:f.tenantId,payload:{memberId:m.id}},tenant:(fn:any)=>tenant(workerSql,f.tenantId,fn),signal:new AbortController().signal});
+    try{
+      process.env.GOOGLE_WALLET_ISSUER_ID='123';process.env.APP_URL='https://synthetic.example';delete process.env.APPLE_TEAM_ID;
+      process.env.GOOGLE_WALLET_SA_KEY_BASE64=Buffer.from(JSON.stringify({client_email:'synthetic@example.com',private_key:privateKey.export({type:'pkcs8',format:'pem'})})).toString('base64');
+      const payloads:any[]=[];
+      globalThis.fetch=(async(url:any,init:any)=>{
+        assert.ok(String(url).startsWith('https://oauth2.googleapis.com/')||String(url).startsWith('https://walletobjects.googleapis.com/'));
+        if(String(url).includes('oauth2.'))return new Response(JSON.stringify({access_token:'synthetic'}));
+        payloads.push(JSON.parse(init.body));return new Response('{}');
+      }) as typeof fetch;
+      await walletHandler(context());
+      assert.ok(payloads.some(p=>p.state==='ACTIVE'));
+      const [pass]=await run(f.s.owner,tx=>tx`select * from loyalty_wallet_passes where member_id=${m.id}`);
+      assert.match(pass.google_url_secret,/^https:\/\/pay.google.com\/gp\/v\/save\//);
+      assert.equal(pass.sync_job_id,null);
+      await asAdmin(f.tenantId,tx=>tx`update loyalty_wallet_passes set sync_job_id=${randomUUID()},sync_until=now()+interval '1 minute' where member_id=${m.id}`);
+      const before=payloads.length;assert.equal((await walletHandler(context()) as any).code,'loyalty_wallet_busy');assert.equal(payloads.length,before);
+      await asAdmin(f.tenantId,tx=>tx`update loyalty_wallet_passes set sync_job_id=null,sync_until=null where member_id=${m.id}`);
+      await run(f.s.owner,tx=>revokeCard(tx,f.s.owner,m.id));await walletHandler(context());
+      assert.equal(payloads.filter(p=>'state' in p).at(-1).state,'INACTIVE');
+    }finally{globalThis.fetch=oldFetch;keys.forEach((k,i)=>{if(previous[i]===undefined)delete process.env[k];else process.env[k]=previous[i];});}
+  });
+  await test("E6 public card routes authenticate headers, update consent and reject redacted members",async()=>{
+    const f=await clubTenant("card-http"),m=await enroll(f);
+    const issued=await run(f.s.owner,tx=>issueCard(tx,f.s.owner,m.id)),token=issued.path.split('#')[1];
+    const app=express();app.use(express.json());registerCards({app,sql});app.use(apiErrorHandler);
+    const server=app.listen(0,'127.0.0.1');await new Promise<void>(r=>server.once('listening',r));
+    const origin=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
+    try{
+      const bad=await fetch(origin+'/api/club/card',{headers:{'x-gm-card-token':'bad'}});assert.equal(bad.status,401);
+      const response=await fetch(origin+'/api/club/card',{headers:{'x-gm-card-token':token}});assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');
+      const v=await response.json() as any;assert.equal(v.stamps,0);assert.equal(Object.hasOwn(v,'phone'),false);
+      const changed=await fetch(origin+'/api/club/card/preferences',{method:'POST',headers:{'x-gm-card-token':token,'Content-Type':'application/json'},body:JSON.stringify({marketingOptIn:true})});assert.equal(changed.status,200);
+      assert.equal((await run(f.s.owner,tx=>memberDetail(tx,f.s.owner,m.id))).marketingOptIn,true);
+      await asAdmin(f.tenantId,tx=>tx`insert into loyalty_wallet_devices(tenant_id,member_id,device_hash,push_token) values(${f.tenantId},${m.id},'synthetic','synthetic')`);
+      const current=await member(f,m.id);await run(f.s.owner,tx=>deleteMember(tx,f.s.owner,m.id,{operationId:randomUUID(),expectedVersion:current.version,confirm:'ELIMINAR'}));
+      const after=await fetch(origin+'/api/club/card',{headers:{'x-gm-card-token':token}});assert.equal(after.status,401);
+      assert.equal((await run(f.s.owner,tx=>tx`select * from loyalty_wallet_devices where member_id=${m.id}`)).length,0);
+    }finally{await new Promise(r=>server.close(r));}
+  });
+
+  await test("E7 cashier enrollment applies referrals atomically and replays without awarding twice",async()=>{
+    const f=await clubTenant("referral-enroll");
+    await run(f.s.owner,tx=>saveEngagement(tx,f.s.owner,{...ENGAGEMENT_DEFAULTS,referralsEnabled:true,operationId:randomUUID(),expectedVersion:0}));
+    const a=await enroll(f),link=await run(f.s.owner,tx=>issueCard(tx,f.s.owner,a.id));
+    const view=await run(f.s.owner,tx=>cardView(tx,link.path.split('#')[1]));
+    const body={operationId:randomUUID(),phone:newPhone(),country:'MX',name:'Synthetic Friend',consent:true,referralCode:view.referralCode};
+    const first=await run(f.s.cashier,tx=>enrollMember(tx,f.s.cashier,body));
+    const replay=await run(f.s.cashier,tx=>enrollMember(tx,f.s.cashier,body));
+    assert.equal(first.member.id,replay.member.id);assert.equal(replay.member.stamps,2);assert.equal((await member(f,a.id)).stamps,2);
+  });
+  await test("E8 Apple device registration, update discovery and pass downloads require the right scope",async()=>{
+    const f=await clubTenant("apple-protocol"),m=await enroll(f);
+    const issued=await run(f.s.owner,tx=>issueCard(tx,f.s.owner,m.id)),token=issued.path.split('#')[1],secret='synthetic-apple-auth-secret',type='pass.test.synthetic';
+    await asAdmin(f.tenantId,tx=>tx`insert into loyalty_wallet_passes(tenant_id,member_id,generation_hash,apple_auth_hash,apple_pass_secret,pass_type)
+      values(${f.tenantId},${m.id},${digest(token)},${digest(secret)},${Buffer.from('synthetic pass').toString('base64')},${type})`);
+    const app=express();app.use(express.json());registerCards({app,sql});app.use(apiErrorHandler);
+    const server=app.listen(0,'127.0.0.1');await new Promise<void>(r=>server.once('listening',r));
+    const origin=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
+    const base=`${origin}/api/club/wallet/${f.tenantId}/${m.id}/v1`,serial=`${f.tenantId}.${m.id}`;
+    const headers={'Authorization':`ApplePass ${secret}`,'Content-Type':'application/json'};
+    try{
+      const path=`${base}/devices/synthetic-device/registrations/${type}/${serial}`;
+      assert.equal((await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pushToken:'a'.repeat(64)})})).status,401);
+      assert.equal((await fetch(path,{method:'POST',headers,body:JSON.stringify({pushToken:'a'.repeat(64)})})).status,201);
+      assert.equal((await fetch(path,{method:'POST',headers,body:JSON.stringify({pushToken:'a'.repeat(64)})})).status,200);
+      const discovery=await fetch(`${base}/devices/synthetic-device/registrations/${type}`);const result=await discovery.json() as any;assert.deepEqual(result.serialNumbers,[serial]);
+      assert.equal((await fetch(`${base}/devices/synthetic-device/registrations/${type}?passesUpdatedSince=${result.lastUpdated}`)).status,204);
+      assert.equal((await fetch(`${base}/passes/${type}/${serial}`,{headers:{Authorization:'ApplePass wrong'}})).status,401);
+      const downloaded=await fetch(`${base}/passes/${type}/${serial}`,{headers});assert.equal(downloaded.status,200);assert.equal(await downloaded.text(),'synthetic pass');
+      assert.equal((await fetch(path,{method:'DELETE',headers})).status,200);
+      assert.equal((await fetch(`${base}/devices/synthetic-device/registrations/${type}`)).status,204);
+      const [removed] = await run(f.s.owner,tx=>tx`select push_token,unregistered_at from loyalty_wallet_devices where member_id=${m.id}`);
+      assert.equal(removed.push_token,'');assert.ok(removed.unregistered_at);
+      assert.equal((await fetch(path,{method:'POST',headers,body:JSON.stringify({pushToken:'b'.repeat(64)})})).status,201);
+      const [registered] = await run(f.s.owner,tx=>tx`select push_token,unregistered_at from loyalty_wallet_devices where member_id=${m.id}`);
+      assert.equal(registered.push_token,'b'.repeat(64));assert.equal(registered.unregistered_at,null);
+      // A late provider rejection must not unregister a freshly replaced token.
+      await tenant(workerSql,f.tenantId,tx=>retireWalletDevice(tx,m.id,digest('synthetic-device'),'a'.repeat(64)));
+      assert.equal((await fetch(`${base}/devices/synthetic-device/registrations/${type}`)).status,200);
+      // Worker can retire the current token without acquiring table DELETE rights.
+      await tenant(workerSql,f.tenantId,tx=>retireWalletDevice(tx,m.id,digest('synthetic-device'),'b'.repeat(64)));
+      assert.equal((await fetch(`${base}/devices/synthetic-device/registrations/${type}`)).status,204);
+    }finally{await new Promise(r=>server.close(r));}
   });
 
   console.log(`${checks} loyalty checks passed`);
