@@ -315,9 +315,13 @@ async function main() {
       cardForm: "04",
       timezone: TIMEZONE,
     });
+    if (mixedRates && build.expectedTax !== 1614)
+      throw new Error(
+        "mixed-rate fixture must preserve 16% and 8% IVA (tax 1614)",
+      );
     const r = await stamp(c.name, build.body, {
       total: build.expectedTotal,
-      tax: mixedRates ? 1614 : build.expectedTax,
+      tax: build.expectedTax,
       ...(mixedRates ? { rates: ["0.160000", "0.080000"] } : {}),
     });
     if (r && !first && c.lines.length === 1 && c.lines[0][0] >= 12500)
