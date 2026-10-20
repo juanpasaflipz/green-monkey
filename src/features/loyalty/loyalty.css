@@ -197,3 +197,10 @@
 .loyalty-join-notice h1 {
   font-size: 1.4rem;
 }
+
+.loyalty-issued-card { display: grid; justify-items: start; gap: 12px; margin-block: 16px; }
+.loyalty-wallet-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; margin-block: 16px; }
+.loyalty-member-card-control { margin-block: 12px; }
+.loyalty-join svg { max-width: 100%; height: auto; }
+.loyalty-join section { margin-block: 20px; }
+.loyalty-join strong { overflow-wrap: anywhere; }

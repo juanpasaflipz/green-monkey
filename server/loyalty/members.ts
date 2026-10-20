@@ -1,3 +1,4 @@
+import { applyReferral } from "./engagement.js";
 /**
  * Club members (038, specs/loyalty-w4.md §2.3, §2.9, §2.11, §4.2). Staff look members up by phone
  * (or by name, ≥ 3 characters, 10 rows, masked phones) and enroll them at the counter with the
@@ -11,6 +12,7 @@
  * the partial unique index (no row lock: a unique wait meets only a concurrent enrollment of the
  * same phone). Audit details hold ids, counts and changed field names only; never a name or phone.
  */
+import { queueMemberMessage } from "./engagement-events.js";
 import { randomUUID } from "node:crypto";
 import type { Tx } from "../db.js";
 import { managers, operators, permit } from "../auth.js";
@@ -149,6 +151,8 @@ export async function enrollMember(
       on conflict (tenant_id,phone_e164) where phone_e164 is not null do nothing
       returning id,name,phone_e164,stamps,rewards,redacted_at`;
     if (inserted) {
+      if (p.referralCode) await applyReferral(tx, s.tenantId, memberId, p.referralCode);
+      await queueMemberMessage(tx, s.tenantId, memberId, "welcome", `welcome:${memberId}`);
       await audit(tx, s, "loyalty.member.enrolled", memberId, {
         memberId,
         via: "pos",

@@ -1,0 +1,90 @@
+# Green Monkey pilot release candidate — October 19, 2026
+
+Status: candidate in qualification, **not deployed**. Branch `release/pilot-rc-2026-10-19` is based on main `db085ea783e46124a91892e2c8f68e357aea78d7`. Do not deploy the original divergent `release/v1` checkout. Do not merge this candidate until its release checks and pilot gates are accepted; a merge to main can trigger staging deployment.
+
+## Reconciliation and preservation
+
+The original `/Users/juan/Developer/green-monkey` checkout remains on `release/v1` at `1265d4e204c21925b77139cfd1cc1ab4e32ea21f`, with its uncommitted work and screenshots intact. Candidate work is isolated at `/Users/juan/Developer/green-monkey-pilot-rc`.
+
+| Local work | Candidate treatment |
+| --- | --- |
+| Uncommitted loyalty engagement, digital card, referral, Wallet and messaging source, tests and assets | Applied on current main with a three-way patch and new files copied; original remains intact |
+| Marketing redesign and styling | Already on main via #23; retained main plus the local loyalty plan description |
+| Earlier kiosk implementation and alternative migration 039 | Superseded by main's integrated approved design and hardened backend; original branch remains available |
+| Kiosk design prototype | Preserved under `prototypes/kiosk`, excluded from production image |
+| Main kiosk, iOS shell, menu import and history features | Retained unchanged |
+| Main migrations 001–041 | Retained byte-for-byte |
+| New local `040_loyalty_engagement.sql` | Renumbered to `042_loyalty_engagement.sql`; never overwrites 040/041 history |
+| Existing readiness/planning notes | Preserved; old deployment evidence is explicitly historical |
+
+A binary patch and SHA-256 manifest of the original checkout are retained locally in `assets/outputs/green-monkey-pilot-rc-2026-10-19`. No private environment files, credentials or restaurant exports were copied into the candidate or sent to Claude.
+
+## Database fixes
+
+Wallet unregister now clears the push token and marks the registration inactive. Discovery and push delivery ignore inactive registrations; registering again reactivates the existing row. An APNs rejection only retires the exact token attempted, so a newer token survives. Member redaction still physically removes registrations through the restricted database trigger.
+
+The application and worker keep the existing no-DELETE invariant. The grants manifest removes obsolete DELETE and broad UPDATE rights and grants only the columns the new loyalty operations need. The ops and migration permission tests are unchanged. Main's export catalogue resolves the old kiosk label failure; new loyalty credential tables are excluded from account exports and exportable tables have Spanish/English labels.
+
+## Offline startup correction
+
+The first browser run exposed an integration failure: sharing loyalty CSS caused Vite to remove a CSS-only JavaScript chunk after the service-worker manifest was generated. The manifest then referenced a missing asset, preventing offline-cache installation. The manifest plugin now runs after Vite's cleanup. A real Vite-build regression reproduces the missing asset before the fix and passes afterward. The interrupted browser run is not counted as acceptance.
+
+## Verification
+
+All local database tests use disposable PostgreSQL 18 and synthetic records, with Node 24.21.0. No production database was used.
+
+- Main 001–041 → candidate 042 upgrade: passed as non-superuser migrator.
+- Fresh 001–042 installation: passed as non-superuser migrator.
+- Type checks, lint, production build: passed.
+- Unit tests: 112 files, 1,735 tests passed.
+- Full `test:db:qualification`: passed, including ops, migration runner, backup/restore, account, loyalty, kiosk, menu import and both history suites.
+- Compiled restart, access HTTP, account HTTP and graceful drain: passed.
+- Final restricted-grants regression: ops, migration runner, loyalty (41 checks) and account suites passed.
+- Production dependency audit: zero reported vulnerabilities.
+- Focused access, offline, kiosk and loyalty browser run: 105 passed, with one new WebKit test-harness failure. After aligning the local plain-HTTP WebKit harness with existing suites, all three card tests passed (Chromium and iPad/WebKit). No production CSP change.
+- Three-tenant, 61-second local load smoke: 1,132 requests, 73 completed orders, zero errors; read p95 15 ms, mutation p95 19 ms. This is not production capacity qualification.
+- Exact-commit release CI: consult [draft PR #25](https://github.com/juanpasaflipz/green-monkey/pull/25) for final qualification and restaurant-day results. No main merge or deployment.
+
+Claude reviewed the integration and soft unregister implementation independently in two passes and found no remaining integration blockers. The preservation check found zero changes to all 1,048 original tracked/untracked files and zero changes to main migrations 001–041. Accepted follow-ups for disabled Wallet: enforce inactive-state consistency with a database constraint, bound lifetime registration rows, and add real-device acceptance. Existing installed Apple passes can retain a cached display after member redaction (their checkout scan is invalid); card reissue requires adding the new pass. See [Loyalty](LOYALTY.md#engagement-extension-042).
+
+## Pilot handoff gates
+
+This candidate is for supervised pilot preparation, not a general SaaS launch approval. No enablement flags or deployed settings have been changed. Referrals, messaging and Wallet default off; kiosk self-checkout retains main's kill switch. The actual pilot feature scope still needs to match the restaurant's accepted operating plan.
+
+Before cutover: complete the real tablet/printer and full-shift rehearsal; qualify physical integrated readers if included; reconcile imported menu/prices, taxes, opening cash and balances; confirm support coverage, alert receipt, fallback register and recovery procedure. Automated fake-provider checks do not qualify real payment hardware. A populated local restore test does not establish production recovery time or backup-key custody. Follow [Pilot SOP](PILOT_SOP.md), [launch handoff](LAUNCH_HANDOFF.md) and [load-test procedure](LOAD_TEST.md).
+
+No deployment, main merge, production data change or external notification is authorized by this candidate document.
+
+## Rehearsal hardening after 489d987
+
+The 489d987 hosted baseline passed 1,735 unit tests, 307 browser tests (one
+existing skip), full database qualification, security, container and both
+restaurant-day jobs. Real CFDI was skipped. Those counts do not qualify the
+subsequent changes below until their own checks finish.
+
+Independent Claude review identified restore coverage gaps and a missing
+production acceptance guard. Restore manifests now fingerprint 24 fiscal,
+CFDI, loyalty, history and kiosk tables, including row content as well as
+counts. A populated local restore regression changes a member's name without
+changing counts or sales and requires verification to fail. Production dispatch
+now requires actual core and payment restaurant-day success from a manual run on the exact SHA. Not-yet-migrated domain tables are recorded as absent, keeping scheduled backups functional while main is ahead of production.
+Historical operational documents have current evidence notices; loyalty
+cancellation replay uses the existing audited manager deletion path before a
+restored app is reopened. No new support privileges or production changes.
+
+Public SaaS launch remains NO-GO: subscription billing is sandbox-only;
+physical restaurant qualification, populated hosted recovery, alert receipt,
+support coverage and hosted capacity including public ordering are not proven.
+The public account configuration currently reports legal documents published
+and signup open, so older claims that legal values are missing are stale.
+
+Local verification of the rehearsal hardening passed: typecheck, lint, build,
+112 unit files / 1,736 tests, and the fiscal, CFDI (fake provider), loyalty,
+kiosk, sales history, delivery history and ops database suites. The final
+restore source contained 2,267 orders, 231 tenders, 2,224 fiscal tickets,
+190 CFDI documents, 82 members and populated rows in all 24 fingerprinted
+tables. The negative corruption and missing-042-table regressions passed.
+Claude's final read-only review found both identified regressions resolved
+and no remaining introduced blocker; verdict: supervised rehearsal ready,
+public launch not ready. Fresh hosted qualification is tracked in PR #25;
+the old 489d987 browser result must not be reported as a new-head run.

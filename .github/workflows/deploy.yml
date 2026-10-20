@@ -85,6 +85,7 @@ jobs:
     permissions:
       contents: write
       statuses: read
+      actions: read
     environment:
       name: production
       url: ${{ vars.APP_URL }}
@@ -113,6 +114,22 @@ jobs:
           state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/statuses" \
             --jq '[.[] | select(.context == "deploy/staging")][0].state')
           [ "$state" = "success" ] || { echo "sha was never live on staging"; exit 1; }
+          # A successful workflow can contain skipped jobs. Require both actual
+          # restaurant-day jobs on this exact SHA, not a green PR ancestor.
+          # >>> restaurant-day-production-guard
+          # Scheduled runs can check out a configured branch instead of their event
+          # SHA. Only manual runs prove the actual dispatch ref was tested.
+          day_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/restaurant-day.yml/runs?event=workflow_dispatch&head_sha=$SHA&per_page=100" \
+            --jq '.workflow_runs[0] | select(.status == "completed" and .conclusion == "success") | .id // empty')
+          [ -n "$day_run" ] || { echo "restaurant-day evidence missing for this sha"; exit 1; }
+          day_jobs=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$day_run/jobs?filter=latest&per_page=100" \
+            --jq '.jobs[] | [.name, .conclusion] | @tsv')
+          for required in restaurant-day restaurant-day-payments; do
+            printf '%s\n' "$day_jobs" | awk -F '\t' -v name="$required" \
+              '$1 == name && $2 == "success" { found=1 } END { exit !found }' \
+              || { echo "$required must have passed on this sha (skipped is not passed)"; exit 1; }
+          done
+          # <<< restaurant-day-production-guard
           # Mexico City has no DST since 2022 (UTC-6 year-round).
           hour=$(TZ=America/Mexico_City date +%H)
           if [ "$hour" -ge 12 ] && [ "$ALLOW_SERVICE_HOURS" != "true" ]; then

@@ -122,6 +122,7 @@ export function stampBase(o: {
 }
 
 export type LedgerKind =
+  | "referral_bonus"
   | "earn"
   | "earn_reversal"
   | "reward_earned"
@@ -131,6 +132,7 @@ export type LedgerKind =
   | "adjustment"
   | "import";
 export const LEDGER_KINDS: readonly LedgerKind[] = [
+  "referral_bonus",
   "earn",
   "earn_reversal",
   "reward_earned",
@@ -393,6 +395,7 @@ export const programTitle = (programName: string, restaurant: string) =>
 const phoneText = z.string().max(40);
 export const enrollInput = z
   .object({
+    referralCode: z.string().trim().toUpperCase().regex(/^[A-F0-9]{16}$/).optional(),
     operationId: id,
     phone: phoneText,
     country: loyaltyCountry,
@@ -699,6 +702,7 @@ export type LoyaltyKioskConfig = {
 // ---- report ---------------------------------------------------------------------------------
 
 export type LoyaltyReport = {
+  referralStamps?: number;
   from: string;
   to: string;
   members: { total: number; new: number; imported: number; active: number };
@@ -724,6 +728,7 @@ export type LoyaltyReport = {
 
 /** Every error code the area owns (§4.12), for tests and the i18n module. */
 export const LOYALTY_ERROR_CODES = [
+  "loyalty_referrals_disabled", "loyalty_referral_invalid", "loyalty_referral_used", "loyalty_referral_expired", "loyalty_wallet_pending",
   "loyalty_disabled",
   "loyalty_privacy_notice_required",
   "loyalty_privacy_attestation_required",

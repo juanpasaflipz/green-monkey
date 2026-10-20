@@ -36,6 +36,7 @@ export async function loyaltyReport(
       coalesce(sum(stamps_delta) filter (where kind='earn'),0)::int as earned,
       coalesce(-sum(stamps_delta) filter (where kind='earn_reversal'),0)::int as reversed,
       coalesce(sum(stamps_delta) filter (where kind='adjustment'),0)::int as adjusted,
+      coalesce(sum(stamps_delta) filter (where kind='referral_bonus'),0)::int as referral_stamps,
       (count(*) filter (where kind='reward_earned') - count(*) filter (where kind='reward_unearned'))::int as rewards_earned,
       (count(*) filter (where kind='reward_redeemed') - count(*) filter (where kind='reward_restored'))::int as rewards_redeemed
     from loyalty_ledger where business_date between ${from}::date and ${to}::date`;
@@ -104,6 +105,7 @@ export async function loyaltyReport(
       reversed: ledger.reversed,
       adjusted: ledger.adjusted,
     },
+    referralStamps: ledger.referral_stamps,
     rewards: {
       earned: ledger.rewards_earned,
       redeemed: ledger.rewards_redeemed,

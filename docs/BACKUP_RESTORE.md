@@ -1,5 +1,8 @@
 # Backups and restore
 
+> Current evidence (2026-10-19): production encrypted upload succeeded to `gm-prod-backups` (workflow run 39232778879), with schema 041 and zero orders. The historical empty-data hosted restore does not qualify recovery of populated pilot data. Local candidate-042 backup/restore passes, including same-count member corruption detection. When main is ahead of the deployed schema, not-yet-created domain tables are explicitly recorded as `absent`, so scheduled backups continue to work; absence is not treated as an empty table. Current manifests add counts and content digests for fiscal, CFDI, loyalty, imported history and kiosk records. Older manifests lack those fields and deliberately do not pass the expanded verifier: take and rehearse a fresh candidate backup before cutover; retain old backups for recovery with their matching version. Manifest fingerprints are integrity checks, not proof of provider reconciliation or operational recovery time.
+
+
 The point-of-sale database is the restaurant's record of sales, tenders,
 refunds and cash closes. Mexico's Código Fiscal de la Federación, Art. 30,
 requires keeping accounting records and their support for five years from the

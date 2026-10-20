@@ -12,6 +12,7 @@
  * CONFLICT: a concurrent claim that committed first is loyalty_order_linked, never a 23505) →
  * reconcile inline with the members held.
  */
+import { queueMemberMessage } from "./engagement-events.js";
 import type postgres from "postgres";
 import { randomUUID } from "node:crypto";
 import { tenant, type Tx } from "../db.js";
@@ -120,11 +121,12 @@ export async function joinOrder(
     const notice = await restaurantPrivacyUrl(tx);
     if (!notice) throw new DomainError("loyalty_privacy_notice_required", 409);
     // Member insert-or-select: an existing member's name is never overwritten from this page.
-    await tx`insert into loyalty_members(tenant_id,id,phone_e164,name,name_key,joined_via,
+    const [enrolled] = await tx`insert into loyalty_members(tenant_id,id,phone_e164,name,name_key,joined_via,
         consent_channel,consent_at,consent_notice_url,marketing_opt_in,marketing_changed_at)
       values(${tenantId},${randomUUID()},${phone},${name},${nameKey(name)},'join_qr',
         'self_service',now(),${notice},${b.marketingOptIn},${b.marketingOptIn ? new Date() : null})
-      on conflict (tenant_id,phone_e164) where phone_e164 is not null do nothing`;
+      on conflict (tenant_id,phone_e164) where phone_e164 is not null do nothing returning id`;
+    if (enrolled) await queueMemberMessage(tx, tenantId, enrolled.id, "welcome", `welcome:${enrolled.id}`);
     const [member] =
       await tx`select id from loyalty_members where phone_e164=${phone}`;
     if (!member) throw new DomainError("loyalty_retry", 409);

@@ -15,6 +15,7 @@ export { fill };
 export const tr = (locale: Locale) => (k: Key) => strings[locale][k];
 
 const KIND_LABELS: Record<LedgerKind, Key> = {
+  referral_bonus: "loyaltyKindReferral",
   earn: "loyaltyKindEarn",
   earn_reversal: "loyaltyKindEarnReversal",
   reward_earned: "loyaltyKindRewardEarned",

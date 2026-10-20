@@ -1,5 +1,8 @@
 # Release process
 
+> Current pilot candidate (2026-10-19): PR #25 is not deployed or merged. The historical deployment status below is not current. The production guard now requires successful `restaurant-day` and `restaurant-day-payments` jobs from a manual workflow dispatch on the exact SHA; missing, skipped or incomplete results fail. After a squash/rebase merge, dispatch Restaurant day acceptance on the resulting main SHA and wait for it to pass before production. Scheduled runs are not accepted because `RD_NIGHTLY_REF` can select code different from the event SHA. Qualify the intended rollback SHA via its `prod-*` tag ahead of cutover too; an old staging proof alone no longer suffices. Real CFDI remains a separate required qualification when enabled. A merge to main can automatically deploy staging.
+
+
 How a change reaches staging and production. Status (October 8, 2026): CI runs
 on GitHub; branch protection and the `staging`/`production` environments were
 applied during the staging cutover, and CD has deployed `main` to staging since
@@ -121,8 +124,7 @@ variable `RD_NIGHTLY_REF`, and on every pull request into `main` whose head is
   money, folio, tenant-isolation and offline exactly-once findings can never
   be waived.
 - Artifacts (always): `test-results/restaurant-day/` and the Playwright report.
-- Pending (ops): `deploy.yml` does not yet require this gate before a
-  production dispatch (spec §13.2).
+- `deploy.yml` requires both non-skipped core and payment restaurant-day jobs on the exact production SHA (spec §13.2). Real CFDI remains a separate scope-dependent gate.
 
 ## Go-live checklist (account and legal)
 
@@ -227,7 +229,7 @@ each action.
   Railway dashboard (it restores old variables; RUNBOOK "Rollback").
 - Required reviewers on environments are not available for private
   repositories on the Free/Pro/Team plans, so the production gate is the
-  manual dispatch plus the typed confirmation and the staging proof.
+  manual dispatch plus the typed confirmation, staging proof and exact-SHA manual restaurant-day evidence.
 
 `/api/version` reports the commit from `build-info.json` (stamped by CD and by
 the CI image build; `local` otherwise); nobody sets it by hand.

@@ -30,6 +30,9 @@ export function transformServiceWorker(
 export function swShellPlugin(buildId: string): Plugin {
   return {
     name: "complete-offline-shell",
+    // Vite removes CSS-only JavaScript chunks after normal plugins run. Build
+    // the cache list afterward or a nonexistent chunk prevents SW installation.
+    enforce: "post",
     transformIndexHtml() {
       return [
         {

@@ -13,6 +13,7 @@
  * and so are the lookups by phone or name (members/lookup, members/search, members/list).
  * The report reads one REPEATABLE READ snapshot (reports' snapshotTenant).
  */
+import { registerCards, registerEngagement } from "../loyalty/card-routes.js";
 import { createHash } from "node:crypto";
 import express from "express";
 import type { PreAuthContext, RouteContext } from "../http.js";
@@ -139,10 +140,12 @@ export function clubRouter(sql: PreAuthContext["sql"]) {
 }
 
 export function registerPreAuth({ app, sql }: PreAuthContext) {
+  registerCards({ app, sql });
   app.use("/api/club", clubRouter(sql));
 }
 
 export function register({ app, sql, route }: RouteContext) {
+  registerEngagement({ app, sql, route });
   route("get", "/loyalty/settings", (tx, s) => getLoyaltySettings(tx, s));
   route("post", "/loyalty/settings", (tx, s, req) =>
     saveLoyaltySettings(tx, s, req.body),

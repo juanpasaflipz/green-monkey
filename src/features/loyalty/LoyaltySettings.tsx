@@ -1,3 +1,4 @@
+import { EngagementSettingsPanel } from "./Engagement";
 /**
  * Configuración › Club de lealtad (038 §2.10; critic R26: its own section after Privacidad y
  * datos, because enabling needs that notice). Owners and managers; saving asks for step-up on a
@@ -288,6 +289,7 @@ export function LoyaltySettings({
           {error}
         </p>
       )}
+      {pro && <EngagementSettingsPanel locale={locale} online={online} />}
       {view?.importAllowed && pro && (
         <LoyaltyImport
           session={session}

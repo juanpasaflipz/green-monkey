@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#164d35" />
+    <title>Green Monkey · Kiosco — prototipo</title>
+    <link rel="stylesheet" href="./kiosk.css" />
+    <script src="./kiosk.js" defer></script>
+    <script src="./appearance.js" defer></script>
+  </head>
+  <body>
+    <div class="prototype-bar">
+      <span>GREEN MONKEY / LAB</span
+      ><span>Prototipo interactivo · Menú ilustrativo · Sin cobros reales</span>
+      <button
+        id="appearance-toggle"
+        type="button"
+        aria-expanded="false"
+        aria-controls="appearance-editor"
+      >
+        Personalizar apariencia
+      </button>
+    </div>
+    <section
+      id="appearance-editor"
+      class="appearance-editor"
+      hidden
+      aria-labelledby="appearance-title"
+    >
+      <div class="appearance-intro">
+        <div>
+          <p class="eyebrow">VISTA PREVIA DEL ADMINISTRADOR</p>
+          <h2 id="appearance-title">La personalidad de tu restaurante.</h2>
+          <p>
+            Prueba una paleta y una combinación de fuentes. Los cambios se ven
+            al instante.
+          </p>
+        </div>
+        <button
+          id="appearance-close"
+          type="button"
+          aria-label="Cerrar editor de apariencia"
+        >
+          ×
+        </button>
+      </div>
+      <fieldset class="palette-field">
+        <legend>Paleta de colores</legend>
+        <div id="palette-options" class="palette-options"></div>
+      </fieldset>
+      <div class="font-setting">
+        <label for="appearance-font">Tipografía</label
+        ><select id="appearance-font">
+          <option value="signature">Firma · Inter + Georgia</option>
+          <option value="modern">Moderna · Inter</option>
+          <option value="editorial">Editorial · Georgia + Inter</option>
+        </select>
+        <p>
+          Botones, precios e instrucciones mantienen una fuente de lectura
+          clara.
+        </p>
+      </div>
+      <div class="appearance-actions">
+        <button id="appearance-reset" type="button">
+          Volver al estilo Green Monkey</button
+        ><button id="appearance-cancel" type="button">Descartar cambios</button
+        ><button id="appearance-save" type="button">
+          Guardar en este navegador
+        </button>
+      </div>
+      <p id="appearance-status" role="status">
+        Prueba local: no publica cambios en la cuenta del restaurante.
+      </p>
+    </section>
+    <div class="kiosk-shell">
+      <header class="header">
+        <img
+          class="logo"
+          src="./assets/green-monkey.png"
+          alt="Green Monkey"
+          width="2161"
+          height="728"
+        />
+        <span class="location">BUENA COMIDA.<br />A TU MANERA.</span>
+        <div class="service" aria-label="Tipo de pedido">
+          <button data-service="here" aria-pressed="true">Comer aquí</button
+          ><button data-service="away" aria-pressed="false">Para llevar</button>
+        </div>
+      </header>
+      <nav class="journey" aria-label="Progreso del pedido">
+        <span data-step="menu" aria-current="step"><b>01</b> Elige</span
+        ><span data-step="review"><b>02</b> Revisa</span
+        ><span data-step="payment"><b>03</b> Paga</span>
+      </nav>
+      <div id="menu-screen" class="menu-layout">
+        <main class="menu-main">
+          <div class="intro">
+            <p class="eyebrow">EL ANTOJO LO PONES TÚ</p>
+            <h1>Algo rico.<br /><em>Muy a tu gusto.</em></h1>
+            <p>Encuentra tu favorito. Nosotros lo preparamos.</p>
+          </div>
+          <nav class="categories" aria-label="Categorías">
+            <button data-category="all" aria-pressed="true">
+              Todo el menú <span>4</span></button
+            ><button data-category="bowls" aria-pressed="false">Bowls</button
+            ><button data-category="salads" aria-pressed="false">
+              Ensaladas
+            </button>
+          </nav>
+          <div id="products" class="products"></div>
+        </main>
+        <aside class="cart" aria-labelledby="cart-title">
+          <div class="cart-heading">
+            <p class="eyebrow">YA CASI ES HORA DE COMER</p>
+            <h2 id="cart-title">Tu pedido<span id="cart-count">0</span></h2>
+            <p class="service-label">Comer aquí</p>
+          </div>
+          <div id="cart-lines"></div>
+          <div class="cart-bottom">
+            <div class="total">
+              <span>Total</span><strong id="cart-total">$0</strong>
+            </div>
+            <p class="fine">MXN · Impuestos incluidos</p>
+            <button id="review-button" class="primary" disabled>
+              Revisar pedido <span>→</span>
+            </button>
+            <p class="payment-note">Paga en la terminal junto al kiosco.</p>
+          </div>
+        </aside>
+      </div>
+      <main id="review-screen" class="review-screen" hidden>
+        <button id="back-menu" class="back">← Seguir eligiendo</button>
+        <p class="eyebrow">TODO LISTO, A TU GUSTO</p>
+        <h1>¿Así está perfecto?</h1>
+        <p class="service-label">Comer aquí</p>
+        <div id="review-lines"></div>
+        <section class="pickup-name" aria-labelledby="pickup-name-label">
+          <label id="pickup-name-label" for="pickup-name"
+            >¿A nombre de quién? <span>Opcional</span></label
+          >
+          <input
+            id="pickup-name"
+            type="text"
+            placeholder="Tu nombre"
+            maxlength="40"
+            autocomplete="off"
+            inputmode="none"
+            spellcheck="false"
+            aria-describedby="pickup-name-hint"
+            aria-controls="name-keyboard"
+            aria-expanded="false"
+          />
+          <p id="pickup-name-hint">
+            Te llamaremos así cuando esté listo.<br />Si lo dejas vacío, te
+            llamaremos por tu número.
+          </p>
+          <div
+            id="name-keyboard"
+            hidden
+            role="group"
+            aria-label="Teclado para el nombre"
+          >
+            <div id="name-keys" class="name-keys"></div>
+            <div class="keyboard-actions">
+              <button type="button" id="name-space">Espacio</button
+              ><button
+                type="button"
+                id="name-delete"
+                aria-label="Borrar última letra"
+              >
+                Borrar</button
+              ><button type="button" id="name-done">Listo ✓</button>
+            </div>
+          </div>
+        </section>
+        <div class="review-footer">
+          <div>
+            <span>Total · MXN</span><strong id="review-total"></strong>
+            <p class="fine">Impuestos incluidos</p>
+          </div>
+          <button id="pay-button" class="primary"></button>
+        </div>
+      </main>
+      <main
+        id="payment-screen"
+        class="payment-screen"
+        hidden
+        aria-live="polite"
+      ></main>
+      <footer class="footer">
+        <button id="help-button" class="text-button">¿Necesitas ayuda?</button
+        ><span>Tu antojo. Tu ritmo. <b>green monkey.</b></span
+        ><button id="restart-button" class="text-button">
+          Empezar de nuevo
+        </button>
+      </footer>
+    </div>
+    <div id="simulation" class="simulation" hidden>
+      <span>SIMULADOR DE TERMINAL</span
+      ><button data-outcome="paid">Aprobar</button
+      ><button data-outcome="declined">Rechazar</button
+      ><button data-outcome="unknown">Respuesta pendiente</button
+      ><button data-outcome="cancelled">Cancelar</button>
+    </div>
+    <dialog id="product-dialog" aria-labelledby="product-title">
+      <form id="product-form">
+        <div class="dialog-top">
+          <span class="eyebrow">DALE TU TOQUE</span
+          ><button
+            type="button"
+            id="close-product"
+            class="close"
+            aria-label="Cerrar personalización"
+          >
+            ×
+          </button>
+        </div>
+        <div id="product-photo" class="product-photo"></div>
+        <div class="dialog-body">
+          <h2 id="product-title"></h2>
+          <p id="product-description"></p>
+          <fieldset id="base-field">
+            <legend>Elige tu base <span>Incluida</span></legend>
+            <label
+              ><input type="radio" name="base" value="Quinoa" checked />
+              Quinoa</label
+            ><label
+              ><input type="radio" name="base" value="Arroz" /> Arroz</label
+            >
+          </fieldset>
+          <fieldset>
+            <legend>Un toque extra <span>Opcional</span></legend>
+            <label
+              ><input type="checkbox" name="extra" /> Extra de aguacate
+              <strong>+$30</strong></label
+            ><label
+              ><input type="checkbox" name="sauce" /> Aderezo aparte
+              <strong>Sin costo</strong></label
+            >
+          </fieldset>
+          <p class="fine">
+            ¿Tienes alguna alergia? Consulta al equipo antes de pedir.
+          </p>
+          <button id="add-button" class="primary" type="submit"></button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="message-dialog" aria-labelledby="message-title">
+      <div class="message-body">
+        <h2 id="message-title"></h2>
+        <p id="message-text"></p>
+        <div class="message-actions">
+          <button id="message-cancel">Volver</button
+          ><button id="message-confirm" class="primary"></button>
+        </div>
+      </div>
+    </dialog>
+    <p id="announcement" class="sr-only" role="status"></p>
+  </body>
+</html>
