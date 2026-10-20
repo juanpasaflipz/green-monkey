@@ -3,7 +3,8 @@
  * any qualification command.
  *
  * Runs only when FACTURAPI_TEST_KEY (an `sk_test_` key of a Facturapi test organization with a
- * CSD) is set, against the official https://www.facturapi.io/v2 in TEST MODE ONLY: it refuses any
+ * border-region issuing postal code for the 8% IVA case) is set, against the official
+ * https://www.facturapi.io/v2 in TEST MODE ONLY: it refuses any
  * `sk_live_` value in its environment and any FACTURAPI_BASE_URL other than the official one.
  * The environment is read as given (no .env loading). Steps:
  *   1. stamps invoices for edge grosses (1, 2, 29, 116, 125.00, 107.76 + 17.24 in two groups,
@@ -41,7 +42,7 @@ import {
 } from "../server/cfdi/build";
 import { parseCfdiTotals, type CfdiTotals } from "../server/cfdi/xml";
 import type { Receptor } from "../shared/cfdi";
-import type { TaxCategory } from "../shared/fiscal";
+import { DEFAULT_FISCAL_CONTEXT, type TaxCategory } from "../shared/fiscal";
 import { cfdiPayload, recordRefunds, taxedLine } from "./fixtures/cfdi";
 
 const TIMEZONE = "America/Mexico_City";
@@ -208,7 +209,7 @@ async function main() {
   async function stamp(
     name: string,
     body: Parameters<typeof client.createInvoice>[1],
-    expected: { total: number; tax: number },
+    expected: { total: number; tax: number; rates?: string[] },
   ) {
     try {
       const created = await client.createInvoice(test, body);
@@ -217,13 +218,25 @@ async function main() {
       const totals: CfdiTotals = parseCfdiTotals(xml);
       check(
         name,
-        totals.total === expected.total && totals.taxTraslados === expected.tax,
+        totals.total === expected.total &&
+          totals.taxTraslados === expected.tax &&
+          (!expected.rates ||
+            JSON.stringify(
+              [
+                ...new Set(
+                  totals.concepts.flatMap((c) =>
+                    c.traslados.map((t) => t.rate),
+                  ),
+                ),
+              ].sort(),
+            ) === JSON.stringify([...expected.rates].sort())),
         {
           uuid: facts.uuid,
           expectedTotal: expected.total,
           stampedTotal: totals.total,
           expectedTax: expected.tax,
           stampedTax: totals.taxTraslados,
+          ...(expected.rates ? { expectedRates: expected.rates } : {}),
           concepts: totals.concepts.map((c) => ({
             noIdentificacion: c.noIdentificacion,
             importe: c.importe,
@@ -280,8 +293,17 @@ async function main() {
   } | null = null;
   let folio = 900;
   for (const c of cases) {
+    const mixedRates = c.lines.some(([, category]) => category === "iva8");
+    // The general-region fixture deliberately normalizes IVA 8% to 16%.
+    // Preserve the border case in both the line snapshots and ticket summary.
+    const ctx = mixedRates
+      ? { region: "border_north" as const, defaultCategory: "iva8" as const }
+      : DEFAULT_FISCAL_CONTEXT;
     const payload = cfdiPayload({
-      lines: c.lines.map(([gross, category]) => taxedLine(gross, category)),
+      lines: c.lines.map(([gross, category]) =>
+        taxedLine(gross, category, { ctx }),
+      ),
+      ctx,
       folio: `SB-${++folio}`,
     });
     const build = buildInvoiceRequest({
@@ -295,7 +317,8 @@ async function main() {
     });
     const r = await stamp(c.name, build.body, {
       total: build.expectedTotal,
-      tax: build.expectedTax,
+      tax: mixedRates ? 1614 : build.expectedTax,
+      ...(mixedRates ? { rates: ["0.160000", "0.080000"] } : {}),
     });
     if (r && !first && c.lines.length === 1 && c.lines[0][0] >= 12500)
       first = { uuid: r.uuid, folio: payload.ticket.folio, payload };
