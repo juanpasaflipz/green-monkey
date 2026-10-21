@@ -422,7 +422,7 @@ una sucursal» y escribe el domicilio de este local. Sin esos datos, cada ticket
 
 1. **Cuentas abiertas.** En «Órdenes», pestaña «Abiertas», cobra o revisa lo que siga
    abierto y toca «Liberar mesa» en las mesas pagadas. Los números de orden empiezan de
-   nuevo cada día a la hora de «Cierre del día de negocio» (las 04:00 si el propietario
+   nuevo cada día a la hora de «Hora de cambio del día de negocio» (las 04:00 si el propietario
    no la cambió): después de esa hora, una orden que siga abierta de un día anterior
    muestra su fecha junto al número, por ejemplo «#10 · 5 oct», en «Órdenes», en
    «Cocina» y en las comandas impresas. Es otra orden que el «#10» de hoy.

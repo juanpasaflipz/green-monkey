@@ -55,7 +55,7 @@ const base = {
     restaurantSettings: "Datos del restaurante",
     currency: "Moneda",
     timezone: "Zona horaria",
-    businessCutoff: "Cierre del día de negocio",
+    businessCutoff: "Hora de cambio del día de negocio",
     openingDays: "Días de apertura",
     currencyLocked:
       "La moneda está bloqueada porque ya existen importes registrados. No se convierten importes históricos.",
@@ -311,7 +311,7 @@ const base = {
     restaurantSettings: "Restaurant details",
     currency: "Currency",
     timezone: "Time zone",
-    businessCutoff: "Business-day cutoff",
+    businessCutoff: "Business-day rollover time",
     openingDays: "Opening days",
     currencyLocked:
       "Currency is locked because monetary records already exist. Historical amounts are not converted.",

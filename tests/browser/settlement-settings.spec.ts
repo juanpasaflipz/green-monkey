@@ -213,7 +213,7 @@ test("restaurant configuration persists and English labels remain usable", async
       .getByRole("combobox", { name: "Zona horaria", exact: true })
       .selectOption("UTC");
     await page
-      .getByLabel("Cierre del día de negocio", { exact: true })
+      .getByLabel("Hora de cambio del día de negocio", { exact: true })
       .fill("05:30");
     await page.getByRole("button", { name: "Guardar", exact: true }).click();
     await expect(
@@ -230,7 +230,7 @@ test("restaurant configuration persists and English labels remain usable", async
       page.getByRole("combobox", { name: "Zona horaria", exact: true }),
     ).toHaveValue("UTC");
     await expect(
-      page.getByLabel("Cierre del día de negocio", { exact: true }),
+      page.getByLabel("Hora de cambio del día de negocio", { exact: true }),
     ).toHaveValue("05:30");
     await page.getByRole("button", { name: "ES", exact: true }).click();
     await expect(
