@@ -81,6 +81,7 @@ import { cfdiCapability } from "./cfdi/hooks.js";
 import * as accountRoutes from "./routes/account.js";
 import * as publicOrderingRoutes from "./routes/public-ordering.js";
 import * as paymentsRoutes from "./routes/payments.js";
+import * as deliveryRoutes from "./routes/delivery.js";
 import { providerCapabilities } from "./payments/providers.js";
 import { configureWake } from "./payments/wake.js";
 import * as loyaltyRoutes from "./routes/loyalty.js";
@@ -509,6 +510,7 @@ accountRoutes.register({ app, sql, route });
 publicOrderingRoutes.register({ app, sql, route });
 // Wave 4 authenticated routes, in order: payments, loyalty, kiosk (critic R31).
 paymentsRoutes.register({ app, sql, route });
+deliveryRoutes.register({ app, sql, route });
 loyaltyRoutes.register({ app, sql, route });
 kioskRoutes.register({ app, sql, route });
 // Histórico POS Lite (040): report history imported from pos-lite, after the Wave 4 areas.

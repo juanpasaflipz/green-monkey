@@ -303,6 +303,7 @@ export const AUDIT_GROUPS = {
   ],
   access: ["access.", "employee.", "invitation.", "shift.", "account."],
   settings: [
+    "delivery_",
     "restaurant.",
     "plan.",
     "discount.controls",

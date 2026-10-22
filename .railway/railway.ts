@@ -141,6 +141,11 @@ export default defineRailway((ctx) => {
       RAILWAY_DEPLOYMENT_DRAINING_SECONDS: "30",
       // gm_<env>_worker, member of gm_jobs_worker (pooled endpoint).
       WORKER_DATABASE_URL: preserve(),
+      // Delivery browser sessions and credentials belong only to the worker.
+      // Unset keeps imports disabled until a hosted rehearsal passes.
+      DELIVERY_BROWSER_ENABLED: preserve(),
+      BROWSERBASE_API_KEY: preserve(),
+      BROWSERBASE_PROJECT_ID: preserve(),
       STRIPE_SECRET_KEY: preserve(),
       STRIPE_EXPECTED_ACCOUNT_ID: preserve(),
       STRIPE_PRICE_PRO_MONTHLY: preserve(),

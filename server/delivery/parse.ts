@@ -1,0 +1,149 @@
+import { createHash } from "node:crypto";
+import { parse } from "csv-parse/sync";
+import { Decimal } from "decimal.js";
+
+export class DeliveryError extends Error {
+  constructor(public code: string) {
+    super(code);
+  }
+}
+export function minor(value: unknown): number {
+  if (typeof value !== "string" || !/^-?\d+(\.\d{1,2})?$/.test(value.trim()))
+    throw new DeliveryError("delivery_report_invalid");
+  const n = new Decimal(value.trim()).mul(100).toNumber();
+  if (!Number.isSafeInteger(n))
+    throw new DeliveryError("delivery_report_invalid");
+  return n;
+}
+export interface ParsedDeliveryReport {
+  storeUuid: string;
+  orderCount: number;
+  gross: number;
+  adjusted: number;
+  payout: number;
+  currency: "MXN";
+  hash: string;
+}
+const required = [
+  "Store Name",
+  "Store UUID",
+  "Workflow ID",
+  "Order Date",
+  "Order Status",
+  "Currency Code",
+  "Sales (incl. VAT)",
+  "Total Sales after Adjustments (incl. VAT)",
+  "Total payout",
+];
+/** Original two-header Uber CSV; no customer data is persisted. */
+export function parseUberReport(
+  bytes: Uint8Array,
+  day: string,
+  store: string,
+  expectedStoreUuid?: string | null,
+  verifiedReportDay = false,
+  verifiedEmptyScope = false,
+): ParsedDeliveryReport {
+  if (bytes.byteLength > 10_000_000)
+    throw new DeliveryError("delivery_report_too_large");
+  let rows: string[][];
+  try {
+    rows = parse(Buffer.from(bytes), {
+      bom: true,
+      skip_empty_lines: true,
+      // Uber's descriptive preamble can have a different width. Every actual
+      // data row is checked against the recognized header below.
+      relax_column_count: true,
+    }) as string[][];
+  } catch {
+    throw new DeliveryError("delivery_report_schema");
+  }
+  const headerIndex = rows.findIndex((r) =>
+    required.every((k) => r.map((x) => x.trim()).includes(k)),
+  );
+  if (headerIndex < 0 || headerIndex > 2)
+    throw new DeliveryError("delivery_report_schema");
+  const headers = rows[headerIndex].map((x) => x.trim());
+  if (new Set(headers).size !== headers.length)
+    throw new DeliveryError("delivery_report_schema");
+  const orders = new Set<string>(),
+    storeIds = new Set<string>();
+  let gross = 0,
+    adjusted = 0,
+    payout = 0;
+  // Header-only reports cannot prove the selected store/date, so fail closed.
+  if (rows.length === headerIndex + 1)
+    if (expectedStoreUuid && verifiedReportDay && verifiedEmptyScope)
+      return {
+        storeUuid: expectedStoreUuid,
+        orderCount: 0,
+        gross: 0,
+        adjusted: 0,
+        payout: 0,
+        currency: "MXN",
+        hash: createHash("sha256").update(bytes).digest("hex"),
+      };
+    else throw new DeliveryError("delivery_empty_report");
+  for (const raw of rows.slice(headerIndex + 1)) {
+    if (raw.length !== headers.length)
+      throw new DeliveryError("delivery_report_schema");
+    const r = Object.fromEntries(headers.map((key, i) => [key, raw[i].trim()]));
+    const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(r["Order Date"]);
+    const date = m
+      ? `${m[3].length === 2 ? "20" + m[3] : m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`
+      : "";
+    const status = r["Order Status"],
+      id = r["Workflow ID"];
+    if (date) {
+      const calendar = new Date(date + "T00:00:00Z");
+      if (
+        !Number.isFinite(calendar.getTime()) ||
+        calendar.toISOString().slice(0, 10) !== date
+      )
+        throw new DeliveryError("delivery_report_scope");
+    }
+    // A refund/fee can reference an earlier order. Only accept it when the
+    // worker matched the report's own day in the portal and the store UUID is
+    // already pinned. Never relax the scope of completed orders or future dates.
+    const priorAdjustment = Boolean(
+      verifiedReportDay &&
+      expectedStoreUuid &&
+      ["", "Refund"].includes(status) &&
+      (date ? date <= day : r["Order Date"] === ""),
+    );
+    if (
+      (date !== day && !priorAdjustment) ||
+      r["Store Name"] !== store ||
+      r["Currency Code"] !== "MXN" ||
+      !r["Store UUID"]
+    )
+      throw new DeliveryError("delivery_report_scope");
+    if (expectedStoreUuid && r["Store UUID"] !== expectedStoreUuid)
+      throw new DeliveryError("delivery_store_identity_changed");
+    storeIds.add(r["Store UUID"]);
+    if (
+      !["", "Completed", "Cancelled", "Refund", "Unfulfilled"].includes(status)
+    )
+      throw new DeliveryError("delivery_report_schema");
+    if (status === "Completed") {
+      if (!id || orders.has(id))
+        throw new DeliveryError("delivery_duplicate_order");
+      orders.add(id);
+    }
+    gross += minor(r["Sales (incl. VAT)"]);
+    adjusted += minor(r["Total Sales after Adjustments (incl. VAT)"]);
+    payout += minor(r["Total payout"]);
+    if (![gross, adjusted, payout].every(Number.isSafeInteger))
+      throw new DeliveryError("delivery_report_invalid");
+  }
+  if (storeIds.size !== 1) throw new DeliveryError("delivery_report_scope");
+  return {
+    storeUuid: [...storeIds][0],
+    orderCount: orders.size,
+    gross,
+    adjusted,
+    payout,
+    currency: "MXN",
+    hash: createHash("sha256").update(bytes).digest("hex"),
+  };
+}

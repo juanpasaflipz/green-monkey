@@ -7,6 +7,8 @@ import { CSV_BOM, CSV_EOL, csvCell as textCell } from "./csv.js";
  * segment, or list it here.
  */
 export const EXPORT_TABLE_DENYLIST: ReadonlySet<string> = new Set([
+  "delivery_browser_contexts",
+  "delivery_connections",
   // Security state, credentials and account-scoped rows (a tenant-only
   // export transaction would read them empty or expose credentials).
   "sessions",
@@ -43,9 +45,20 @@ export const EXPORT_TABLE_DENYLIST: ReadonlySet<string> = new Set([
 export const EXPORT_TABLE_LABELS: Readonly<
   Record<string, readonly [string, string]>
 > = {
-  loyalty_engagement_settings: ["Opciones del club", "Club engagement settings"],
+  loyalty_engagement_settings: [
+    "Opciones del club",
+    "Club engagement settings",
+  ],
   loyalty_referrals: ["Recomendaciones del club", "Club referrals"],
   loyalty_messages: ["Mensajes del club", "Club messages"],
+  delivery_day_attempts: [
+    "Estado de reportes de delivery",
+    "Delivery report status",
+  ],
+  delivery_daily_reports: [
+    "Ventas automáticas de delivery",
+    "Automatic delivery sales",
+  ],
   audit: ["Bitácora", "Audit log"],
   business_day_settings: ["Día operativo", "Business day settings"],
   cash_count_reviews: [

@@ -9,6 +9,10 @@ import { strings, type Key } from "./i18n";
  * unknown falls back to a neutral label.
  */
 const operations: Record<string, Key> = {
+  delivery_connect: "deliveryBrowserAuditConnect",
+  delivery_verify: "deliveryBrowserAuditVerify",
+  delivery_select: "deliveryBrowserAuditSelect",
+  delivery_disconnect: "deliveryBrowserAuditDisconnect",
   "order.created": "serviceOpOrderCreated",
   "order.round": "serviceOpOrderRound",
   "order.void": "serviceOpOrderVoid",

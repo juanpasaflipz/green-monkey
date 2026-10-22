@@ -34,6 +34,7 @@ import {
 import type { DrawerView } from "./cash/DrawerCloseDialog";
 import { DrawerReviewDialog } from "./cash/DrawerReviewDialog";
 import { PaymentSettings } from "./payments/PaymentSettings";
+import { DeliveryConnections } from "./delivery/DeliveryConnections";
 import { ActiveCharges } from "./payments/ActiveCharges";
 import { MoneyControlsSettings } from "./cash/MoneyControlsSettings";
 import type { CashHistoryRow } from "./CashHistory";
@@ -205,6 +206,7 @@ export function Operations({
       )}{" "}
       {view === "settings" && (
         <>
+          {manager && <DeliveryConnections key={session.tenantId} session={session} locale={locale} online={online} />}
           <RestaurantSettings session={session} locale={locale} />
           {manager && <FiscalSettings session={session} locale={locale} />}
           {manager && <CfdiSettings session={session} locale={locale} />}

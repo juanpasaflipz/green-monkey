@@ -16,6 +16,7 @@ import loyalty from "./i18n/loyalty";
 import kiosk from "./i18n/kiosk";
 import history from "./i18n/history";
 import delivery from "./i18n/delivery";
+import deliveryBrowser from "./i18n/delivery-browser";
 
 /** Area modules, merged after the base strings. */
 export const areas = {
@@ -38,6 +39,7 @@ export const areas = {
   history,
   // Histórico de plataformas (041), after 040.
   delivery,
+  deliveryBrowser,
 };
 const base = {
   es: {
@@ -572,6 +574,7 @@ export const strings = {
     ...kiosk.es,
     ...history.es,
     ...delivery.es,
+  ...deliveryBrowser.es,
   },
   en: {
     ...base.en,
@@ -591,6 +594,7 @@ export const strings = {
     ...kiosk.en,
     ...history.en,
     ...delivery.en,
+  ...deliveryBrowser.en,
   },
 };
 export type Key = keyof typeof strings.es;
@@ -734,6 +738,7 @@ export const errorText: Record<string, readonly [string, string]> = {
   ...kiosk.errors,
   ...history.errors,
   ...delivery.errors,
+  ...deliveryBrowser.errors,
 };
 export function translateError(code: string, locale: Locale) {
   return errorText[code]?.[locale === "es" ? 0 : 1] ?? strings[locale].error;

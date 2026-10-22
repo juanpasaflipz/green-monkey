@@ -68,6 +68,7 @@ export interface Config {
  */
 export const forbiddenCredentials: Record<ProcessKind, readonly string[]> = {
   web: [
+    "BROWSERBASE_API_KEY",
     "MIGRATION_DATABASE_URL",
     "BACKUP_DATABASE_URL",
     "PROVISION_DATABASE_URL",
