@@ -60,6 +60,7 @@ class FakeDriver extends BrowserbaseDriver {
   calls: string[] = [];
   bytes: Uint8Array | null = null;
   failRelease = false;
+  pageError: Error | null = null;
   constructor() {
     super("synthetic", "synthetic");
   }
@@ -93,6 +94,7 @@ class FakeDriver extends BrowserbaseDriver {
     return this.bytes;
   }
   override async page() {
+    if (this.pageError) throw this.pageError;
     return {
       browser: {} as Browser,
       page: { goto: async () => {} } as unknown as Page,
@@ -459,6 +461,24 @@ try {
     assert.equal(view.days[0].adjusted, 11900);
     assert.ok(
       view.issues?.some((issue) => issue.errorCode === "delivery_empty_report"),
+    );
+  });
+  await test("portal timeouts become a failed day instead of hours of browser retries", async () => {
+    const [clock] =
+      await admin`select ((now() at time zone 'America/Mexico_City')::date-6)::text as day`;
+    driver.bytes = null;
+    driver.pageError = Object.assign(new Error("synthetic selector timeout"), {
+      name: "TimeoutError",
+    });
+    await admin`update delivery_browser_contexts set report_day=${clock.day}::date where tenant_id=${A}`;
+    await forceSync();
+    await run(await claim());
+    driver.pageError = null;
+    const view = await tenant(sql, A, (tx) => deliveryView(tx, owner));
+    assert.equal(view.connections[0].state, "connected");
+    assert.equal(
+      view.issues?.find((issue) => issue.day === clock.day)?.errorCode,
+      "delivery_portal_changed",
     );
   });
   await test("maintenance removes saved logins after Pro loss even in attention", async () => {

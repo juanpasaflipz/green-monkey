@@ -480,7 +480,11 @@ export const deliveryHandler: JobHandler = async (ctx) => {
     }
   } catch (e) {
     const code =
-      e instanceof DeliveryError ? e.code : "delivery_browser_unavailable";
+      e instanceof DeliveryError
+        ? e.code
+        : p.action === "sync" && e instanceof Error && e.name === "TimeoutError"
+          ? "delivery_portal_changed"
+          : "delivery_browser_unavailable";
     if (code === "delivery_lease_lost" || ctx.signal.aborted)
       throw new DeliveryError("delivery_lease_lost");
     if (
