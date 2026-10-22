@@ -66,7 +66,10 @@ retained context identifiers cannot be read by the web DB role.
 Reports keep a fixed local calendar day across retries. On connection, the worker
 retrieves yesterday. Later runs are scheduled after the restaurant's next cutoff
 plus 30 minutes. Missed days are processed sequentially. Reports still being
-generated retry every five minutes, up to 100 attempts. Sign-in expiry has a
+generated retry every five minutes for at most one hour per request. Failed days
+get at most three attempts within the catch-up window. A failed refresh never
+overwrites a nonzero snapshot with an empty file. Failure keys include the
+connection generation, keeping reconnect histories separate. Sign-in expiry has a
 separate job, which cannot start another daily sync chain. Upserts by tenant,
 platform, store and day replace a snapshot instead of adding sales. These totals
 do not create POS orders, tickets, charges or inventory movements. Only totals
@@ -89,8 +92,8 @@ The browser test starts its own Vite server and synthetic fixture. It exercises
 consent, request bodies, store selection, disconnect, mobile layout and
 accessibility without a database or merchant account.
 
-Local verification covers units, isolated database/RLS scenarios, and synthetic
-browser controls. On October 22, a read-only check of the signed-in Uber Manager
+Local verification passes 1,753 unit tests, typecheck, lint, build, isolated
+database/RLS scenarios, and six synthetic browser tests. On October 22, a read-only check of the signed-in Uber Manager
 confirmed seven report columns, a single-day date, creation date/time, and store
 labels of the form `Synthetic Cafe (123 Example St)`. Store discovery now saves
 that exact name/address label. A real single-day CSV was downloaded through the
@@ -115,7 +118,7 @@ local pilot into this implementation.
   identical store names and session longevity. The last seven existing report days are refreshed daily. Prior exports are excluded by creation timestamp/type/day/store before a new request; indistinguishable rows stay pending. Corrections older than seven days are outside this automatic window; totals remain provisional.
 - Confirm provider retention/deletion and orphan recovery after an ambiguous
   context-creation timeout. Remote creation is not an atomic DB operation.
-- Add a context cleanup sweep for inactive connections, subscription expiry and account closure; active sync jobs already clean up after Pro loss.
+- Daily maintenance removes contexts after Pro loss even for inactive connections. Unconfirmed login expiry also deletes its context. Account closure is not currently implemented in the product; any future closure flow must revoke delivery connections before removing tenant records.
 - Add reconnect notifications outside Settings and an optional onboarding entry.
 
 References: [Browserbase contexts](https://docs.browserbase.com/platform/browser/core-features/contexts),

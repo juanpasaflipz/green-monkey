@@ -25,7 +25,7 @@ export async function deliveryView(tx: Tx, s: Session): Promise<DeliveryView> {
   return {
     issues: (
       await tx`select a.provider,a.day::text as day,a.error_code from delivery_day_attempts a
-      join delivery_connections c on c.tenant_id=a.tenant_id and c.provider=a.provider and c.store_id=a.store_id
+      join delivery_connections c on c.tenant_id=a.tenant_id and c.provider=a.provider and (c.generation::text || ':' || c.store_id)=a.store_id
       where a.error_code is not null order by a.day desc limit 30`
     ).map((r) => ({
       provider: r.provider,
@@ -95,6 +95,14 @@ export async function deliveryAction(
       consent_version=${input.consent},consent_at=now(),consent_by=${s.employeeId},
       store_uuid=null,login_url=null,login_expires_at=null,error_code=null,updated_at=now() where provider=${provider}`;
     await queueDelivery(tx, s.tenantId, provider, generation, "connect");
+    await queueDelivery(
+      tx,
+      s.tenantId,
+      provider,
+      generation,
+      "maintain",
+      new Date(Date.now() + 86400000),
+    );
   } else if (input.action === "disconnect") {
     if (
       row.state === "disconnected" ||

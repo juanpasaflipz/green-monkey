@@ -71,6 +71,7 @@ export async function uberExport(
     timeZone: "UTC",
   }).format(date);
   const excludedRows = [...(checkpoint.excludedRows ?? [])];
+  const observedExcluded = new Map<string, number>();
   for (let index = 0; index < 20; index++) {
     const rows = page
       .getByRole("row")
@@ -98,7 +99,13 @@ export async function uberExport(
         excludedRows.push(identity);
         continue;
       }
-      if (excludedRows.includes(identity)) continue;
+      if (excludedRows.includes(identity)) {
+        const seen = (observedExcluded.get(identity) ?? 0) + 1;
+        observedExcluded.set(identity, seen);
+        if (seen > excludedRows.filter((value) => value === identity).length)
+          throw new DeliveryError("delivery_report_ambiguous");
+        continue;
+      }
       const download = row.getByRole("button", {
         name: "Download CSV",
         exact: true,

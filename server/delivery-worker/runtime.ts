@@ -13,7 +13,14 @@ import { entitlement } from "../entitlements.js";
 const payload = z.object({
   provider: deliveryProvider,
   generation: z.number().int(),
-  action: z.enum(["connect", "verify", "sync", "disconnect", "expire"]),
+  action: z.enum([
+    "connect",
+    "verify",
+    "sync",
+    "disconnect",
+    "expire",
+    "maintain",
+  ]),
 });
 export let deliveryDriver: BrowserbaseDriver | null = null;
 export function setDeliveryDriver(driver: BrowserbaseDriver | null) {
@@ -52,6 +59,17 @@ export async function deliveryBoot(
 export const deliveryDead: JobDeadHook = async ({ tx, job, code }) => {
   const p = payload.safeParse(job.payload);
   if (!p.success) return;
+  if (p.data.action === "maintain") {
+    await queueDelivery(
+      tx,
+      job.tenantId,
+      p.data.provider,
+      p.data.generation,
+      "maintain",
+      new Date(Date.now() + 86400000),
+    );
+    return;
+  }
   if (p.data.action === "sync" && code !== "cancelled") {
     const [r] = await tx`select c.store_id,b.report_day::text as day,
       (((now() at time zone r.timezone)::date+1)+(r.cutoff+30)*interval '1 minute') at time zone r.timezone as next_run
@@ -62,7 +80,7 @@ export const deliveryDead: JobDeadHook = async ({ tx, job, code }) => {
     if (r?.store_id) {
       if (r.day)
         await tx`insert into delivery_day_attempts(tenant_id,provider,store_id,day,error_code)
-        values(${job.tenantId},${p.data.provider},${r.store_id},${r.day},'delivery_retry_exhausted')
+        values(${job.tenantId},${p.data.provider},${p.data.generation + ":" + r.store_id},${r.day},'delivery_retry_exhausted')
         on conflict(tenant_id,provider,store_id,day) do update set error_code=excluded.error_code,
           attempts=delivery_day_attempts.attempts+1,next_attempt_at=now()+interval '1 day',updated_at=now()`;
       await tx`update delivery_browser_contexts set report_day=null,download_session_id=null,
@@ -112,6 +130,7 @@ export const deliveryHandler: JobHandler = async (ctx) => {
     const [r] =
       await tx`select * from delivery_connections where provider=${p.provider} for update`;
     if (!r || r.generation !== p.generation) return null;
+    if (p.action === "maintain" && r.state === "disconnected") return null;
     if (p.action === "expire" && r.state !== "awaiting_login") return null;
     if (
       p.action === "sync" &&
@@ -142,6 +161,7 @@ export const deliveryHandler: JobHandler = async (ctx) => {
       if (!lock) throw new DeliveryError("delivery_lease_lost");
       return fn(tx);
     });
+  const attemptKey = `${p.generation}:${row.store_id}`;
   let syncDay: string | null = null;
   let syncNext: Date | null = null;
   let syncYesterday: string | null = null;
@@ -182,8 +202,9 @@ export const deliveryHandler: JobHandler = async (ctx) => {
   try {
     if (p.action === "expire") {
       await releaseStored();
+      if (row.context_id) await driver.deleteContext(row.context_id, signal);
       await work(async (tx) => {
-        await tx`update delivery_browser_contexts set session_id=null where provider=${p.provider}`;
+        await tx`update delivery_browser_contexts set session_id=null,context_id=null,identity_verified=false where provider=${p.provider}`;
       });
       await update("attention", { error: "delivery_reconnect" });
       return;
@@ -205,6 +226,19 @@ export const deliveryHandler: JobHandler = async (ctx) => {
         await tx`update delivery_browser_contexts set identity_verified=false,download_scope_verified=false,context_id=null,download_session_id=null,download_started_at=null,request_started_at=null,verified_stores=null where provider=${p.provider}`;
       });
       await update("attention", { error: "pro_required" });
+      return;
+    }
+    if (p.action === "maintain") {
+      await work((tx) =>
+        queueDelivery(
+          tx,
+          ctx.job.tenantId,
+          p.provider,
+          p.generation,
+          "maintain",
+          new Date(Date.now() + 86400000),
+        ),
+      );
       return;
     }
     if (p.action === "verify" && row.verified_stores) {
@@ -244,18 +278,19 @@ export const deliveryHandler: JobHandler = async (ctx) => {
       ), progress as (
         select max(day) as last_day from (
           select day from delivery_daily_reports where provider=${p.provider} and store_id=${row.store_uuid}
-          union all select day from delivery_day_attempts where provider=${p.provider} and store_id=${row.store_id}
+          union all select day from delivery_day_attempts where provider=${p.provider} and store_id=${attemptKey}
         ) days
       ) select yesterday::text, next_run,
         (case when last_day is null or ${row.store_uuid}::text is null then yesterday
           when last_day<yesterday then greatest(last_day+1,yesterday-29)
-          else coalesce((select day from delivery_day_attempts where provider=${p.provider} and store_id=${row.store_id}
-            and error_code is not null and next_attempt_at<=now() and day>=yesterday-29
+          else coalesce((select day from delivery_day_attempts where provider=${p.provider} and store_id=${attemptKey}
+            and error_code is not null and attempts<3 and next_attempt_at<=now() and day>=yesterday-29
+            and not exists(select 1 from delivery_daily_reports d where d.provider=delivery_day_attempts.provider and d.store_id=${row.store_uuid} and d.day=delivery_day_attempts.day)
             order by updated_at limit 1),
             (select d.day from delivery_daily_reports d where d.provider=${p.provider} and d.store_id=${row.store_uuid}
               and d.day>=yesterday-6 and d.updated_at<today_start
-              and not exists(select 1 from delivery_day_attempts a where a.provider=d.provider and a.store_id=${row.store_id}
-                and a.day=d.day and a.error_code is not null and a.next_attempt_at>now())
+              and not exists(select 1 from delivery_day_attempts a where a.provider=d.provider and a.store_id=${attemptKey}
+                and a.day=d.day and a.error_code is not null and (a.next_attempt_at>now() or a.attempts>=3))
               order by d.day desc limit 1)) end)::text as day
         from calendar,progress`,
       );
@@ -298,11 +333,21 @@ export const deliveryHandler: JobHandler = async (ctx) => {
           current.state === "disconnecting"
         )
           return;
+        if (
+          report.orderCount === 0 &&
+          report.adjusted === 0 &&
+          report.gross === 0
+        ) {
+          const [previous] =
+            await tx`select 1 from delivery_daily_reports where provider=${p.provider}
+            and store_id=${report.storeUuid} and day=${syncDay}::date and (order_count<>0 or adjusted<>0 or gross<>0)`;
+          if (previous) throw new DeliveryError("delivery_empty_report");
+        }
         await tx`insert into delivery_daily_reports(tenant_id,provider,store_id,day,order_count,currency,gross,adjusted,payout,source_hash)
           values(${ctx.job.tenantId},${p.provider},${report.storeUuid},${syncDay},${report.orderCount},${report.currency},${report.gross},${report.adjusted},${report.payout},${report.hash})
           on conflict(tenant_id,provider,store_id,day) do update set order_count=excluded.order_count,gross=excluded.gross,
           adjusted=excluded.adjusted,payout=excluded.payout,source_hash=excluded.source_hash,updated_at=now()`;
-        await tx`update delivery_day_attempts set error_code=null,updated_at=now() where provider=${p.provider} and store_id=${row.store_id} and day=${syncDay}::date`;
+        await tx`update delivery_day_attempts set error_code=null,updated_at=now() where provider=${p.provider} and store_id=${attemptKey} and day=${syncDay}::date`;
         await tx`update delivery_browser_contexts set identity_verified=true,download_scope_verified=false,report_day=null,download_session_id=null,download_started_at=null,request_started_at=null where provider=${p.provider}`;
         await tx`update delivery_connections set store_uuid=${report.storeUuid},state='connected',last_synced_at=now(),error_code=null,updated_at=now() where provider=${p.provider}`;
         await queueDelivery(
@@ -318,6 +363,13 @@ export const deliveryHandler: JobHandler = async (ctx) => {
       // before the next job opens a browser; the provider also bounds its lifetime.
       await releaseStored().catch(() => {});
     };
+    if (
+      p.action === "sync" &&
+      row.request_started_at &&
+      !row.download_session_id &&
+      new Date(row.request_started_at).getTime() < Date.now() - 60 * 60000
+    )
+      throw new DeliveryError("delivery_download_timeout");
     // Poll an existing download without opening a browser or clicking it again.
     // The marker is committed before the click, covering crashes after dispatch.
     if (p.action === "sync" && row.download_session_id) {
@@ -466,7 +518,7 @@ export const deliveryHandler: JobHandler = async (ctx) => {
         )
           return;
         await tx`insert into delivery_day_attempts(tenant_id,provider,store_id,day,error_code)
-          values(${ctx.job.tenantId},${p.provider},${row.store_id},${syncDay},${code})
+          values(${ctx.job.tenantId},${p.provider},${attemptKey},${syncDay},${code})
           on conflict(tenant_id,provider,store_id,day) do update set error_code=excluded.error_code,
             attempts=delivery_day_attempts.attempts+1,next_attempt_at=now()+interval '1 day',updated_at=now()`;
         await tx`update delivery_browser_contexts set report_day=null,download_session_id=null,download_started_at=null,request_started_at=null where provider=${p.provider}`;
@@ -489,7 +541,7 @@ export const deliveryHandler: JobHandler = async (ctx) => {
     const retry =
       ["delivery_browser_unavailable", "delivery_interrupted"].includes(code) ||
       p.action === "disconnect";
-    if (p.action === "sync" && !retry) await releaseStored();
+    if (p.action === "sync" && !retry) await releaseStored().catch(() => {});
     // Transient retries retain the action's state, so a retry can resume it.
     await update(retry ? row.state : "attention", { error: code });
     if (!retry) return;

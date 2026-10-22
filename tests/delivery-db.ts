@@ -412,6 +412,18 @@ try {
     assert.equal(saved.session_id, "synthetic-cleanup");
     driver.failRelease = false;
   });
+  await test("the daily cursor refreshes a stale report within seven days", async () => {
+    const [clock] =
+      await admin`select ((now() at time zone 'America/Mexico_City')::date-4)::text as day`;
+    await admin`update delivery_daily_reports set updated_at=now()-interval '1 day' where tenant_id=${A} and day=${clock.day}::date`;
+    driver.bytes = uberFixture(clock.day);
+    await forceSync();
+    await admin`update delivery_browser_contexts set report_day=null where tenant_id=${A}`;
+    await run(await claim());
+    const [refreshed] =
+      await admin`select updated_at>now()-interval '1 minute' as fresh from delivery_daily_reports where tenant_id=${A} and day=${clock.day}::date`;
+    assert.equal(refreshed.fresh, true);
+  });
   await test("a newly confirmed same-name store has a separate UUID history", async () => {
     const [clock] =
       await admin`select ((now() at time zone 'America/Mexico_City')::date-1)::text as day`;
@@ -437,6 +449,29 @@ try {
         .length,
       0,
     );
+  });
+  await test("a refresh cannot erase verified sales with an empty export", async () => {
+    driver.bytes = Buffer.from(uberHeaders.join(","));
+    await admin`update delivery_browser_contexts set download_session_id='synthetic-zero',download_started_at=now(),download_scope_verified=true where tenant_id=${A}`;
+    await forceSync();
+    await run(await claim());
+    const view = await tenant(sql, A, (tx) => deliveryView(tx, owner));
+    assert.equal(view.days[0].adjusted, 11900);
+    assert.ok(
+      view.issues?.some((issue) => issue.errorCode === "delivery_empty_report"),
+    );
+  });
+  await test("maintenance removes saved logins after Pro loss even in attention", async () => {
+    await admin`update delivery_connections set state='attention' where tenant_id=${A}`;
+    await admin`update restaurant_entitlements set access_until=now()-interval '1 day',status='canceled' where tenant_id=${A}`;
+    await admin`update jobs set next_at=now()+interval '1 day' where tenant_id=${A} and state in ('queued','available')`;
+    await admin`update jobs set next_at=now() where tenant_id=${A} and payload->>'action'='maintain'`;
+    await run(await claim());
+    const [saved] =
+      await admin`select context_id,session_id from delivery_browser_contexts where tenant_id=${A}`;
+    assert.equal(saved.context_id, null);
+    assert.equal(saved.session_id, null);
+    await admin`update restaurant_entitlements set access_until=now()+interval '1 day',status='active' where tenant_id=${A}`;
   });
   await test("disconnect invalidates queued generations and deletes retained session", async () => {
     await tenant(sql, A, (tx) =>

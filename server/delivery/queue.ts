@@ -6,7 +6,7 @@ export async function queueDelivery(
   tenantId: string,
   provider: DeliveryProvider,
   generation: number,
-  action: "connect" | "verify" | "sync" | "disconnect" | "expire",
+  action: "connect" | "verify" | "sync" | "disconnect" | "expire" | "maintain",
   runAt?: Date,
 ) {
   await enqueueJob(
