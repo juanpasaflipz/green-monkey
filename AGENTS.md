@@ -1,6 +1,6 @@
 # Working rules for agents
 
-These rules bind every coding agent in this repository (Claude Code, Codex, and any subagent they start). The product brief is `AGENT_PROMPT.md`; binding product decisions are in `docs/decisions/LEAD_DECISIONS.md`. When a rule here conflicts with an explicit instruction from the owner, the owner wins.
+These rules bind every coding agent that works in this repository: Claude Code, Codex, Cursor, GitHub Copilot, Gemini, Devin, Jules, Aider, any other tool, and any subagent they start. Tool-specific notes live in `CLAUDE.md` and similar files, but this file is the single source of truth; those files may add to it, never contradict it. The product brief is `AGENT_PROMPT.md`; binding product decisions are in `docs/decisions/LEAD_DECISIONS.md`. When a rule here conflicts with an explicit instruction from the owner, the owner wins.
 
 ## 1. One task, one branch, one worktree
 
@@ -20,7 +20,7 @@ These rules bind every coding agent in this repository (Claude Code, Codex, and 
 
 - At most **3 implementation agents** at once. Reviews, searches and read-only research do not count toward the limit.
 - Split work so each agent owns a separate area (for example server route + tests vs. UI vs. docs), never "half a file each".
-- Long implementations or reviews run as standalone agents told to work in small, committed steps (workflow agents are killed after 3 minutes without progress).
+- Long implementations or reviews work in small, committed steps so an interrupted agent loses little.
 - The coordinating session merges results; parallel agents do not merge each other's branches.
 
 ## 4. Definition of done (before a PR)
@@ -33,8 +33,8 @@ These rules bind every coding agent in this repository (Claude Code, Codex, and 
 
 ## 5. Independent review before merge
 
-- The author never approves its own work. Every PR gets a review from a different agent or model than the one that wrote it: `/codex review` for Claude-written changes, Claude `/review` for Codex-written changes.
-- Changes to money, fiscal (CFDI), RLS/grants, migrations, auth or payments also get `/codex challenge` (adversarial).
+- The author never approves its own work. Every PR gets a review from a different agent, built on a different model family than the one that wrote it (for example, Codex reviews Claude's work and Claude reviews Codex's or Cursor's).
+- Changes to money, fiscal (CFDI), RLS/grants, migrations, auth or payments also get an adversarial review whose goal is to break the change.
 - Each finding is fixed or answered in the PR with a reason. Unresolved findings block the merge.
 
 ## 6. Merging and deploying
@@ -55,6 +55,16 @@ These rules bind every coding agent in this repository (Claude Code, Codex, and 
 - Once a week, prune stale worktrees and detached-HEAD checkouts that have no unmerged commits.
 - Do not leave work uncommitted in a worktree overnight; commit to the branch (pushing is fine) so nothing depends on `/tmp` surviving.
 
-## 9. When to revisit tooling
+## 9. External agents and collaborators
+
+Any agent not run by the owner in this machine's sessions (a hosted agent, a contractor's agent, a bot opening PRs) also follows these rules:
+
+- Work only on your own branch and open a PR to `main`. Never push to `main` or to another agent's branch.
+- State in the PR description which agent and model wrote the change, and paste the checks you ran with their results.
+- You have no access to production, secrets, or real customer data, and must not ask for them. Use the fakes (`npm run dev:payments-fake`, `npm run dev:facturapi-fake`) and local databases.
+- If you are blocked or a rule seems wrong for your task, say so in the PR or an issue and stop; do not work around it.
+- Do not edit `AGENTS.md`, `CLAUDE.md`, CI workflows, branch protection or `.github/` settings unless the task explicitly asks for it.
+
+## 10. When to revisit tooling
 
 These rules use only Claude Code, Codex and git worktrees. Revisit a meta-harness such as Omnigent when people other than the owner need to watch or steer agent sessions, or when enforced spend caps across vendors become necessary.

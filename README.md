@@ -13,6 +13,10 @@ Pilot, launch and operations:
 - Restaurant-day go-live gate: two fictional business days through the UI on a production-mode web and worker, then a DB reconciliation ([acceptance status](docs/ACCEPTANCE_STATUS.md)). October 16 and 17 runs passed for the deployed revision, including payments/kiosk against fake providers; the real CFDI branch was skipped. Evidence: [beta readiness](docs/BETA_READINESS.md). Local run: "Build and checks" below.
 - [Provisioning](docs/PROVISIONING.md), [backups and restore](docs/BACKUP_RESTORE.md), [load test](docs/LOAD_TEST.md) and the [operator guide](docs/OPERATIONS.md). Staging and production restore drills have recorded evidence; today's production backup passed. Staging target/stress capacity qualification remains unverified.
 
+## Working on this repository (people and agents)
+
+Read [`AGENTS.md`](AGENTS.md) before making changes. It defines how work is split into branches and worktrees, what must pass before a PR, how changes are reviewed, and what agents may never do. Most coding agents load it automatically; Gemini CLI and Aider load it through `.gemini/settings.json` and `.aider.conf.yml`.
+
 ## Local setup
 
 Use Node 24.21.0 (pinned in `.nvmrc` and the Dockerfile) and PostgreSQL 16+ (CI qualifies on PostgreSQL 18). Dependencies are pinned in `package-lock.json`.
