@@ -17,10 +17,13 @@ struct KioskLink: Equatable, Sendable {
         case notAKiosk
         case legacy
         case missingToken
+        case invalidToken
+        case pairingCode
     }
 
     static func parse(_ raw: String) -> Result<KioskLink, Problem> {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isPairingCode(trimmed) { return .failure(.pairingCode) }
         guard let components = URLComponents(string: trimmed),
               let scheme = components.scheme?.lowercased(),
               let host = components.host?.lowercased(), !host.isEmpty
@@ -40,9 +43,14 @@ struct KioskLink: Equatable, Sendable {
         guard components.path == "/kiosk" || components.path == "/kiosk/" else {
             return .failure(.notAKiosk)
         }
-        guard let token = components.fragment, !token.isEmpty,
-              !token.contains(where: { $0.isWhitespace })
+        guard let token = components.fragment, !token.isEmpty
         else { return .failure(.missingToken) }
+        if isPairingCode(token) { return .failure(.pairingCode) }
+        // Match shared/public-ordering.ts PUBLIC_TOKEN: 16 random bytes encoded
+        // as 22 base64url characters. Accepting a station name or pairing code
+        // here used to persist a link that the web page immediately rejected.
+        guard token.range(of: "^[A-Za-z0-9_-]{22}$", options: .regularExpression) != nil
+        else { return .failure(.invalidToken) }
 
         var clean = URLComponents()
         clean.scheme = scheme
@@ -74,16 +82,23 @@ struct KioskLink: Equatable, Sendable {
     private static func isLocal(_ host: String) -> Bool {
         host == "localhost" || host.hasSuffix(".local") || host.allSatisfy { $0.isNumber || $0 == "." }
     }
+
+    private static func isPairingCode(_ value: String) -> Bool {
+        let compact = value.filter { !$0.isWhitespace }
+        return compact.range(of: "^[0-9]{8}$", options: .regularExpression) != nil
+    }
 }
 
 extension KioskLink.Problem {
     var message: String {
         switch self {
-        case .notAURL: "Eso no es un enlace."
+        case .notAURL: "Pega el enlace completo del kiosco (https://…/kiosk#…), no su nombre ni el código de vinculación."
         case .insecure: "El enlace debe empezar con https://."
         case .notAKiosk: "Ese enlace no es de un kiosco. Usa el de Configuración → Pedidos en línea → Agregar kiosco."
         case .legacy: "Ese enlace es de la versión anterior y ya no funciona. Crea uno nuevo en Configuración → Pedidos en línea."
         case .missingToken: "Al enlace le falta su código (la parte después de #). Cópialo completo."
+        case .invalidToken: "El enlace del kiosco está incompleto o no es válido. Copia el enlace completo de Pedidos en línea, incluida la parte después de #."
+        case .pairingCode: "Ese es el código de vinculación de 8 dígitos. Primero pega el enlace completo del kiosco. Cuando abra el menú, mantén presionado el nombre del restaurante 3 segundos → Configurar este kiosco e ingresa el código allí."
         }
     }
 }
