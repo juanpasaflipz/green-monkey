@@ -49,9 +49,37 @@ export async function deliveryBoot(
   timer.unref();
 }
 
-export const deliveryDead: JobDeadHook = async ({ tx, job }) => {
+export const deliveryDead: JobDeadHook = async ({ tx, job, code }) => {
   const p = payload.safeParse(job.payload);
   if (!p.success) return;
+  if (p.data.action === "sync" && code !== "cancelled") {
+    const [r] = await tx`select c.store_id,b.report_day::text as day,
+      (((now() at time zone r.timezone)::date+1)+(r.cutoff+30)*interval '1 minute') at time zone r.timezone as next_run
+      from delivery_connections c join delivery_browser_contexts b using(tenant_id,provider)
+      join restaurants r on r.id=c.tenant_id
+      where c.provider=${p.data.provider} and c.generation=${p.data.generation}
+        and c.state in ('connected','syncing') for update of c,b`;
+    if (r?.store_id) {
+      if (r.day)
+        await tx`insert into delivery_day_attempts(tenant_id,provider,store_id,day,error_code)
+        values(${job.tenantId},${p.data.provider},${r.store_id},${r.day},'delivery_retry_exhausted')
+        on conflict(tenant_id,provider,store_id,day) do update set error_code=excluded.error_code,
+          attempts=delivery_day_attempts.attempts+1,next_attempt_at=now()+interval '1 day',updated_at=now()`;
+      await tx`update delivery_browser_contexts set report_day=null,download_session_id=null,
+        download_started_at=null,request_started_at=null where provider=${p.data.provider}`;
+      await tx`update delivery_connections set state='connected',error_code=null,updated_at=now()
+        where provider=${p.data.provider} and generation=${p.data.generation}`;
+      await queueDelivery(
+        tx,
+        job.tenantId,
+        p.data.provider,
+        p.data.generation,
+        "sync",
+        r.next_run,
+      );
+      return;
+    }
+  }
   await tx`update delivery_connections set state=case when state='disconnecting' then state else 'attention' end,
     error_code='delivery_retry_exhausted',login_url=null,login_expires_at=null,updated_at=now()
     where provider=${p.data.provider} and generation=${p.data.generation}
@@ -114,6 +142,28 @@ export const deliveryHandler: JobHandler = async (ctx) => {
       if (!lock) throw new DeliveryError("delivery_lease_lost");
       return fn(tx);
     });
+  let syncDay: string | null = null;
+  let syncNext: Date | null = null;
+  let syncYesterday: string | null = null;
+  const releaseStored = async () => {
+    if (!row.session_id) return;
+    await driver.release(
+      row.session_id,
+      AbortSignal.any([ctx.signal, AbortSignal.timeout(45000)]),
+    );
+    await work(async (tx) => {
+      await tx`update delivery_browser_contexts set session_id=null where provider=${p.provider}`;
+    });
+    row.session_id = null;
+  };
+  const finishVerify = async (stores: DeliveryStore[]) => {
+    await releaseStored();
+    await work(async (tx) => {
+      await tx`update delivery_browser_contexts set verified_stores=null,report_day=null where provider=${p.provider}`;
+      await tx`update delivery_connections set state='choose_store',stores=${tx.json(stores)},login_url=null,
+        login_expires_at=null,error_code=null,updated_at=now() where provider=${p.provider} and generation=${p.generation}`;
+    });
+  };
   const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(120000)]);
   const update = async (
     state: string,
@@ -131,7 +181,7 @@ export const deliveryHandler: JobHandler = async (ctx) => {
     });
   try {
     if (p.action === "expire") {
-      if (row.session_id) await driver.release(row.session_id, signal);
+      await releaseStored();
       await work(async (tx) => {
         await tx`update delivery_browser_contexts set session_id=null where provider=${p.provider}`;
       });
@@ -139,29 +189,37 @@ export const deliveryHandler: JobHandler = async (ctx) => {
       return;
     }
     if (p.action === "disconnect") {
-      if (row.session_id) await driver.release(row.session_id, signal);
+      await releaseStored();
       if (row.context_id) await driver.deleteContext(row.context_id, signal);
       await work(async (tx) => {
-        await tx`update delivery_browser_contexts set context_id=null,session_id=null,report_day=null where provider=${p.provider}`;
-        await tx`update delivery_connections set state='disconnected',stores='[]',store_id=null,store_name=null,
+        await tx`update delivery_browser_contexts set identity_verified=false,download_scope_verified=false,context_id=null,session_id=null,report_day=null,download_session_id=null,download_started_at=null,request_started_at=null,verified_stores=null where provider=${p.provider}`;
+        await tx`update delivery_connections set state='disconnected',stores='[]',store_id=null,store_name=null,store_uuid=null,
           login_url=null,login_expires_at=null,error_code=null,updated_at=now() where provider=${p.provider} and generation=${p.generation}`;
       });
       return;
     }
     if (!(await work(async (tx) => (await entitlement(tx)).plan === "pro"))) {
-      if (row.session_id) await driver.release(row.session_id, signal);
+      await releaseStored();
+      if (row.context_id) await driver.deleteContext(row.context_id, signal);
+      await work(async (tx) => {
+        await tx`update delivery_browser_contexts set identity_verified=false,download_scope_verified=false,context_id=null,download_session_id=null,download_started_at=null,request_started_at=null,verified_stores=null where provider=${p.provider}`;
+      });
       await update("attention", { error: "pro_required" });
+      return;
+    }
+    if (p.action === "verify" && row.verified_stores) {
+      await finishVerify(row.verified_stores as DeliveryStore[]);
       return;
     }
     // A reconnect must start with a clean browser: never expose the previous owner's session.
     let contextId = row.context_id as string | null;
     if (p.action === "connect" && row.state === "preparing" && contextId) {
-      if (row.session_id) await driver.release(row.session_id, signal);
+      await releaseStored();
       await driver.deleteContext(contextId, signal);
       contextId = null;
       row.session_id = null;
       await work(async (tx) => {
-        await tx`update delivery_browser_contexts set context_id=null,session_id=null,report_day=null where provider=${p.provider}`;
+        await tx`update delivery_browser_contexts set identity_verified=false,download_scope_verified=false,context_id=null,session_id=null,report_day=null,download_session_id=null,download_started_at=null,request_started_at=null,verified_stores=null where provider=${p.provider}`;
       });
     }
     if (!contextId) {
@@ -169,6 +227,112 @@ export const deliveryHandler: JobHandler = async (ctx) => {
       await work(async (tx) => {
         await tx`update delivery_browser_contexts set context_id=${contextId} where provider=${p.provider}`;
       });
+    }
+    if (p.action === "sync" && !row.pinned_day && row.session_id)
+      await releaseStored();
+    let clock:
+      { yesterday: string; day: string | null; next_run: Date } | undefined;
+    if (p.action === "sync") {
+      [clock] = await work(
+        (tx) => tx<
+          { yesterday: string; day: string | null; next_run: Date }[]
+        >`with calendar as (
+        select ((now() at time zone timezone)::date-1) as yesterday,
+        ((now() at time zone timezone)::date)::timestamp at time zone timezone as today_start,
+        (((now() at time zone timezone)::date+1)+(cutoff+30)*interval '1 minute') at time zone timezone as next_run
+        from restaurants where id=${ctx.job.tenantId}
+      ), progress as (
+        select max(day) as last_day from (
+          select day from delivery_daily_reports where provider=${p.provider} and store_id=${row.store_uuid}
+          union all select day from delivery_day_attempts where provider=${p.provider} and store_id=${row.store_id}
+        ) days
+      ) select yesterday::text, next_run,
+        (case when last_day is null or ${row.store_uuid}::text is null then yesterday
+          when last_day<yesterday then greatest(last_day+1,yesterday-29)
+          else coalesce((select day from delivery_day_attempts where provider=${p.provider} and store_id=${row.store_id}
+            and error_code is not null and next_attempt_at<=now() and day>=yesterday-29
+            order by updated_at limit 1),
+            (select d.day from delivery_daily_reports d where d.provider=${p.provider} and d.store_id=${row.store_uuid}
+              and d.day>=yesterday-6 and d.updated_at<today_start
+              and not exists(select 1 from delivery_day_attempts a where a.provider=d.provider and a.store_id=${row.store_id}
+                and a.day=d.day and a.error_code is not null and a.next_attempt_at>now())
+              order by d.day desc limit 1)) end)::text as day
+        from calendar,progress`,
+      );
+      if (!clock) throw new DeliveryError("delivery_report_scope");
+      if (!row.pinned_day && !clock.day) {
+        await work((tx) =>
+          queueDelivery(
+            tx,
+            ctx.job.tenantId,
+            p.provider,
+            p.generation,
+            "sync",
+            clock!.next_run,
+          ),
+        );
+        return;
+      }
+      syncDay = (row.pinned_day ?? clock.day) as string;
+      syncNext = clock.next_run;
+      syncYesterday = clock.yesterday;
+      await work(async (tx) => {
+        await tx`update delivery_browser_contexts set report_day=${syncDay}::date where provider=${p.provider}`;
+      });
+    }
+    const finishReport = async (bytes: Uint8Array) => {
+      if (!syncDay || !clock) throw new DeliveryError("delivery_report_scope");
+      const report = parseUberReport(
+        bytes,
+        syncDay,
+        row.store_name,
+        row.store_uuid,
+        Boolean(row.download_session_id && row.download_scope_verified),
+        Boolean(row.identity_verified),
+      );
+      await work(async (tx) => {
+        const [current] =
+          await tx`select generation,state from delivery_connections where provider=${p.provider} for update`;
+        if (
+          current?.generation !== p.generation ||
+          current.state === "disconnecting"
+        )
+          return;
+        await tx`insert into delivery_daily_reports(tenant_id,provider,store_id,day,order_count,currency,gross,adjusted,payout,source_hash)
+          values(${ctx.job.tenantId},${p.provider},${report.storeUuid},${syncDay},${report.orderCount},${report.currency},${report.gross},${report.adjusted},${report.payout},${report.hash})
+          on conflict(tenant_id,provider,store_id,day) do update set order_count=excluded.order_count,gross=excluded.gross,
+          adjusted=excluded.adjusted,payout=excluded.payout,source_hash=excluded.source_hash,updated_at=now()`;
+        await tx`update delivery_day_attempts set error_code=null,updated_at=now() where provider=${p.provider} and store_id=${row.store_id} and day=${syncDay}::date`;
+        await tx`update delivery_browser_contexts set identity_verified=true,download_scope_verified=false,report_day=null,download_session_id=null,download_started_at=null,request_started_at=null where provider=${p.provider}`;
+        await tx`update delivery_connections set store_uuid=${report.storeUuid},state='connected',last_synced_at=now(),error_code=null,updated_at=now() where provider=${p.provider}`;
+        await queueDelivery(
+          tx,
+          ctx.job.tenantId,
+          p.provider,
+          p.generation,
+          "sync",
+          new Date(Date.now() + 10000),
+        );
+      });
+      // Cleanup must not discard a valid import. A retained session is released
+      // before the next job opens a browser; the provider also bounds its lifetime.
+      await releaseStored().catch(() => {});
+    };
+    // Poll an existing download without opening a browser or clicking it again.
+    // The marker is committed before the click, covering crashes after dispatch.
+    if (p.action === "sync" && row.download_session_id) {
+      const bytes = await driver.download(row.download_session_id, signal);
+      if (bytes) {
+        await finishReport(bytes);
+        return;
+      }
+      if (new Date(row.download_started_at).getTime() < Date.now() - 30 * 60000)
+        throw new DeliveryError("delivery_download_timeout");
+      return {
+        status: "retry",
+        code: "delivery_report_pending",
+        afterMs: 15000,
+      };
     }
     let remote;
     if (row.session_id) {
@@ -193,6 +357,7 @@ export const deliveryHandler: JobHandler = async (ctx) => {
       await work(async (tx) => {
         await tx`update delivery_browser_contexts set session_id=${remote!.id} where provider=${p.provider}`;
       });
+      row.session_id = remote.id;
     }
     const attached = await driver.page(remote, signal);
     try {
@@ -218,77 +383,46 @@ export const deliveryHandler: JobHandler = async (ctx) => {
       }
       if (p.action === "verify") {
         const stores = await uberStores(attached.page);
-        await driver.release(remote.id, signal);
+        // Persist successful discovery before asynchronous release. A retry can
+        // finish confirmation without forcing the owner through another login.
         await work(async (tx) => {
-          await tx`update delivery_browser_contexts set session_id=null,report_day=null where provider=${p.provider}`;
-          await tx`update delivery_connections set state='choose_store',stores=${tx.json(stores)},login_url=null,
-            login_expires_at=null,error_code=null,updated_at=now() where provider=${p.provider} and generation=${p.generation}`;
+          await tx`update delivery_browser_contexts set verified_stores=${tx.json(stores)} where provider=${p.provider}`;
         });
+        await finishVerify(stores);
         return;
       }
-      // Pin a report date across retries and midnight. Catch up one missing day per
-      // job after outages. Platform calendar dates remain separate from POS dates.
-      const [clock] = await work(
-        (
-          tx,
-        ) => tx`select ((now() at time zone timezone)::date-1)::text as yesterday,
-        least(coalesce((select max(day)+1 from delivery_daily_reports where provider=${p.provider} and store_id=${row.store_id}),
-          (now() at time zone timezone)::date-1),(now() at time zone timezone)::date-1)::text as day,
-        (((now() at time zone timezone)::date+1)+(cutoff+30)*interval '1 minute') at time zone timezone as next_run
-        from restaurants where id=${ctx.job.tenantId}`,
-      );
-      if (!clock) throw new DeliveryError("delivery_report_scope");
-      const day = (row.pinned_day ?? clock.day) as string;
-      await work(async (tx) => {
-        await tx`update delivery_browser_contexts set report_day=${day}::date where provider=${p.provider}`;
-      });
       const previous = await driver.download(remote.id, signal);
-      if (!previous) {
-        await update("syncing");
-        const exported = await uberExport(
-          attached.page,
-          { id: row.store_id, name: row.store_name },
-          day,
-        );
-        if (exported !== "downloaded") {
-          // Report generation runs at Uber. It need not keep a billed browser
-          // alive between polls; the next job reconnects using the same context.
-          await driver.release(remote.id, signal);
-          await work(async (tx) => {
-            await tx`update delivery_browser_contexts set session_id=null where provider=${p.provider}`;
-          });
-        }
-        return {
-          status: "retry",
-          code: "delivery_report_pending",
-          afterMs: exported === "downloaded" ? 15000 : 300000,
-        };
+      if (previous) {
+        await finishReport(previous);
+        return;
       }
-      const report = parseUberReport(previous, day, row.store_name);
-      await driver.release(remote.id, signal);
-      await work(async (tx) => {
-        const [current] =
-          await tx`select generation,state from delivery_connections where provider=${p.provider} for update`;
-        if (
-          current?.generation !== p.generation ||
-          current.state === "disconnecting"
-        )
-          return;
-        await tx`insert into delivery_daily_reports(tenant_id,provider,store_id,day,order_count,currency,gross,adjusted,payout,source_hash)
-          values(${ctx.job.tenantId},${p.provider},${row.store_id},${day},${report.orderCount},${report.currency},${report.gross},${report.adjusted},${report.payout},${report.hash})
-          on conflict(tenant_id,provider,store_id,day) do update set order_count=excluded.order_count,gross=excluded.gross,
-          adjusted=excluded.adjusted,payout=excluded.payout,source_hash=excluded.source_hash,updated_at=now()`;
-        await tx`update delivery_browser_contexts set session_id=null,report_day=null where provider=${p.provider}`;
-        await tx`update delivery_connections set state='connected',last_synced_at=now(),error_code=null,updated_at=now() where provider=${p.provider}`;
-        await queueDelivery(
-          tx,
-          ctx.job.tenantId,
-          p.provider,
-          p.generation,
-          "sync",
-          day < clock.yesterday ? new Date(Date.now() + 10000) : clock.next_run,
-        );
-      });
+      await update("syncing");
+      const exported = await uberExport(
+        attached.page,
+        (row.stores as DeliveryStore[]).find(
+          (store) => store.id === row.store_id,
+        ) ?? { id: row.store_id, name: row.store_name },
+        syncDay!,
+        {
+          alreadyRequested: Boolean(row.request_started_at),
+          forceFresh: true,
+          excludedRows: row.request_started_at ? row.request_excluded_rows : [],
+          beforeRequest: (excludedRows) =>
+            work(async (tx) => {
+              await tx`update delivery_browser_contexts set request_started_at=now(),request_excluded_rows=${tx.json(excludedRows)} where provider=${p.provider}`;
+            }),
+          beforeDownload: (singleStore) =>
+            work(async (tx) => {
+              await tx`update delivery_browser_contexts set download_session_id=${remote!.id},download_started_at=now(),download_scope_verified=${singleStore} where provider=${p.provider}`;
+            }),
+        },
+      );
+      if (exported !== "downloaded") await releaseStored();
+      return {
+        status: "retry",
+        code: "delivery_report_pending",
+        afterMs: exported === "downloaded" ? 15000 : 300000,
+      };
     } finally {
       await attached.detach().catch(() => {});
     }
@@ -297,9 +431,65 @@ export const deliveryHandler: JobHandler = async (ctx) => {
       e instanceof DeliveryError ? e.code : "delivery_browser_unavailable";
     if (code === "delivery_lease_lost" || ctx.signal.aborted)
       throw new DeliveryError("delivery_lease_lost");
+    if (
+      p.action === "verify" &&
+      code === "delivery_reconnect" &&
+      row.login_expires_at > new Date()
+    ) {
+      await update("awaiting_login", {
+        url: row.login_url,
+        expires: row.login_expires_at,
+      });
+      return;
+    }
+    const dayError = [
+      "delivery_empty_report",
+      "delivery_report_schema",
+      "delivery_report_scope",
+      "delivery_report_invalid",
+      "delivery_duplicate_order",
+      "delivery_report_expired",
+      "delivery_report_ambiguous",
+      "delivery_download_timeout",
+      "delivery_report_too_large",
+      "delivery_portal_changed",
+      "delivery_store_invalid",
+      "delivery_session_expired",
+    ].includes(code);
+    if (p.action === "sync" && syncDay && syncNext && dayError) {
+      await work(async (tx) => {
+        const [current] =
+          await tx`select generation,state from delivery_connections where provider=${p.provider} for update`;
+        if (
+          current?.generation !== p.generation ||
+          current.state === "disconnecting"
+        )
+          return;
+        await tx`insert into delivery_day_attempts(tenant_id,provider,store_id,day,error_code)
+          values(${ctx.job.tenantId},${p.provider},${row.store_id},${syncDay},${code})
+          on conflict(tenant_id,provider,store_id,day) do update set error_code=excluded.error_code,
+            attempts=delivery_day_attempts.attempts+1,next_attempt_at=now()+interval '1 day',updated_at=now()`;
+        await tx`update delivery_browser_contexts set report_day=null,download_session_id=null,download_started_at=null,request_started_at=null where provider=${p.provider}`;
+        await tx`update delivery_connections set state='connected',error_code=null,updated_at=now()
+          where provider=${p.provider} and generation=${p.generation}`;
+        await queueDelivery(
+          tx,
+          ctx.job.tenantId,
+          p.provider,
+          p.generation,
+          "sync",
+          syncYesterday && syncDay! < syncYesterday
+            ? new Date(Date.now() + 10000)
+            : syncNext!,
+        );
+      });
+      await releaseStored().catch(() => {});
+      return;
+    }
     const retry =
       ["delivery_browser_unavailable", "delivery_interrupted"].includes(code) ||
       p.action === "disconnect";
+    if (p.action === "sync" && !retry) await releaseStored();
     // Transient retries retain the action's state, so a retry can resume it.
     await update(retry ? row.state : "attention", { error: code });
     if (!retry) return;

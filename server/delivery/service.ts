@@ -20,9 +20,18 @@ export async function deliveryView(tx: Tx, s: Session): Promise<DeliveryView> {
   const rows = await tx`select * from delivery_connections order by provider`;
   const days =
     await tx`select d.*,d.day::text as day_text from delivery_daily_reports d join delivery_connections c
-    on c.tenant_id=d.tenant_id and c.provider=d.provider and c.store_id=d.store_id
+    on c.tenant_id=d.tenant_id and c.provider=d.provider and c.store_uuid=d.store_id
     order by day desc,provider limit 21`;
   return {
+    issues: (
+      await tx`select a.provider,a.day::text as day,a.error_code from delivery_day_attempts a
+      join delivery_connections c on c.tenant_id=a.tenant_id and c.provider=a.provider and c.store_id=a.store_id
+      where a.error_code is not null order by a.day desc limit 30`
+    ).map((r) => ({
+      provider: r.provider,
+      day: r.day,
+      errorCode: r.error_code,
+    })),
     available: platform?.available ?? [],
     pro: (await entitlement(tx)).plan === "pro",
     connections: rows.map((r) => ({
@@ -84,7 +93,7 @@ export async function deliveryAction(
     const generation = row.generation + 1;
     await tx`update delivery_connections set generation=${generation},state='preparing',
       consent_version=${input.consent},consent_at=now(),consent_by=${s.employeeId},
-      login_url=null,login_expires_at=null,error_code=null,updated_at=now() where provider=${provider}`;
+      store_uuid=null,login_url=null,login_expires_at=null,error_code=null,updated_at=now() where provider=${provider}`;
     await queueDelivery(tx, s.tenantId, provider, generation, "connect");
   } else if (input.action === "disconnect") {
     if (
@@ -119,6 +128,7 @@ export async function deliveryAction(
         .find((x) => x.id === input.storeId);
       if (!store) throw new DomainError("delivery_store_invalid", 400);
       await tx`update delivery_connections set store_id=${store.id},store_name=${store.name},state='syncing',
+        store_uuid=case when store_id=${store.id} then store_uuid else null end,
         login_url=null,login_expires_at=null,updated_at=now() where provider=${provider}`;
       await queueDelivery(
         tx,

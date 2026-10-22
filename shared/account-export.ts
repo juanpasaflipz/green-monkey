@@ -45,10 +45,20 @@ export const EXPORT_TABLE_DENYLIST: ReadonlySet<string> = new Set([
 export const EXPORT_TABLE_LABELS: Readonly<
   Record<string, readonly [string, string]>
 > = {
-  loyalty_engagement_settings: ["Opciones del club", "Club engagement settings"],
+  loyalty_engagement_settings: [
+    "Opciones del club",
+    "Club engagement settings",
+  ],
   loyalty_referrals: ["Recomendaciones del club", "Club referrals"],
   loyalty_messages: ["Mensajes del club", "Club messages"],
-  delivery_daily_reports: ["Ventas automáticas de delivery", "Automatic delivery sales"],
+  delivery_day_attempts: [
+    "Estado de reportes de delivery",
+    "Delivery report status",
+  ],
+  delivery_daily_reports: [
+    "Ventas automáticas de delivery",
+    "Automatic delivery sales",
+  ],
   audit: ["Bitácora", "Audit log"],
   business_day_settings: ["Día operativo", "Business day settings"],
   cash_count_reviews: [

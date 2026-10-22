@@ -32,12 +32,18 @@ export async function uberStores(page: Page): Promise<DeliveryStore[]> {
   const stores: DeliveryStore[] = [];
   for (const item of await items.all()) {
     const name = (await item.getByRole("paragraph").first().innerText()).trim();
-    if (name && name !== "Select all") stores.push({ id: name, name });
+    if (name && name !== "Select all") {
+      const paragraphs = await item.getByRole("paragraph").allTextContents();
+      const address = paragraphs[1]?.trim();
+      if (!address) throw new DeliveryError("delivery_store_invalid");
+      const reportLabel = `${name} (${address})`;
+      stores.push({ id: reportLabel, name, reportLabel });
+    }
   }
   if (
     !stores.length ||
     stores.length > 100 ||
-    new Set(stores.map((s) => s.name)).size !== stores.length
+    new Set(stores.map((s) => s.id)).size !== stores.length
   )
     throw new DeliveryError("delivery_store_invalid");
   return stores;
@@ -48,6 +54,13 @@ export async function uberExport(
   page: Page,
   store: DeliveryStore,
   day: string,
+  checkpoint: {
+    alreadyRequested: boolean;
+    forceFresh?: boolean;
+    excludedRows?: string[];
+    beforeRequest: (excludedRows: string[]) => Promise<void>;
+    beforeDownload: (singleStore: boolean) => Promise<void>;
+  },
 ): Promise<"requested" | "downloaded" | "pending"> {
   await reports(page);
   const date = new Date(day + "T12:00:00Z");
@@ -57,6 +70,7 @@ export async function uberExport(
     year: "numeric",
     timeZone: "UTC",
   }).format(date);
+  const excludedRows = [...(checkpoint.excludedRows ?? [])];
   for (let index = 0; index < 20; index++) {
     const rows = page
       .getByRole("row")
@@ -64,19 +78,33 @@ export async function uberExport(
       .filter({ hasText: label })
       .filter({ hasText: store.name });
     for (const row of await rows.all()) {
-      const cells = row.getByRole("columnheader");
+      const cells = row.getByRole("columnheader").or(row.getByRole("cell"));
       if ((await cells.count()) !== 7) continue;
       if (
         (await cells.nth(1).innerText()).trim() !== "Payment details" ||
         (await cells.nth(2).innerText()).trim() !== label ||
-        !(await cells.nth(3).innerText()).trim().startsWith(store.name + " (")
+        !store.reportLabel ||
+        (await cells.nth(3).innerText()).trim() !== store.reportLabel
       )
         continue;
+      // Use only identifying cells, excluding download/status controls that change
+      // while a report is generated. An indistinguishable new row stays pending.
+      const identity = JSON.stringify(
+        await cells
+          .allTextContents()
+          .then((values) => values.slice(0, 4).map((value) => value.trim())),
+      );
+      if (checkpoint.forceFresh && !checkpoint.alreadyRequested) {
+        excludedRows.push(identity);
+        continue;
+      }
+      if (excludedRows.includes(identity)) continue;
       const download = row.getByRole("button", {
         name: "Download CSV",
         exact: true,
       });
       if ((await download.count()) && (await download.isEnabled())) {
+        await checkpoint.beforeDownload(true);
         await download.click();
         return "downloaded";
       }
@@ -85,7 +113,7 @@ export async function uberExport(
           .getByRole("button", { name: "Request again", exact: true })
           .count()
       )
-        throw new DeliveryError("delivery_report_expired");
+        continue;
       return "pending";
     }
     const next = page.getByRole("button", { name: /next page/i });
@@ -106,6 +134,8 @@ export async function uberExport(
     }
     if (!changed) throw new DeliveryError("delivery_portal_changed");
   }
+  // An ambiguous request timeout must not create another export on every poll.
+  if (checkpoint.alreadyRequested) return "pending";
   await page
     .getByRole("button", { name: "Create report", exact: true })
     .click();
@@ -117,9 +147,13 @@ export async function uberExport(
   await page
     .getByRole("button", { name: "No stores selected", exact: true })
     .click();
-  const item = page
+  let item = page
     .getByRole("button", { name: "List item", exact: true })
     .filter({ has: page.getByText(store.name, { exact: true }) });
+  if (store.reportLabel) {
+    const address = store.reportLabel.slice(store.name.length + 2, -1);
+    item = item.filter({ has: page.getByText(address, { exact: true }) });
+  }
   if ((await item.count()) !== 1)
     throw new DeliveryError("delivery_store_invalid");
   await item.click();
@@ -162,6 +196,7 @@ export async function uberExport(
     url.searchParams.get("end") !== day
   )
     throw new DeliveryError("delivery_report_scope");
+  await checkpoint.beforeRequest(excludedRows);
   await page
     .getByRole("button", { name: "Create report", exact: true })
     .click();

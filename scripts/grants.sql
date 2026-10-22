@@ -305,3 +305,10 @@ DO $$ BEGIN
   GRANT SELECT ON restaurant_entitlements TO gm_jobs_worker;
  END IF;
 END $$;
+
+DO $$ BEGIN
+ IF to_regclass('public.delivery_day_attempts') IS NOT NULL THEN
+  GRANT SELECT ON delivery_day_attempts TO gm_app;
+  GRANT SELECT,INSERT,UPDATE ON delivery_day_attempts TO gm_jobs_worker;
+ END IF;
+END $$;

@@ -9,16 +9,15 @@ Railway declares worker-only Browserbase configuration. Production credentials
 were checked for presence only and configured; `DELIVERY_BROWSER_ENABLED=0`
 was verified. No credential values were printed.
 
-The reconciled branch passed typecheck, lint, build, 1,750 unit tests, the
-synthetic browser flow, and seven database scenarios on a fresh PostgreSQL 16
-cluster migrated as the non-superuser gm_migrator. CI supplies PostgreSQL 18
-qualification. Production dependency audit reports zero vulnerabilities.
+Recovery changes add per-day failures, durable request/download checkpoints,
+verified-store discovery across cleanup retries, stable UUID snapshot keys, and
+seven-day refresh. Valid reports commit before best-effort browser cleanup.
+Unknown empty days stay incomplete; zero requires a previously verified store
+identity and exact portal store/date scope. Migrations 044–046 support recovery.
 
-Independent Claude Code review of Codex-authored code cleared an initial
-**disabled deployment only**. Activation remains blocked on closed-day scope,
-late adjustments, durable download checkpoints, stable store identity and a
-merchant rehearsal. The review's follow-up calls itself Claude-on-Claude, but
-the implementation author is Codex; both reviews were read-only Claude sessions.
+Independent Claude review initially cleared disabled deployment only. Subsequent
+adversarial findings led to the recovery changes; activation remains gated on
+hosted merchant qualification and the remaining items below.
 
 Live Browserbase checks proved project/key authentication, isolated context and
 session creation, a live-view URL, and GET-session returning a reconnect URL.
@@ -90,10 +89,13 @@ The browser test starts its own Vite server and synthetic fixture. It exercises
 consent, request bodies, store selection, disconnect, mobile layout and
 accessibility without a database or merchant account.
 
-Verified locally: 133 relevant unit/regression tests, seven synthetic database
-scenarios, and the browser flow. The wider suite also exposed an unrelated
-existing `docs-consistency.test.ts` failure about the business-day cutoff label
-in `PILOT_SOP`; this change does not modify that document.
+Local verification covers units, isolated database/RLS scenarios, and synthetic
+browser controls. On October 22, a read-only check of the signed-in Uber Manager
+confirmed seven report columns, a single-day date, creation date/time, and store
+labels of the form `Synthetic Cafe (123 Example St)`. Store discovery now saves
+that exact name/address label. A real single-day CSV was downloaded through the
+UI and parsed locally successfully; no report contents were added to fixtures,
+commits, or the independent review. This does not qualify hosted login persistence.
 
 For an authorized hosted rehearsal, configure **worker-only** variables:
 `DELIVERY_BROWSER_ENABLED=1`, `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID`.
@@ -108,13 +110,12 @@ local pilot into this implementation.
 - Run Uber against an authorized hosted account: English UI selectors, MFA,
   context persistence, report pagination and long generation delays. The executable
   selector adapter has not passed this real rehearsal.
-- Validate empty-report scope before accepting zero sales. Header-only files
-  currently stop with attention rather than fabricate a verified zero.
+- Validate empty-report scope before accepting zero sales. Header-only files require a verified context identity and exact single-store/date scope; otherwise the day remains incomplete.
 - Qualify refunds, adjustments posted after the reporting day, alternate locales,
-  identical store names and session longevity. Late corrections are not yet
-  automatically revisited; totals remain provisional.
+  identical store names and session longevity. The last seven existing report days are refreshed daily. Prior exports are excluded by creation timestamp/type/day/store before a new request; indistinguishable rows stay pending. Corrections older than seven days are outside this automatic window; totals remain provisional.
 - Confirm provider retention/deletion and orphan recovery after an ambiguous
   context-creation timeout. Remote creation is not an atomic DB operation.
+- Add a context cleanup sweep for inactive connections, subscription expiry and account closure; active sync jobs already clean up after Pro loss.
 - Add reconnect notifications outside Settings and an optional onboarding entry.
 
 References: [Browserbase contexts](https://docs.browserbase.com/platform/browser/core-features/contexts),

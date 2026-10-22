@@ -38,9 +38,13 @@ const copy = {
     error: "No se pudo completar la acción. Inténtalo de nuevo.",
     retry: "Reintentar",
     review: "La conexión necesita atención. Tus últimos datos se conservan.",
+    identity:
+      "La plataforma devolvió otra tienda con el mismo nombre. Vuelve a conectar y confirma la tienda correcta; sus ventas se conservarán por separado.",
     expired: "La sesión de conexión terminó. Vuelve a conectar para continuar.",
     hint: "Inicia sesión, regresa aquí y selecciona «Ya inicié sesión». Puedes continuar usando Green Monkey mientras preparamos tus ventas.",
     figures: "Ventas reportadas por plataforma",
+    incomplete:
+      "Reporte pendiente de verificar. Se reintentará automáticamente; no se cuenta como cero ventas.",
     separate:
       "Importes provisionales por fecha local de la plataforma. Se muestran por separado de las ventas del POS para evitar duplicados.",
     day: "Fecha",
@@ -84,9 +88,13 @@ const copy = {
     retry: "Retry",
     review:
       "This connection needs attention. Your last verified data is preserved.",
+    identity:
+      "The platform returned a different store with the same name. Reconnect and confirm the correct store; its sales will be kept separately.",
     expired: "The connection session ended. Reconnect to continue.",
     hint: "Sign in, return here, and select “I’ve signed in”. You can keep using Green Monkey while we prepare your sales.",
     figures: "Platform-reported sales",
+    incomplete:
+      "Report awaiting verification. We’ll retry automatically; this is not counted as zero sales.",
     separate:
       "Provisional figures by the platform’s local date. Shown separately from POS sales to avoid duplicates.",
     day: "Date",
@@ -232,7 +240,13 @@ export function DeliveryConnections({
                   )}
                 </p>
               )}
-              {state === "attention" && <p>{t.review}</p>}
+              {state === "attention" && (
+                <p>
+                  {connection?.errorCode === "delivery_store_identity_changed"
+                    ? t.identity
+                    : t.review}
+                </p>
+              )}
               {owner &&
                 available &&
                 ["disconnected", "attention", "connected"].includes(state) && (
@@ -355,6 +369,11 @@ export function DeliveryConnections({
       </div>
       <h3>{t.figures}</h3>
       <p className="muted">{t.separate}</p>
+      {view?.issues?.map((issue) => (
+        <p key={`${issue.provider}:${issue.day}`} role="status">
+          {DELIVERY_NAMES[issue.provider]} · {issue.day}: {t.incomplete}
+        </p>
+      ))}
       {!view?.days.length ? (
         <p>{t.empty}</p>
       ) : (

@@ -7,6 +7,96 @@ import { uberFixture, uberHeaders } from "./fixtures/delivery/uber.js";
 
 afterEach(() => vi.unstubAllGlobals());
 describe("delivery reports", () => {
+  it("accepts zero only with both report scope and previously verified store identity", () => {
+    const empty = Buffer.from(uberHeaders.join(","));
+    expect(() =>
+      parseUberReport(
+        empty,
+        "2026-10-21",
+        "Synthetic Cafe",
+        "store-one",
+        true,
+        false,
+      ),
+    ).toThrow("delivery_empty_report");
+    expect(() =>
+      parseUberReport(empty, "2026-10-21", "Synthetic Cafe", null, true, true),
+    ).toThrow("delivery_empty_report");
+    expect(() =>
+      parseUberReport(
+        empty,
+        "2026-10-21",
+        "Synthetic Cafe",
+        "store-one",
+        false,
+        true,
+      ),
+    ).toThrow("delivery_empty_report");
+    expect(
+      parseUberReport(
+        empty,
+        "2026-10-21",
+        "Synthetic Cafe",
+        "store-one",
+        true,
+        true,
+      ),
+    ).toMatchObject({ orderCount: 0, gross: 0, adjusted: 0, payout: 0 });
+  });
+  it("binds exports to a stable store ID and scopes earlier refunds to verified report days", () => {
+    const refund = uberFixture("2026-10-20", [
+      [
+        "Synthetic Cafe",
+        "store-one",
+        "order-old",
+        "10/20/2026",
+        "Refund",
+        "MXN",
+        "0",
+        "-10.00",
+        "-10.00",
+      ],
+    ]);
+    expect(() =>
+      parseUberReport(refund, "2026-10-21", "Synthetic Cafe", "store-one"),
+    ).toThrow("delivery_report_scope");
+    expect(
+      parseUberReport(
+        refund,
+        "2026-10-21",
+        "Synthetic Cafe",
+        "store-one",
+        true,
+      ),
+    ).toMatchObject({ orderCount: 0, adjusted: -1000 });
+    expect(() =>
+      parseUberReport(
+        refund,
+        "2026-10-21",
+        "Synthetic Cafe",
+        "different-store",
+        true,
+      ),
+    ).toThrow("delivery_store_identity_changed");
+    expect(() =>
+      parseUberReport(
+        Buffer.from(refund.toString().replaceAll("10/20/2026", "10/22/2026")),
+        "2026-10-21",
+        "Synthetic Cafe",
+        "store-one",
+        true,
+      ),
+    ).toThrow("delivery_report_scope");
+    expect(() =>
+      parseUberReport(
+        Buffer.from(refund.toString().replace("Refund", "Completed")),
+        "2026-10-21",
+        "Synthetic Cafe",
+        "store-one",
+        true,
+      ),
+    ).toThrow("delivery_report_scope");
+  });
   it("accepts a different-width descriptive preamble but rejects malformed data rows", () => {
     const original = uberFixture().toString();
     expect(

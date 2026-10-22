@@ -16,6 +16,7 @@ export function minor(value: unknown): number {
   return n;
 }
 export interface ParsedDeliveryReport {
+  storeUuid: string;
   orderCount: number;
   gross: number;
   adjusted: number;
@@ -39,6 +40,9 @@ export function parseUberReport(
   bytes: Uint8Array,
   day: string,
   store: string,
+  expectedStoreUuid?: string | null,
+  verifiedReportDay = false,
+  verifiedEmptyScope = false,
 ): ParsedDeliveryReport {
   if (bytes.byteLength > 10_000_000)
     throw new DeliveryError("delivery_report_too_large");
@@ -69,7 +73,17 @@ export function parseUberReport(
     payout = 0;
   // Header-only reports cannot prove the selected store/date, so fail closed.
   if (rows.length === headerIndex + 1)
-    throw new DeliveryError("delivery_empty_report");
+    if (expectedStoreUuid && verifiedReportDay && verifiedEmptyScope)
+      return {
+        storeUuid: expectedStoreUuid,
+        orderCount: 0,
+        gross: 0,
+        adjusted: 0,
+        payout: 0,
+        currency: "MXN",
+        hash: createHash("sha256").update(bytes).digest("hex"),
+      };
+    else throw new DeliveryError("delivery_empty_report");
   for (const raw of rows.slice(headerIndex + 1)) {
     if (raw.length !== headers.length)
       throw new DeliveryError("delivery_report_schema");
@@ -78,16 +92,35 @@ export function parseUberReport(
     const date = m
       ? `${m[3].length === 2 ? "20" + m[3] : m[3]}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`
       : "";
+    const status = r["Order Status"],
+      id = r["Workflow ID"];
+    if (date) {
+      const calendar = new Date(date + "T00:00:00Z");
+      if (
+        !Number.isFinite(calendar.getTime()) ||
+        calendar.toISOString().slice(0, 10) !== date
+      )
+        throw new DeliveryError("delivery_report_scope");
+    }
+    // A refund/fee can reference an earlier order. Only accept it when the
+    // worker matched the report's own day in the portal and the store UUID is
+    // already pinned. Never relax the scope of completed orders or future dates.
+    const priorAdjustment = Boolean(
+      verifiedReportDay &&
+      expectedStoreUuid &&
+      ["", "Refund"].includes(status) &&
+      (date ? date <= day : r["Order Date"] === ""),
+    );
     if (
-      date !== day ||
+      (date !== day && !priorAdjustment) ||
       r["Store Name"] !== store ||
       r["Currency Code"] !== "MXN" ||
       !r["Store UUID"]
     )
       throw new DeliveryError("delivery_report_scope");
+    if (expectedStoreUuid && r["Store UUID"] !== expectedStoreUuid)
+      throw new DeliveryError("delivery_store_identity_changed");
     storeIds.add(r["Store UUID"]);
-    const status = r["Order Status"],
-      id = r["Workflow ID"];
     if (
       !["", "Completed", "Cancelled", "Refund", "Unfulfilled"].includes(status)
     )
@@ -105,6 +138,7 @@ export function parseUberReport(
   }
   if (storeIds.size !== 1) throw new DeliveryError("delivery_report_scope");
   return {
+    storeUuid: [...storeIds][0],
     orderCount: orders.size,
     gross,
     adjusted,

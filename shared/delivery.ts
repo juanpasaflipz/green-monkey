@@ -11,6 +11,7 @@ export const DELIVERY_CONSENT = "delivery-reports-v1";
 export const deliveryStore = z.object({
   id: z.string().min(1).max(200),
   name: z.string().min(1).max(200),
+  reportLabel: z.string().min(1).max(500).optional(),
 });
 export type DeliveryStore = z.infer<typeof deliveryStore>;
 export type DeliveryState =
@@ -48,6 +49,7 @@ export interface DeliveryView {
   pro: boolean;
   connections: DeliveryConnection[];
   days: DeliveryDay[];
+  issues?: { provider: DeliveryProvider; day: string; errorCode: string }[];
 }
 export const deliveryCommand = z.discriminatedUnion("action", [
   z.object({
