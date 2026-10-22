@@ -6,12 +6,31 @@ Release preparation: reconciled onto main 3a47b2f in an isolated worktree.
 Migration 043 avoids the deployed delivery-history migration 041. Automatic
 connection translations have their own namespace, preserving historical imports.
 Railway declares worker-only Browserbase configuration. Production credentials
-were checked for presence only and are configured on the production worker;
-`DELIVERY_BROWSER_ENABLED=0` was verified. No credential values were printed.
-The earlier verification below applies to the original local implementation;
-the reconciled branch now passes typecheck, lint, all 1,747 unit tests and
-the synthetic browser flow. Fresh-database qualification, independent review,
-staging deployment and a real hosted rehearsal remain pending.
+were checked for presence only and configured; `DELIVERY_BROWSER_ENABLED=0`
+was verified. No credential values were printed.
+
+The reconciled branch passed typecheck, lint, build, 1,750 unit tests, the
+synthetic browser flow, and seven database scenarios on a fresh PostgreSQL 16
+cluster migrated as the non-superuser gm_migrator. CI supplies PostgreSQL 18
+qualification. Production dependency audit reports zero vulnerabilities.
+
+Independent Claude Code review of Codex-authored code cleared an initial
+**disabled deployment only**. Activation remains blocked on closed-day scope,
+late adjustments, durable download checkpoints, stable store identity and a
+merchant rehearsal. The review's follow-up calls itself Claude-on-Claude, but
+the implementation author is Codex; both reviews were read-only Claude sessions.
+
+Live Browserbase checks proved project/key authentication, isolated context and
+session creation, a live-view URL, and GET-session returning a reconnect URL.
+Session release succeeds; immediate context deletion returns 400 during provider
+persistence, while a later deletion returns 204. The worker retains the context
+reference and retries rather than claiming deletion succeeded. No merchant login
+or report data was used in these checks. These are provider lifecycle checks,
+not validation of unattended merchant imports.
+
+Disabled workers leave delivery jobs queued. Re-enabling resumes them, including
+disconnect jobs. A staff Cancel while disabled awaits a delivery worker after
+re-enabling. Do not use the flag as a substitute for revoking stored contexts.
 
 ## Subscriber experience
 
@@ -78,8 +97,7 @@ in `PILOT_SOP`; this change does not modify that document.
 
 For an authorized hosted rehearsal, configure **worker-only** variables:
 `DELIVERY_BROWSER_ENABLED=1`, `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID`.
-Keep disabled until the rehearsal passes. No credentials were available during
-implementation. The hosted-browser provider is a new service and subprocessor;
+Keep disabled until the rehearsal passes. Credentials were subsequently configured and validated as described above. The hosted-browser provider is a new service and subprocessor;
 the consent screen identifies it. No real account session was copied from the
 local pilot into this implementation.
 

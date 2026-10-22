@@ -7,6 +7,26 @@ import { uberFixture, uberHeaders } from "./fixtures/delivery/uber.js";
 
 afterEach(() => vi.unstubAllGlobals());
 describe("delivery reports", () => {
+  it("accepts a different-width descriptive preamble but rejects malformed data rows", () => {
+    const original = uberFixture().toString();
+    expect(
+      parseUberReport(
+        Buffer.from("Payment details\n" + original),
+        "2026-10-21",
+        "Synthetic Cafe",
+      ).orderCount,
+    ).toBe(1);
+    expect(() =>
+      parseUberReport(
+        Buffer.from(original + "\nshort,row"),
+        "2026-10-21",
+        "Synthetic Cafe",
+      ),
+    ).toThrow("delivery_report_schema");
+    expect(() =>
+      parseUberReport(Buffer.from('"unclosed'), "2026-10-21", "Synthetic Cafe"),
+    ).toThrow("delivery_report_schema");
+  });
   it("sums exact cents including non-order fees without inflating order count", () => {
     expect(
       parseUberReport(uberFixture(), "2026-10-21", "Synthetic Cafe"),

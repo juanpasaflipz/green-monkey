@@ -65,7 +65,8 @@ export const deliveryHandler: JobHandler = async (ctx) => {
   const p = parsed.data,
     driver = deliveryDriver,
     token = randomUUID();
-  if (!driver) return { status: "blocked", code: "delivery_unavailable" };
+  if (!driver)
+    return { status: "retry", code: "delivery_unavailable", afterMs: 300000 };
   if (p.provider !== "uber_eats")
     return { status: "dead", code: "delivery_unavailable" };
   // Queue leases fence DB writes; a separate connection lease serializes different
@@ -244,15 +245,23 @@ export const deliveryHandler: JobHandler = async (ctx) => {
       const previous = await driver.download(remote.id, signal);
       if (!previous) {
         await update("syncing");
-        await uberExport(
+        const exported = await uberExport(
           attached.page,
           { id: row.store_id, name: row.store_name },
           day,
         );
+        if (exported !== "downloaded") {
+          // Report generation runs at Uber. It need not keep a billed browser
+          // alive between polls; the next job reconnects using the same context.
+          await driver.release(remote.id, signal);
+          await work(async (tx) => {
+            await tx`update delivery_browser_contexts set session_id=null where provider=${p.provider}`;
+          });
+        }
         return {
           status: "retry",
           code: "delivery_report_pending",
-          afterMs: 300000,
+          afterMs: exported === "downloaded" ? 15000 : 300000,
         };
       }
       const report = parseUberReport(previous, day, row.store_name);

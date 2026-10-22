@@ -42,11 +42,18 @@ export function parseUberReport(
 ): ParsedDeliveryReport {
   if (bytes.byteLength > 10_000_000)
     throw new DeliveryError("delivery_report_too_large");
-  const rows = parse(Buffer.from(bytes), {
-    bom: true,
-    skip_empty_lines: true,
-    relax_column_count: false,
-  }) as string[][];
+  let rows: string[][];
+  try {
+    rows = parse(Buffer.from(bytes), {
+      bom: true,
+      skip_empty_lines: true,
+      // Uber's descriptive preamble can have a different width. Every actual
+      // data row is checked against the recognized header below.
+      relax_column_count: true,
+    }) as string[][];
+  } catch {
+    throw new DeliveryError("delivery_report_schema");
+  }
   const headerIndex = rows.findIndex((r) =>
     required.every((k) => r.map((x) => x.trim()).includes(k)),
   );

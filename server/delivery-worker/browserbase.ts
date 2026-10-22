@@ -1,6 +1,7 @@
 import { chromium, type Browser, type Page } from "playwright-core";
 import { DeliveryError } from "../delivery/parse.js";
 import { validDeliveryLiveUrl } from "../../shared/delivery.js";
+import { setTimeout as delay } from "node:timers/promises";
 
 type RemoteSession = {
   id: string;
@@ -35,9 +36,13 @@ export class BrowserbaseDriver {
     });
     if (!response.ok)
       throw new DeliveryError(
-        response.status === 404
-          ? "delivery_session_expired"
-          : "delivery_browser_unavailable",
+        method === "DELETE" &&
+          path.startsWith("/contexts/") &&
+          [400, 409].includes(response.status)
+          ? "delivery_context_busy"
+          : response.status === 404
+            ? "delivery_session_expired"
+            : "delivery_browser_unavailable",
       );
     return response;
   }
@@ -81,10 +86,22 @@ export class BrowserbaseDriver {
   }
   async release(id: string, signal: AbortSignal) {
     try {
+      const before = await this.session(id, signal);
+      if (["COMPLETED", "ERROR", "TIMED_OUT"].includes(before.status ?? ""))
+        return;
       await this.request(`/sessions/${encodeURIComponent(id)}`, signal, {
         projectId: this.projectId,
         status: "REQUEST_RELEASE",
       });
+      // Release is asynchronous. The provider still locks the context while the
+      // browser shuts down and persists its data. Do not delete or reuse it yet.
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const current = await this.session(id, signal);
+        if (["COMPLETED", "ERROR", "TIMED_OUT"].includes(current.status ?? ""))
+          return;
+        await delay(1000, undefined, { signal });
+      }
+      throw new DeliveryError("delivery_browser_unavailable");
     } catch (e) {
       if (!(
         e instanceof DeliveryError && e.code === "delivery_session_expired"
@@ -93,18 +110,26 @@ export class BrowserbaseDriver {
     }
   }
   async deleteContext(id: string, signal: AbortSignal) {
-    try {
-      await this.request(
-        `/contexts/${encodeURIComponent(id)}`,
-        signal,
-        undefined,
-        "DELETE",
-      );
-    } catch (e) {
-      if (!(
-        e instanceof DeliveryError && e.code === "delivery_session_expired"
-      ))
-        throw e;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        await this.request(
+          `/contexts/${encodeURIComponent(id)}`,
+          signal,
+          undefined,
+          "DELETE",
+        );
+        return;
+      } catch (e) {
+        if (e instanceof DeliveryError && e.code === "delivery_session_expired")
+          return;
+        // Persistence can retain the context lock briefly even after the
+        // session reports COMPLETED. Never acknowledge deletion on a 400/409.
+        if (!(e instanceof DeliveryError) || e.code !== "delivery_context_busy")
+          throw e;
+        if (attempt === 5)
+          throw new DeliveryError("delivery_browser_unavailable");
+        await delay(2000, undefined, { signal });
+      }
     }
   }
   async page(
