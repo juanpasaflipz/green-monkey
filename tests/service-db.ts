@@ -261,8 +261,14 @@ try {
   await admin`insert into devices(tenant_id,id,name,token_hash) values(${otherTenantId},${deviceId},'Caja ajena','fixture')`;
   for (const t of tables)
     await admin`insert into dining_tables(tenant_id,id,name) values(${tenantId},${t.id},${t.name})`;
-  await admin`insert into stock_items(tenant_id,id,name,unit,kind,threshold) values(${tenantId},${stockId},'Tortilla','piece','prepared',0)`;
-  await admin`insert into stock_movements(tenant_id,id,stock_id,quantity,cause,cause_id,reason,actor_id) values(${tenantId},${randomUUID()},${stockId},100000,'opening','fixture','Fixture',${ids.owner})`;
+  // The ledger trigger is SECURITY DEFINER, so it reads stock_items as the
+  // schema owner. Under FORCE ROW LEVEL SECURITY a non-superuser owner
+  // (gm_migrator in CI and production) sees the item only with the tenant set.
+  await asAdmin(async (tx) => {
+    await tx`select set_config('app.tenant_id',${tenantId},true)`;
+    await tx`insert into stock_items(tenant_id,id,name,unit,kind,threshold) values(${tenantId},${stockId},'Tortilla','piece','prepared',0)`;
+    await tx`insert into stock_movements(tenant_id,id,stock_id,quantity,cause,cause_id,reason,actor_id) values(${tenantId},${randomUUID()},${stockId},100000,'opening','fixture','Fixture',${ids.owner})`;
+  });
   for (const p of [
     product(plain, "Taco prueba", 3000, {
       recipe: [{ stockId, quantity: "1" }],

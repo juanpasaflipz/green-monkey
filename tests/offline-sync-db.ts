@@ -250,6 +250,10 @@ try {
   await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at) values(${tenantId},${ids.drawer1},${ids.device1},${ids.cashier},0,now()-interval '5 hours')`;
   await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at) values(${tenantId},${ids.drawer2},${ids.device2},${ids.cashier},0,now()-interval '10 minutes')`;
   await admin`insert into stock_items(tenant_id,id,name,unit,kind) values(${tenantId},${ids.stockItem},'Tortilla','piece','raw')`;
+  // Menu (025) makes negative stock a restaurant policy that defaults to
+  // 'allow'. Block it here so check 10 proves both halves: online orders are
+  // refused, while a sale that physically happened offline still lands.
+  await admin`update restaurants set negative_stock_policy='block' where id=${tenantId}`;
   const product = (
     productId: string,
     name: string,
@@ -2516,20 +2520,21 @@ try {
     "order_numbers",
     "cash_movements",
     "cash_sessions",
-    "stock_movements",
-    "stock_items",
     "recipe_versions",
     "catalog",
     "offline_leases",
     "sessions",
     "devices",
-    "employees",
     "restaurant_entitlements",
   ])
     for (const id of [tenantId, otherTenant])
       await admin.unsafe(`delete from ${table} where tenant_id=$1`, [id]);
-  await admin`delete from restaurants where id in (${tenantId},${otherTenant})`;
-  await admin`delete from organizations where id in (${organizationId},${otherOrganization})`;
+  // stock_movements is append-only even for the owner (menu 025), so the
+  // fixture tenant keeps its ledger, the stock items and employees it cites,
+  // and the restaurant; the test database is disposable (as in menu-db).
+  await admin`delete from employees where tenant_id=${otherTenant}`;
+  await admin`delete from restaurants where id=${otherTenant}`;
+  await admin`delete from organizations where id=${otherOrganization}`;
   await sql.end();
   await admin.end();
 }

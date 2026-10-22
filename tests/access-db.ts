@@ -2232,6 +2232,10 @@ try {
       "pin_throttles",
       "device_pairing_codes",
       "offline_lease_renewals",
+      // offline (026): reviews reference sync records, which reference tenders.
+      "offline_kitchen_reviews",
+      "offline_sync_records",
+      "offline_archives",
       "line_voids",
       "tender_allocations",
       "tenders",
