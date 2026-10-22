@@ -28,6 +28,8 @@ import { cfdiWorkerBoot } from "./cfdi/worker/boot.js";
 import "./payments/worker/register.js";
 import { paymentsWorkerBoot } from "./payments/worker/boot.js";
 import "./loyalty-worker/register.js";
+import "./delivery-worker/register.js";
+import { deliveryBoot } from "./delivery-worker/runtime.js";
 // <<< worker areas: imports
 
 const LOOP_STALE_MS = 120_000;
@@ -161,6 +163,7 @@ if (config.workerDatabaseUrl) {
 // handle provider outages themselves)
 await cfdiWorkerBoot(workerSql, process.env);
 await paymentsWorkerBoot(workerSql, process.env);
+await deliveryBoot(workerSql, process.env);
 // <<< worker areas: boot hooks
 if (jobs) {
   tickNow("jobs");

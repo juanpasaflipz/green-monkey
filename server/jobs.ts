@@ -122,6 +122,7 @@ export type JobDeadHook = (ctx: {
  * hands those jobs to the runner instead (server/jobs/queue.ts CANCEL_REQUESTED).
  */
 export const WORKER_DEAD_HOOK_KINDS: ReadonlySet<string> = new Set([
+  "delivery_browser",
   "payments_push",
   "payments_credentials",
 ]);

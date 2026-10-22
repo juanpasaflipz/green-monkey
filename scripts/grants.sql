@@ -293,3 +293,15 @@ DO $$ BEGIN
   GRANT UPDATE (generation_hash,apple_auth_hash,apple_pass_secret,google_url_secret,sync_job_id,sync_until,pass_type,updated_at) ON loyalty_wallet_passes TO gm_jobs_worker;
  END IF;
 END $$;
+
+
+-- 043 automatic delivery connections; browser context references are worker-only.
+DO $$ BEGIN
+ IF to_regclass('public.delivery_connections') IS NOT NULL THEN
+  REVOKE ALL ON delivery_browser_contexts FROM gm_app;
+  GRANT SELECT,INSERT,UPDATE ON delivery_connections TO gm_app;
+  GRANT SELECT ON delivery_daily_reports,delivery_platform TO gm_app;
+  GRANT SELECT,INSERT,UPDATE ON delivery_connections,delivery_browser_contexts,delivery_daily_reports,delivery_platform TO gm_jobs_worker;
+  GRANT SELECT ON restaurant_entitlements TO gm_jobs_worker;
+ END IF;
+END $$;

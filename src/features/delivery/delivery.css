@@ -1,0 +1,50 @@
+.delivery-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 16px;
+  margin: 24px 0;
+}
+.delivery-card {
+  border: 1px solid var(--border, #dcded8);
+  border-radius: 14px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  min-width: 0;
+}
+.delivery-card h3,
+.delivery-card p {
+  margin: 0;
+}
+.delivery-card .button {
+  min-height: 48px;
+}
+.delivery-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.delivery-consent input {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  margin-top: 3px;
+}
+.delivery-table {
+  overflow-x: auto;
+}
+.delivery-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.delivery-table th,
+.delivery-table td {
+  text-align: left;
+  padding: 12px;
+  border-bottom: 1px solid var(--border, #dcded8);
+  white-space: nowrap;
+}

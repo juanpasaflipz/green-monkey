@@ -60,6 +60,7 @@ const billingWorker = {
 describe("process configuration", () => {
   it("deployed web refuses migration, backup and provisioning URLs and STRIPE_SECRET_KEY (DB-1/OPS-8 regression)", () => {
     expect(forbiddenCredentials.web).toEqual([
+      "BROWSERBASE_API_KEY",
       "MIGRATION_DATABASE_URL",
       "BACKUP_DATABASE_URL",
       "PROVISION_DATABASE_URL",
