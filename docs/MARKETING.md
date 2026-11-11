@@ -30,6 +30,25 @@ an ARCO/retention deletion removes it (trigger `marketing_confirmation_void`, th
 writer allowed to delete). Every SMS ends with the STOP instruction; Twilio's Messaging
 Service must have STOP handling configured, as for the club's own messages.
 
+A request that goes unanswered for 30 days is sent again, and a member who withdraws and
+opts back in is asked again; three requests per member is the limit.
+
+Integrity is enforced in the database, not only in code (review of PR #31):
+
+- No login holds `UPDATE(confirmed_at)`. The only writer is `marketing_confirm()`, which
+  needs the digest of the token that was sent; the runtime role cannot read `token_hash`.
+  A row is born unconfirmed, its member and phone never change, and once confirmed it
+  cannot be modified (`marketing_confirmation_guard`).
+- The jobs login creates the token because it sends it, so a compromised worker could
+  confirm a pending phone. That is inherent to whoever holds the SMS credentials; it
+  cannot re-challenge a phone that is already confirmed.
+- A message only moves forward (`marketing_message_guard`): `delivered`, `failed`,
+  `unknown` and `skipped` are final, and the provider id and send time are written once.
+- The worker locks the confirmation before reading the member, so a withdrawal or phone
+  change either commits first (the message is skipped) or waits until the send is marked.
+- Tenant isolation is the repository's RLS model: it scopes queries under a trusted
+  `app.tenant_id` and does not defend against a login that chooses another tenant.
+
 ## Campaigns
 
 Name, ordered channels, a message with `{{name}}` (first name) and `{{restaurant}}`,

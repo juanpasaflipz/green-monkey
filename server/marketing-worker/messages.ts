@@ -178,6 +178,11 @@ export function marketingMessageHandler(
         await tx`update marketing_messages set state='skipped',error_code=${code},updated_at=clock_timestamp() where id=${id}`;
         return null;
       };
+      // Lock the confirmation first. Withdrawing consent, changing the phone or deleting
+      // the member removes this row (trigger), so such a change now waits for this
+      // transaction, and the member read below sees every change committed before it.
+      const [c] =
+        await tx`select phone_hash,confirmed_at from marketing_confirmations where member_id=${msg.member_id} for update`;
       const [m] =
         await tx`select name,phone_e164,marketing_opt_in,redacted_at from loyalty_members where id=${msg.member_id}`;
       const [club] = await tx`select enabled from loyalty_settings`;
@@ -188,8 +193,6 @@ export function marketingMessageHandler(
       if (!club?.enabled || !settings.enabled)
         return skip("marketing_disabled");
       if ((await entitlement(tx)).plan !== "pro") return skip("pro_required");
-      const [c] =
-        await tx`select phone_hash,confirmed_at from marketing_confirmations where member_id=${msg.member_id}`;
       if (!c || c.phone_hash !== sha(m.phone_e164))
         return skip("phone_changed");
       const [r] =

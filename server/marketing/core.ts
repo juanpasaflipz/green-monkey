@@ -466,17 +466,26 @@ export async function scheduleDaily(
     nanosecond: 0,
   });
   const at = Temporal.ZonedDateTime.compare(now, today) < 0 ? today : now;
+  const key = `daily:${at.toPlainDate().toString()}`;
+  // A job that already ran today (for instance while marketing was off) would swallow
+  // this one under the same key. The pass is fenced by marketing_runs, so a second job
+  // for the day is harmless and keeps the chain alive.
+  const [existing] =
+    await tx`select state from jobs where kind=${MARKETING_DAILY} and dedupe_key=${key}`;
+  const spent =
+    existing && !["available", "queued", "running"].includes(existing.state);
   await enqueueJob(
     tx,
     { tenantId },
     {
       kind: MARKETING_DAILY,
-      dedupeKey: `daily:${at.toPlainDate().toString()}`,
+      dedupeKey: spent ? `${key}:${randomUUID().slice(0, 8)}` : key,
       payload: {},
       runAt: new Date(at.epochMilliseconds),
     },
   );
 }
+
 /**
  * Job: once per restaurant per local day, after the send hour. Asks newly opted-in
  * members to confirm their phone, then evaluates the active automations over the
@@ -499,16 +508,14 @@ export async function runDaily(
   const local = Temporal.Instant.fromEpochMilliseconds(now).toZonedDateTimeISO(
     r.timezone,
   );
-  const tomorrow = local
-    .add({ days: 1 })
-    .with({
-      hour: settings.sendHour,
-      minute: 0,
-      second: 0,
-      millisecond: 0,
-      microsecond: 0,
-      nanosecond: 0,
-    });
+  const tomorrow = local.add({ days: 1 }).with({
+    hour: settings.sendHour,
+    minute: 0,
+    second: 0,
+    millisecond: 0,
+    microsecond: 0,
+    nanosecond: 0,
+  });
   // Keep the chain alive first; a duplicate key is ignored.
   await enqueueJob(
     tx,
@@ -529,11 +536,20 @@ export async function runDaily(
   const channels = sendChannels(env);
   let confirmations = 0;
   if (channels.includes("sms")) {
-    const pending = await tx`select m.id,m.phone_e164 from loyalty_members m
+    // Ask members with no confirmation, and again when an unanswered request expired.
+    // Each request has its own key, so opting back in or an expired link gets a fresh
+    // SMS; three requests per member is the limit.
+    const pending = await tx`select m.id,m.phone_e164,
+        (select count(*)::int from marketing_messages x where x.tenant_id=m.tenant_id
+           and x.member_id=m.id and x.kind='confirmation') as asked
+      from loyalty_members m
+      left join marketing_confirmations c on c.tenant_id=m.tenant_id and c.member_id=m.id
       where m.redacted_at is null and m.marketing_opt_in
-        and not exists(select 1 from marketing_confirmations c where c.tenant_id=m.tenant_id and c.member_id=m.id)
+        and (c.member_id is null or (c.confirmed_at is null
+          and c.requested_at<clock_timestamp()-interval '30 days'))
       order by m.id limit 2000`;
     for (const m of pending) {
+      if (m.asked >= 3) continue;
       const hash = phoneHash(m.phone_e164);
       await tx`insert into marketing_confirmations(tenant_id,member_id,phone_hash) values(${tenantId},${m.id},${hash}) on conflict do nothing`;
       confirmations += await queueMessage(tx, tenantId, {
@@ -541,7 +557,7 @@ export async function runDaily(
         campaignId: null,
         kind: "confirmation",
         channel: "sms",
-        dedupe: `confirm:${m.id}:${hash.slice(0, 16)}`,
+        dedupe: `confirm:${m.id}:${hash.slice(0, 16)}:${m.asked}`,
       });
     }
   }
@@ -598,16 +614,10 @@ export async function confirmMarketing(
   memberId: string,
   tokenHash: string,
 ) {
-  const [row] = await tx`select c.confirmed_at from marketing_confirmations c
-      join loyalty_members m on m.tenant_id=c.tenant_id and m.id=c.member_id
-    where c.member_id=${memberId} and c.token_hash=${tokenHash}
-      and m.redacted_at is null and m.marketing_opt_in
-      and c.phone_hash=encode(sha256(convert_to(m.phone_e164,'UTF8')),'hex')
-      and c.requested_at>clock_timestamp()-interval '30 days'
-    for update of c`;
-  if (!row) throw new DomainError("unauthorized", 401);
-  if (!row.confirmed_at)
-    await tx`update marketing_confirmations set confirmed_at=clock_timestamp() where member_id=${memberId}`;
+  // The only writer of confirmed_at (047): it needs the digest of the token that was sent.
+  const [row] =
+    await tx`select marketing_confirm(${memberId}::uuid,${tokenHash}) as ok`;
+  if (!row?.ok) throw new DomainError("unauthorized", 401);
   const [r] = await tx`select name from restaurants`;
   return { confirmed: true, restaurant: r.name as string };
 }

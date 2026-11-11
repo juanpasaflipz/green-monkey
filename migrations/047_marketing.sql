@@ -91,3 +91,77 @@ END $$;
 REVOKE ALL ON FUNCTION marketing_confirmation_void() FROM PUBLIC;
 CREATE TRIGGER marketing_confirmation_void AFTER UPDATE OF phone_e164,marketing_opt_in,redacted_at ON loyalty_members
  FOR EACH ROW EXECUTE FUNCTION marketing_confirmation_void();
+
+-- Confirmation integrity (review of PR #31). A row is born unconfirmed and without a
+-- challenge; its member and phone never change; once confirmed nothing changes. No login
+-- holds UPDATE(confirmed_at): the only writer is marketing_confirm(), which requires the
+-- digest of the token that was sent. The runtime role cannot read token_hash (grants).
+CREATE FUNCTION marketing_confirmation_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF TG_OP = 'INSERT' THEN
+  IF NEW.confirmed_at IS NOT NULL OR NEW.token_hash IS NOT NULL THEN
+   RAISE EXCEPTION 'marketing confirmation must start unconfirmed' USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+ END IF;
+ IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id OR NEW.member_id IS DISTINCT FROM OLD.member_id
+    OR NEW.phone_hash IS DISTINCT FROM OLD.phone_hash THEN
+  RAISE EXCEPTION 'marketing confirmation identity is immutable' USING ERRCODE = '23514';
+ END IF;
+ IF OLD.confirmed_at IS NOT NULL AND NEW IS DISTINCT FROM OLD THEN
+  RAISE EXCEPTION 'a confirmed phone is immutable' USING ERRCODE = '23514';
+ END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER marketing_confirmation_guard BEFORE INSERT OR UPDATE ON marketing_confirmations
+ FOR EACH ROW EXECUTE FUNCTION marketing_confirmation_guard();
+CREATE FUNCTION marketing_confirm(p_member uuid, p_token_hash text) RETURNS boolean
+ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE
+ scope uuid := nullif(current_setting('app.tenant_id', true), '')::uuid;
+ found_member uuid;
+BEGIN
+ IF scope IS NULL OR p_token_hash IS NULL OR p_token_hash !~ '^[a-f0-9]{64}$' THEN RETURN false; END IF;
+ SELECT c.member_id INTO found_member
+  FROM public.marketing_confirmations c
+  JOIN public.loyalty_members m ON m.tenant_id = c.tenant_id AND m.id = c.member_id
+  WHERE c.tenant_id = scope AND c.member_id = p_member AND c.token_hash = p_token_hash
+   AND m.redacted_at IS NULL AND m.marketing_opt_in
+   AND c.phone_hash = encode(sha256(convert_to(m.phone_e164, 'UTF8')), 'hex')
+   AND c.requested_at > clock_timestamp() - interval '30 days'
+  FOR UPDATE OF c;
+ IF found_member IS NULL THEN RETURN false; END IF;
+ UPDATE public.marketing_confirmations SET confirmed_at = clock_timestamp()
+  WHERE tenant_id = scope AND member_id = p_member AND confirmed_at IS NULL;
+ RETURN true;
+END $$;
+REVOKE ALL ON FUNCTION marketing_confirm(uuid, text) FROM PUBLIC;
+
+-- Delivery integrity: a message only moves forward. delivered, failed, unknown and skipped
+-- are final, so an uncertain send can never be put back in the queue; the provider id and
+-- the send time are written once; identity never changes.
+CREATE FUNCTION marketing_message_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id OR NEW.id IS DISTINCT FROM OLD.id
+    OR NEW.member_id IS DISTINCT FROM OLD.member_id OR NEW.campaign_id IS DISTINCT FROM OLD.campaign_id
+    OR NEW.kind IS DISTINCT FROM OLD.kind OR NEW.channel IS DISTINCT FROM OLD.channel
+    OR NEW.dedupe_key IS DISTINCT FROM OLD.dedupe_key OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+  RAISE EXCEPTION 'marketing message identity is immutable' USING ERRCODE = '23514';
+ END IF;
+ IF NEW.state IS DISTINCT FROM OLD.state AND NOT (
+      (OLD.state = 'queued' AND NEW.state IN ('sending','skipped'))
+   OR (OLD.state = 'sending' AND NEW.state IN ('sent','failed','unknown'))
+   OR (OLD.state = 'sent' AND NEW.state IN ('delivered','failed'))) THEN
+  RAISE EXCEPTION 'marketing message cannot go from % to %', OLD.state, NEW.state USING ERRCODE = '23514';
+ END IF;
+ IF OLD.state IN ('delivered','failed','unknown','skipped') AND NEW IS DISTINCT FROM OLD THEN
+  RAISE EXCEPTION 'a finished marketing message is immutable' USING ERRCODE = '23514';
+ END IF;
+ IF (OLD.provider_id IS NOT NULL AND NEW.provider_id IS DISTINCT FROM OLD.provider_id)
+    OR (OLD.sent_at IS NOT NULL AND NEW.sent_at IS DISTINCT FROM OLD.sent_at) THEN
+  RAISE EXCEPTION 'provider id and send time are written once' USING ERRCODE = '23514';
+ END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER marketing_message_guard BEFORE UPDATE ON marketing_messages
+ FOR EACH ROW EXECUTE FUNCTION marketing_message_guard();

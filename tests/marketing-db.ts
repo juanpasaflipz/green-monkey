@@ -872,6 +872,310 @@ try {
     );
     assert.equal((await workerSql`select 1 from marketing_messages`).length, 0);
   });
+  await test("M10 only the sent token confirms: no login can write confirmed_at or read the digest", async () => {
+    const f = await makeTenant();
+    await enable(f);
+    const ana = await enroll(f),
+      eva = await enroll(f, true, "Eva Ruiz");
+    await daily(f);
+    const worker = <T>(fn: (tx: Tx) => Promise<T>) =>
+      tenant(workerSql, f.tenantId, fn);
+    // The runtime role: no direct confirmation, no pre-confirmed row, no digest to replay.
+    await assert.rejects(
+      run(
+        f.owner,
+        (tx) =>
+          tx`update marketing_confirmations set confirmed_at=now() where member_id=${ana.id}`,
+      ),
+    );
+    await assert.rejects(
+      run(f.owner, (tx) => tx`select token_hash from marketing_confirmations`),
+    );
+    await assert.rejects(
+      run(f.owner, (tx) => tx`select * from marketing_confirmations`),
+    );
+    await assert.rejects(
+      run(
+        f.owner,
+        (tx) =>
+          tx`update marketing_confirmations set token_hash=${"a".repeat(64)}`,
+      ),
+    );
+    const late = await enroll(f, true, "Leo Díaz");
+    await assert.rejects(
+      run(
+        f.owner,
+        (tx) =>
+          tx`insert into marketing_confirmations(tenant_id,member_id,phone_hash,confirmed_at) values(${f.tenantId},${late.id},${"b".repeat(64)},now())`,
+      ),
+    );
+    // Even the table owner cannot create a confirmed row or rewrite a confirmed one.
+    await assert.rejects(
+      asAdmin(
+        f.tenantId,
+        (tx) =>
+          tx`insert into marketing_confirmations(tenant_id,member_id,phone_hash,confirmed_at) values(${f.tenantId},${late.id},${"b".repeat(64)},now())`,
+      ),
+      /must start unconfirmed/,
+    );
+    const [fn] = await run(
+      f.owner,
+      (tx) =>
+        tx`select marketing_confirm(${ana.id}::uuid,${"c".repeat(64)}) as ok`,
+    );
+    assert.equal(fn.ok, false);
+    assert.equal(
+      (await run(f.owner, (tx) => getMarketing(tx, f.owner, SEND))).confirmed,
+      0,
+    );
+    // The jobs login cannot confirm, and cannot re-challenge a phone once it is confirmed.
+    await assert.rejects(
+      worker(
+        (tx) =>
+          tx`update marketing_confirmations set confirmed_at=now() where member_id=${ana.id}`,
+      ),
+    );
+    await assert.rejects(
+      worker(
+        (tx) => tx`select marketing_confirm(${ana.id}::uuid,${"c".repeat(64)})`,
+      ),
+    );
+    await confirm(f, ana.id);
+    await assert.rejects(
+      worker(
+        (tx) =>
+          tx`update marketing_confirmations set token_hash=${"d".repeat(64)},requested_at=clock_timestamp() where member_id=${ana.id}`,
+      ),
+      /confirmed phone is immutable/,
+    );
+    await assert.rejects(
+      asAdmin(
+        f.tenantId,
+        (tx) =>
+          tx`update marketing_confirmations set phone_hash=${"e".repeat(64)} where tenant_id=${f.tenantId} and member_id=${eva.id}`,
+      ),
+      /identity is immutable/,
+    );
+    assert.equal(
+      (await run(f.owner, (tx) => getMarketing(tx, f.owner, SEND))).confirmed,
+      1,
+    );
+  });
+
+  await test("M11 a message only moves forward: an unknown or sent one can never be queued again", async () => {
+    const f = await makeTenant();
+    await enable(f);
+    const ana = await enroll(f),
+      eva = await enroll(f, true, "Eva Ruiz");
+    await daily(f);
+    await confirm(f, ana.id);
+    await confirm(f, eva.id);
+    const c = {
+      id: randomUUID(),
+      name: "Prueba",
+      channels: ["sms"],
+      body: "Hola",
+      segment: {},
+    };
+    await run(f.owner, (tx) =>
+      saveCampaign(tx, f.owner, {
+        operationId: randomUUID(),
+        expectedVersion: 0,
+        campaign: c,
+      }),
+    );
+    await run(f.owner, (tx) =>
+      launchCampaign(
+        tx,
+        f.owner,
+        { operationId: randomUUID(), campaignId: c.id, expectedVersion: 1 },
+        SEND,
+      ),
+    );
+    const rows = (await messages(f)).filter((m: any) => m.kind === "campaign");
+    const lost = rows.find((m: any) => m.member_id === ana.id),
+      good = rows.find((m: any) => m.member_id === eva.id);
+    await deliver(f, lost.id, provider(() => "throw").http);
+    await deliver(
+      f,
+      good.id,
+      provider(() => json(201, { sid: "SM0002" })).http,
+    );
+    const worker = <T>(fn: (tx: Tx) => Promise<T>) =>
+      tenant(workerSql, f.tenantId, fn);
+    for (const as of [(fn: any) => run(f.owner, fn), worker])
+      for (const state of ["queued", "sending", "sent"])
+        await assert.rejects(
+          as(
+            (tx: Tx) =>
+              tx`update marketing_messages set state=${state} where id=${lost.id}`,
+          ),
+          /finished marketing message is immutable|cannot go from/,
+        );
+    await assert.rejects(
+      worker(
+        (tx) =>
+          tx`update marketing_messages set state='queued' where id=${good.id}`,
+      ),
+      /cannot go from sent to queued/,
+    );
+    await assert.rejects(
+      worker(
+        (tx) =>
+          tx`update marketing_messages set provider_id=null where id=${good.id}`,
+      ),
+      /written once/,
+    );
+    await assert.rejects(
+      worker(
+        (tx) =>
+          tx`update marketing_messages set provider_id='SM9999' where id=${good.id}`,
+      ),
+      /written once/,
+    );
+    await assert.rejects(
+      worker(
+        (tx) =>
+          tx`update marketing_messages set sent_at=now() where id=${good.id}`,
+      ),
+      /written once/,
+    );
+    // Requeueing the job of the unknown message sends nothing.
+    const again = provider(() => json(201, { sid: "SM0003" }));
+    await deliver(f, lost.id, again.http);
+    assert.equal(again.calls.length, 0);
+    const states = Object.fromEntries(
+      (await messages(f))
+        .filter((m: any) => m.kind === "campaign")
+        .map((m: any) => [m.member_id, m.state]),
+    );
+    assert.deepEqual(states, { [ana.id]: "unknown", [eva.id]: "sent" });
+  });
+
+  await test("M12 a renewed opt-in or an expired request gets a fresh confirmation, three at most", async () => {
+    const f = await makeTenant();
+    await enable(f);
+    const ana = await enroll(f),
+      eva = await enroll(f, true, "Eva Ruiz");
+    await daily(f);
+    await confirm(f, ana.id);
+    const asked = async (memberId: string) =>
+      (await messages(f, memberId)).filter(
+        (m: any) => m.kind === "confirmation",
+      ).length;
+    // Ana withdraws and opts back in with the same phone: she is asked again and can confirm.
+    for (const [version, marketingOptIn] of [
+      [1, false],
+      [2, true],
+    ] as const)
+      await run(f.owner, (tx) =>
+        updateMember(tx, f.owner, ana.id, {
+          operationId: randomUUID(),
+          expectedVersion: version,
+          marketingOptIn,
+        }),
+      );
+    assert.equal((await daily(f))!.confirmations, 1);
+    assert.equal(await asked(ana.id), 2);
+    const [second] = (await messages(f, ana.id)).filter(
+      (m: any) => m.kind === "confirmation" && m.state === "queued",
+    );
+    const p = provider(() => json(201, { sid: "SM0004" }));
+    await deliver(f, second.id, p.http);
+    const token = /confirm#(\S+)/.exec(p.calls[0].body!)![1];
+    await tenant(sql, f.tenantId, (tx) =>
+      confirmMarketing(tx, ana.id, sha(token)),
+    );
+    assert.equal(
+      (await run(f.owner, (tx) => getMarketing(tx, f.owner, SEND))).confirmed,
+      1,
+    );
+    // Eva never answered: nothing while her request is fresh, a new one once it expired,
+    // and never more than three.
+    assert.equal((await daily(f))!.confirmations, 0);
+    const expire = () =>
+      asAdmin(
+        f.tenantId,
+        (tx) =>
+          tx`update marketing_confirmations set requested_at=now()-interval '31 days' where tenant_id=${f.tenantId} and member_id=${eva.id}`,
+      );
+    await expire();
+    assert.equal((await daily(f))!.confirmations, 1);
+    await expire();
+    assert.equal((await daily(f))!.confirmations, 1);
+    await expire();
+    assert.equal((await daily(f))!.confirmations, 0);
+    assert.equal(await asked(eva.id), 3);
+    // An expired link no longer confirms.
+    const [first] = (await messages(f, eva.id)).filter(
+      (m: any) => m.kind === "confirmation",
+    );
+    const q = provider(() => json(201, { sid: "SM0005" }));
+    await deliver(f, first.id, q.http);
+    const old = /confirm#(\S+)/.exec(q.calls[0].body!)![1];
+    await expire();
+    await rejects(
+      tenant(sql, f.tenantId, (tx) => confirmMarketing(tx, eva.id, sha(old))),
+      "unauthorized",
+    );
+  });
+
+  await test("M13 re-enabling restarts the daily chain, and a withdrawal waits for a send being prepared", async () => {
+    const f = await makeTenant();
+    await enable(f);
+    const jobs = () =>
+      asAdmin(
+        f.tenantId,
+        (tx) =>
+          tx`select dedupe_key,state from jobs where tenant_id=${f.tenantId} and kind='marketing_daily' order by created_at`,
+      );
+    assert.equal((await jobs()).length, 1);
+    // Today's job ran while marketing was off, so it scheduled nothing.
+    await enable(f, { enabled: false });
+    await asAdmin(
+      f.tenantId,
+      (tx) =>
+        tx`update jobs set state='done' where tenant_id=${f.tenantId} and kind='marketing_daily'`,
+    );
+    await enable(f);
+    const after = await jobs();
+    assert.equal(after.length, 2);
+    assert.equal(after[1].state, "available");
+    assert.notEqual(after[1].dedupe_key, after[0].dedupe_key);
+    // While the worker holds the confirmation it is sending against, removing consent
+    // cannot commit; it completes as soon as the worker's transaction ends.
+    const ana = await enroll(f);
+    await daily(f);
+    await confirm(f, ana.id);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let locked!: () => void;
+    const ready = new Promise<void>((resolve) => (locked = resolve));
+    const workerTx = tenant(workerSql, f.tenantId, async (tx) => {
+      await tx`select phone_hash from marketing_confirmations where member_id=${ana.id} for update`;
+      locked();
+      await held;
+    });
+    await ready;
+    let withdrawn = false;
+    const withdrawal = run(f.owner, (tx) =>
+      updateMember(tx, f.owner, ana.id, {
+        operationId: randomUUID(),
+        expectedVersion: 1,
+        marketingOptIn: false,
+      }),
+    ).then(() => (withdrawn = true));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal(withdrawn, false);
+    release();
+    await workerTx;
+    await withdrawal;
+    assert.equal(withdrawn, true);
+    assert.equal(
+      (await run(f.owner, (tx) => getMarketing(tx, f.owner, SEND))).confirmed,
+      0,
+    );
+  });
   console.log(`${checks} marketing checks passed`);
 } finally {
   await sql.end();
