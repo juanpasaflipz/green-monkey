@@ -1,0 +1,37 @@
+.marketing-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+.marketing-tile {
+  display: grid;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid #dce3da;
+  border-radius: 12px;
+  background: #fff;
+}
+.marketing-tile span {
+  font-size: 13px;
+  color: #536258;
+}
+.marketing-tile strong {
+  font-size: 22px;
+}
+.marketing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0 16px;
+}
+.marketing-card,
+.marketing-editor {
+  border: 1px solid #dce3da;
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin: 12px 0;
+  background: #fff;
+}
+.marketing-panel textarea {
+  width: 100%;
+}
