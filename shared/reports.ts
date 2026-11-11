@@ -324,7 +324,8 @@ export const AUDIT_GROUPS = {
   // history, so they sit with the reports.
   reports: ["reports.", "sales_history.", "delivery_history."],
   // loyalty (038, R27): settings, members (ARCO included), links, rewards and the import.
-  loyalty: ["loyalty."],
+  // Marketing (047) writes to club members, so its operations sit with the club.
+  loyalty: ["loyalty.", "marketing."],
   // kiosk (039, R27): settings, stations, tablets, charges; menu.media.* is in "menu".
   kiosk: ["kiosk."],
 } as const;

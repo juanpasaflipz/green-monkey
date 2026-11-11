@@ -312,3 +312,20 @@ DO $$ BEGIN
   GRANT SELECT,INSERT,UPDATE ON delivery_day_attempts TO gm_jobs_worker;
  END IF;
 END $$;
+
+-- 047 guest marketing on the club. No DELETE anywhere; confirmations are removed only by the
+-- marketing_confirmation_void trigger. Providers run only on the jobs login.
+DO $$ BEGIN
+ IF to_regclass('public.marketing_campaigns') IS NOT NULL THEN
+  REVOKE UPDATE ON marketing_settings,marketing_confirmations,marketing_campaigns,marketing_messages,marketing_runs FROM gm_app,gm_jobs_worker;
+  GRANT SELECT,INSERT ON marketing_settings,marketing_confirmations,marketing_campaigns,marketing_messages,marketing_runs TO gm_app;
+  GRANT UPDATE (settings,version) ON marketing_settings TO gm_app;
+  GRANT UPDATE (confirmed_at) ON marketing_confirmations TO gm_app;
+  GRANT UPDATE (version,name,channels,body,segment,params,state,scheduled_at,launched_at,audience) ON marketing_campaigns TO gm_app;
+  GRANT UPDATE (state,error_code,updated_at) ON marketing_messages TO gm_app;
+  GRANT SELECT ON marketing_settings,marketing_campaigns,marketing_confirmations TO gm_jobs_worker;
+  GRANT UPDATE (token_hash,requested_at) ON marketing_confirmations TO gm_jobs_worker;
+  GRANT SELECT ON marketing_messages TO gm_jobs_worker;
+  GRANT UPDATE (state,provider_id,error_code,updated_at,sent_at) ON marketing_messages TO gm_jobs_worker;
+ END IF;
+END $$;

@@ -12,4 +12,5 @@ import "./ops.js";
 // import "./account.js";
 import "./payments.js";
 import "./loyalty.js";
+import "./marketing.js";
 import "./kiosk.js";
