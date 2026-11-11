@@ -95,7 +95,7 @@ test("marketing appears with the club, switches on, and a campaign is drafted, s
   page,
 }) => {
   await login(page);
-  let club = await clubSettings(page);
+  const club = await clubSettings(page);
   await expect(page.locator("section.marketing-panel")).toHaveCount(0);
   await club.getByLabel("Activar el club").check();
   await club.getByLabel(/Mi aviso de privacidad incluye el club/).check();
@@ -103,7 +103,7 @@ test("marketing appears with the club, switches on, and a campaign is drafted, s
     .getByRole("button", { name: "Guardar club de lealtad", exact: true })
     .click();
   await page.reload();
-  club = await clubSettings(page);
+  await clubSettings(page);
   const panel = page.locator("section.marketing-panel");
   await expect(
     panel.getByRole("heading", { name: "Marketing", exact: true }),
