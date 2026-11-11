@@ -109,9 +109,10 @@ test("marketing appears with the club, switches on, and a campaign is drafted, s
     panel.getByRole("heading", { name: "Marketing", exact: true }),
   ).toBeVisible();
   await expect(panel).toContainText("Teléfono confirmado");
-  await expect(panel).toContainText(
-    "SMS: habilitado · WhatsApp: sin habilitar",
-  );
+  // The send switches belong to the environment (off in CI): the panel reports them and
+  // the spec follows whichever state the server runs with.
+  await expect(panel).toContainText("WhatsApp: sin habilitar");
+  const smsOn = await panel.getByText(/SMS: habilitado/).count();
 
   await panel.getByLabel("Activar marketing del club").check();
   await panel
@@ -146,15 +147,25 @@ test("marketing appears with the club, switches on, and a campaign is drafted, s
   await card
     .getByRole("button", { name: "Enviar o programar", exact: true })
     .click();
-  const future = new Date(Date.now() + 2 * 86_400_000);
-  const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T12:00`;
-  await card.getByLabel(/Fecha y hora/).fill(local);
-  await card.getByRole("button", { name: "Programar", exact: true }).click();
-  await expect(card).toContainText("Programada");
-  await card
-    .getByRole("button", { name: "Cancelar envío", exact: true })
-    .click();
-  await expect(card).toContainText("Cancelada");
+  if (!smsOn) {
+    // No channel enabled: the campaign cannot be sent or scheduled, and says why.
+    await expect(card.getByRole("status")).toContainText(
+      "Ningún canal de esta campaña está habilitado todavía.",
+    );
+    await expect(
+      card.getByRole("button", { name: "Enviar ahora", exact: true }),
+    ).toBeDisabled();
+  } else {
+    const future = new Date(Date.now() + 2 * 86_400_000);
+    const local = `${future.getFullYear()}-${String(future.getMonth() + 1).padStart(2, "0")}-${String(future.getDate()).padStart(2, "0")}T12:00`;
+    await card.getByLabel(/Fecha y hora/).fill(local);
+    await card.getByRole("button", { name: "Programar", exact: true }).click();
+    await expect(card).toContainText("Programada");
+    await card
+      .getByRole("button", { name: "Cancelar envío", exact: true })
+      .click();
+    await expect(card).toContainText("Cancelada");
+  }
 
   const followUp = panel
     .locator("article.marketing-card")
