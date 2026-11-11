@@ -23,6 +23,51 @@ export const lineInput = z
     openAmount: money.optional(),
   })
   .strict();
+export const offerCode = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .regex(/^[A-Z0-9]{3,24}$/);
+export const manualDiscountInput = z
+  .object({
+    kind: z.enum(["percent", "amount"]),
+    value: z.number().int().min(1).max(100_000_000),
+    reason: z.string().trim().min(3).max(200),
+    approvalId: id.optional(),
+  })
+  .strict()
+  .refine((m) => m.kind !== "percent" || m.value <= 10000, "invalid_discount");
+export type ManualDiscount = z.infer<typeof manualDiscountInput>;
+export const guestEmail = z.string().trim().toLowerCase().email().max(254);
+export const consentInput = z
+  .object({
+    email: z.boolean().default(false),
+    sms: z.boolean().default(false),
+    whatsapp: z.boolean().default(false),
+  })
+  .strict();
+/** Contact details a guest gives at checkout. A channel is only ever opted in
+ * by an explicit `true`; omitting or sending `false` never revokes consent. */
+export const guestCapture = z
+  .object({
+    name: z.string().trim().max(80).default(""),
+    email: guestEmail.optional(),
+    phone: z.string().trim().min(8).max(24).optional(),
+    locale: z.enum(["es", "en"]).default("es"),
+    consent: consentInput.default({
+      email: false,
+      sms: false,
+      whatsapp: false,
+    }),
+  })
+  .strict()
+  .refine((g) => g.email || g.phone, "contact_required")
+  .refine((g) => !g.consent.email || g.email, "contact_required")
+  .refine(
+    (g) => !(g.consent.sms || g.consent.whatsapp) || g.phone,
+    "contact_required",
+  );
+export type GuestCapture = z.infer<typeof guestCapture>;
 export const orderInput = z
   .object({
     operationId: id,
@@ -32,6 +77,10 @@ export const orderInput = z
     name: z.string().max(80).default(""),
     note: z.string().max(500).default(""),
     channel: z.enum(["pos", "qr", "kiosk", "offline"]).default("pos"),
+    /** Optional so requests without offers keep their idempotency fingerprint. */
+    code: offerCode.optional(),
+    manualDiscount: manualDiscountInput.optional(),
+    guest: guestCapture.optional(),
   })
   .strict();
 export type OrderInput = z.infer<typeof orderInput>;
@@ -71,6 +120,10 @@ export type PricedLine = LineInput & {
   station: string;
   recipe: NonNullable<Product["recipe"]>;
   productVersion: number;
+  /** Present only on discounted lines: `total` is always the payable amount. */
+  gross?: number;
+  discount?: number;
+  offers?: { id: string | null; amount: number }[];
 };
 export function minor(value: string, exponent = 2): number {
   if (!/^\d+(\.\d+)?$/.test(value)) throw new DomainError("invalid_amount");
@@ -298,6 +351,9 @@ export type Order = {
   note: string;
   lines: PricedLine[];
   total: number;
+  discount?: number;
+  discounts?: import("./offers.js").AppliedOffer[];
+  guestId?: string | null;
   paid: number;
   refunded: number;
   state: string;

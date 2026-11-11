@@ -14,6 +14,7 @@ import {
   Wifi,
   WifiOff,
   ArrowRight,
+  Megaphone,
 } from "lucide-react";
 import type { Session, Locale, Product } from "../shared/domain";
 import { strings, translateError, type Key } from "./i18n";
@@ -22,6 +23,7 @@ import { db, cacheSession, scope, syncPending } from "./offline";
 import { Button, Field } from "./components/ui";
 import { Selling } from "./features/Selling";
 import { Operations } from "./features/Operations";
+import { Marketing } from "./features/Marketing";
 import { OwnerAccess } from "./features/OwnerAccess";
 export default function App() {
   const [locale, setLocale] = useState<Locale>(
@@ -259,6 +261,7 @@ export default function App() {
             ["operation", ShoppingBag],
             ["inventory", Package],
             ["finance", ChartNoAxesCombined],
+            ["marketing", Megaphone],
             ["team", Users],
             ["settings", Settings],
           ]
@@ -413,7 +416,10 @@ export default function App() {
             navigate={setView}
           />
         </div>
-        {view !== "sell" && (
+        {view === "marketing" && management && (
+          <Marketing session={session} locale={locale} />
+        )}
+        {view !== "sell" && view !== "marketing" && (
           <Operations
             key={view}
             view={view}

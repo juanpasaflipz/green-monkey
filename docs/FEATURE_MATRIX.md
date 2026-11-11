@@ -41,7 +41,8 @@
 | AI receipt/menu parsing and recipe matching | Both Anthropic/AI parsers | Draft suggestions, confidence, human review before writes | 4–5, optional assist; manual flow required |
 | Kiosk suggestions, menu boards/displays | POS Lite | Use shared catalog/branding; no separate pricing logic | Optional follow-on |
 | Incident monitoring / AI sentinel | POS Lite sentinel | Basic operational monitoring required; automated fixes off by default | 6 baseline; advanced optional module |
-| Financing, settlement/disbursement, marketing/site fragments | Legacy residual files/docs | Exclude from base POS; record any future demand explicitly | Outside base scope |
+| Guest marketing: guest list/consent, campaigns, automations, attribution, copy assistant | Owner request, November 11, 2026 (not in either source) | New Pro module on the promotion engine; see MARKETING.md | Pro configured module; each channel provider-gated |
+| Financing, settlement/disbursement, site fragments | Legacy residual files/docs | Exclude from base POS; record any future demand explicitly | Outside base scope |
 
 ## Mandatory merge resolutions
 

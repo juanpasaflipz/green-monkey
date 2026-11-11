@@ -559,6 +559,7 @@ export function Operations({
               <div className="metric-grid">
                 {[
                   ["gross", data.gross],
+                  ...(data.discounts ? [["discounts", data.discounts]] : []),
                   ["collected", data.collected],
                   ["cogs", data.cogs],
                   ["refunds", data.refundTotal],

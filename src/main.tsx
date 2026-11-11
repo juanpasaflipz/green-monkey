@@ -4,12 +4,15 @@ import { lazy, Suspense } from "react";
 import Landing from "./marketing/Landing";
 const App = lazy(() => import("./App"));
 import { PublicOrdering } from "./features/PublicOrdering";
+import { Unsubscribe } from "./features/GuestPages";
 import "./styles.css";
 declare const __BUILD_ID__: string;
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <Suspense fallback={<p role="status">Green Monkey…</p>}>
-      {/^\/(qr|kiosk)\//.test(location.pathname) ? (
+      {/^\/u\//.test(location.pathname) ? (
+        <Unsubscribe />
+      ) : /^\/(qr|kiosk)\//.test(location.pathname) ? (
         <PublicOrdering />
       ) : location.pathname === "/" &&
         !new URLSearchParams(location.search).has("account") &&

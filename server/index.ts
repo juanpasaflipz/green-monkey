@@ -22,6 +22,40 @@ import {
   progressPreparation,
 } from "./service.js";
 import { getSettings, saveSettings } from "./restaurant.js";
+import {
+  exportGuests,
+  guestConsents,
+  listGuests,
+  saveGuest,
+} from "./guests.js";
+import {
+  cancelCampaign,
+  getMarketingSettings,
+  launchCampaign,
+  listAutomations,
+  listCampaigns,
+  listSocial,
+  performance,
+  previewAudience,
+  saveAutomation,
+  saveCampaign,
+  saveMarketingSettings,
+  saveSocial,
+} from "./marketing.js";
+import { guestRoutes, marketingRuntime } from "./marketing-runtime.js";
+import {
+  assistantConfigured,
+  assistantContext,
+  assistantDraft,
+  assistantPlan,
+} from "./marketing-assistant.js";
+import {
+  listOffers,
+  priceOrder,
+  publicQuote,
+  requestApproval,
+  saveOffer,
+} from "./offers.js";
 import { publicOrdering } from "./public-ordering.js";
 import "dotenv/config";
 import express from "express";
@@ -70,6 +104,7 @@ import {
   DomainError,
   id,
   money,
+  orderInput,
   businessDate,
   boundaries,
   type Session,
@@ -83,6 +118,7 @@ if (
 const sql = connect(process.env.DATABASE_URL);
 await checkRole(sql);
 const billing = await billingRuntime(sql, process.env);
+const marketing = await marketingRuntime(process.env);
 const app = express();
 app.disable("x-powered-by");
 app.use(
@@ -179,6 +215,7 @@ app.post(
 app.use("/api/public", publicOrdering(sql));
 app.use("/api/auth", ownerRoutes(sql));
 app.use("/api/billing", billing.routes);
+app.use("/api/guest", guestRoutes(sql));
 app.use("/api", authentication(sql));
 const route = (
   method: "get" | "post",
@@ -258,6 +295,117 @@ route("get", "/orders/:id", async (tx, _s, req) =>
   getOrder(tx, id.parse(req.params.id)),
 );
 route("post", "/orders", async (tx, s, req) => createOrder(tx, s, req.body));
+route("post", "/quote", async (tx, s, req) => {
+  permit(s, operators);
+  const p = orderInput
+    .extend({ orderId: id.nullable().default(null) })
+    .parse(req.body);
+  const { orderId, ...input } = p;
+  return publicQuote(await priceOrder(tx, s, input, !orderId, false));
+});
+route("get", "/offers", async (tx, s) => {
+  permit(s, managers);
+  return listOffers(tx);
+});
+route("post", "/offers", (tx, s, req) => saveOffer(tx, s, req.body));
+route("get", "/guests", (tx, s, req) =>
+  listGuests(tx, s, String(req.query.q ?? "")),
+);
+route("post", "/guests", (tx, s, req) => saveGuest(tx, s, req.body));
+route("get", "/guests/:id/consents", (tx, s, req) =>
+  guestConsents(tx, s, id.parse(req.params.id)),
+);
+app.get("/api/guests.csv", async (req, res, next) => {
+  try {
+    const s = (req as AuthRequest).session;
+    const csv = await tenant(sql, s.tenantId, (tx) => exportGuests(tx, s));
+    res
+      .type("text/csv")
+      .attachment("guests.csv")
+      .send("\uFEFF" + csv);
+  } catch (e) {
+    next(e);
+  }
+});
+route("get", "/marketing/overview", async (tx, s) => {
+  permit(s, managers);
+  return {
+    plan: (await entitlement(tx)).plan,
+    channels: marketing.status,
+    assistant: assistantConfigured(process.env),
+    settings: await getMarketingSettings(tx),
+  };
+});
+route("post", "/marketing/settings", (tx, s, req) =>
+  saveMarketingSettings(tx, s, req.body),
+);
+route("get", "/marketing/campaigns", listCampaigns);
+route("post", "/marketing/campaigns", (tx, s, req) =>
+  saveCampaign(tx, s, req.body),
+);
+route("post", "/marketing/audience", (tx, s, req) =>
+  previewAudience(tx, s, req.body, marketing.status),
+);
+route("post", "/marketing/campaigns/launch", (tx, s, req) =>
+  launchCampaign(tx, s, req.body, marketing.status, marketing.appUrl),
+);
+route("post", "/marketing/campaigns/cancel", (tx, s, req) =>
+  cancelCampaign(tx, s, req.body),
+);
+route("get", "/marketing/automations", listAutomations);
+route("post", "/marketing/automations", (tx, s, req) =>
+  saveAutomation(tx, s, req.body),
+);
+route("get", "/marketing/performance", (tx, s, req) =>
+  performance(tx, s, req.query),
+);
+route("get", "/marketing/social", listSocial);
+route("post", "/marketing/social", (tx, s, req) => saveSocial(tx, s, req.body));
+route("get", "/marketing/plan", (tx, s, req) =>
+  assistantPlan(tx, s, req.query.locale === "en" ? "en" : "es"),
+);
+app.post(
+  "/api/marketing/draft",
+  rateLimit({
+    windowMs: 60_000,
+    limit: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+  }),
+  async (req, res, next) => {
+    try {
+      const s = (req as AuthRequest).session;
+      // The provider is called only after the transaction has ended.
+      const context = await tenant(sql, s.tenantId, (tx) =>
+        assistantContext(tx, s, req.body, process.env),
+      );
+      res.json(await assistantDraft(context, process.env));
+    } catch (e) {
+      next(e);
+    }
+  },
+);
+app.post(
+  "/api/approvals",
+  rateLimit({
+    windowMs: 60_000,
+    limit: 8,
+    skipSuccessfulRequests: true,
+    standardHeaders: true,
+    legacyHeaders: false,
+  }),
+  async (req, res, next) => {
+    try {
+      const s = (req as AuthRequest).session;
+      permit(s, operators);
+      res.json(
+        await tenant(sql, s.tenantId, (tx) => requestApproval(tx, s, req.body)),
+      );
+    } catch (e) {
+      next(e);
+    }
+  },
+);
 route("post", "/orders/:id/rounds", async (tx, s, req) =>
   addRound(tx, s, id.parse(req.params.id), req.body),
 );
@@ -519,7 +667,8 @@ route("get", "/report", async (tx, s, req) => {
     tenders,
     refunds,
     cash,
-    gross: orders.reduce((a: number, o: any) => a + o.total, 0),
+    gross: orders.reduce((a: number, o: any) => a + o.total + o.discount, 0),
+    discounts: orders.reduce((a: number, o: any) => a + o.discount, 0),
     collected: tenders.reduce((a: number, t: any) => a + t.amount, 0),
     tips: tenders.reduce((a: number, t: any) => a + t.tip, 0),
     refundTotal: refunds.reduce((a: number, r: any) => a + r.amount, 0),
@@ -666,6 +815,9 @@ route("get", "/capabilities", async () => ({
   facturapi: { enabled: false, reason: "sandbox_required" },
   printer: { enabled: false, reason: "device_not_paired" },
   resend: { enabled: false, reason: "sender_and_sandbox_required" },
+  marketing_email: marketing.status.email,
+  marketing_sms: marketing.status.sms,
+  marketing_whatsapp: marketing.status.whatsapp,
 }));
 app.use("/api", (_req, res) => res.status(404).json({ error: "not_found" }));
 if (process.env.NODE_ENV === "production") {
@@ -698,6 +850,7 @@ process.on("SIGTERM", () => {
   server.close(() => {
     void billing
       .close()
+      .then(() => marketing.close())
       .then(() => sql.end())
       .then(() => process.exit(0));
   });

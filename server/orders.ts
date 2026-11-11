@@ -10,6 +10,8 @@ import { Decimal } from "decimal.js";
 import { z } from "zod";
 import type { Tx } from "./db.js";
 import { hash, permit, operators } from "./auth.js";
+import { orderDiscounts, priceOrder, redeem } from "./offers.js";
+import { captureGuest } from "./guests.js";
 import {
   DomainError,
   orderInput,
@@ -125,6 +127,9 @@ export async function getOrder(tx: Tx, orderId: string): Promise<Order> {
     note: o.note,
     lines: lines.map((l) => l.data),
     total: o.total,
+    guestId: o.guest_id ?? null,
+    discount: o.discount,
+    discounts: o.discount ? await orderDiscounts(tx, orderId) : [],
     paid: sum(tenders.map((t) => t.amount)),
     refunded: sum(tenders.map((t) => t.refunded)),
     state: o.state,
@@ -195,11 +200,8 @@ export async function createOrder(
   return once(tx, s, input.operationId, "create_order", input, async () => {
     if (["qr", "kiosk"].includes(input.channel)) await requirePro(tx);
     else if (!authorizedOfflineRecovery) await requireSelling(tx, s);
-    const lines = quote(
-      input.lines,
-      await catalog(tx),
-      ["manager", "owner"].includes(s.role),
-    );
+    const priced = await priceOrder(tx, s, input, true, true);
+    const lines = priced.lines;
     const date = businessDate(
       new Date().toISOString(),
       s.restaurant.timezone,
@@ -208,8 +210,19 @@ export async function createOrder(
     const [number] =
       await tx`insert into order_numbers(tenant_id,business_date,value) values(${s.tenantId},${date},1) on conflict(tenant_id,business_date) do update set value=order_numbers.value+1 returning value`;
     const orderId = randomUUID();
-    await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,restaurant_snapshot) values(${s.tenantId},${orderId},${number.value},${date},${s.employeeId},${input.tableId},${input.mode},${input.name},${input.note},${input.channel},${sum(lines.map((l) => l.total))},${tx.json(s.restaurant)})`;
+    const guestId = input.guest
+      ? await captureGuest(
+          tx,
+          s,
+          input.guest,
+          input.channel === "qr" || input.channel === "kiosk"
+            ? input.channel
+            : "pos",
+        )
+      : null;
+    await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,discount,guest_id,restaurant_snapshot) values(${s.tenantId},${orderId},${number.value},${date},${s.employeeId},${input.tableId},${input.mode},${input.name},${input.note},${input.channel},${priced.total},${priced.discount},${guestId},${tx.json(s.restaurant)})`;
     await append(tx, s, orderId, lines, 1);
+    await redeem(tx, s, orderId, 1, priced);
     await audit(tx, s, "order.created", orderId, {
       channel: input.channel,
       deviceId: s.deviceId,
@@ -243,13 +256,11 @@ export async function addRound(
         ["completed", "recovery_pending", "recovery_reviewed"].includes(o.state)
       )
         throw new DomainError("stale_order", 409);
-      const lines = quote(
-        input.lines,
-        await catalog(tx),
-        ["manager", "owner"].includes(s.role),
-      );
+      const priced = await priceOrder(tx, s, input, false, true);
+      const lines = priced.lines;
       await append(tx, s, orderId, lines, o.version + 1);
-      await tx`update orders set total=total+${sum(lines.map((l) => l.total))},version=version+1,state='active' where id=${orderId}`;
+      await redeem(tx, s, orderId, o.version + 1, priced);
+      await tx`update orders set total=total+${priced.total},discount=discount+${priced.discount},version=version+1,state='active' where id=${orderId}`;
       await audit(tx, s, "order.round", orderId);
       return getOrder(tx, orderId);
     },

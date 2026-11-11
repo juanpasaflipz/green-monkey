@@ -22,3 +22,11 @@ GRANT UPDATE(revoked,accepted_by,accepted_at,employee_id) ON restaurant_invitati
 GRANT UPDATE(free_location) ON restaurants TO gm_app;
 GRANT SELECT,INSERT ON offline_leases,offline_recoveries,offline_recovery_tasks TO gm_app;
 GRANT UPDATE(state,resolved_by,resolution,resolved_at) ON offline_recovery_tasks TO gm_app;
+GRANT SELECT,INSERT,UPDATE ON promotions TO gm_app;
+GRANT SELECT,INSERT ON approvals,promotion_redemptions TO gm_app;
+GRANT UPDATE(consumed_at) ON approvals TO gm_app;
+GRANT SELECT,INSERT ON guests,guest_consents,order_feedback,marketing_settings,campaigns,messages,social_posts TO gm_app;
+GRANT UPDATE(name,email,phone,locale,email_opt_in,sms_opt_in,whatsapp_opt_in,first_consent_at) ON guests TO gm_app;
+GRANT UPDATE ON marketing_settings,social_posts TO gm_app;
+GRANT UPDATE(version,name,channels,subject,body,segment,params,promotion_id,state,scheduled_at,launched_at,audience) ON campaigns TO gm_app;
+GRANT UPDATE(state,error_code) ON messages TO gm_app;

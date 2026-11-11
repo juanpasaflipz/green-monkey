@@ -36,7 +36,7 @@ unverified unless a dated checkpoint explicitly records it.
 | Restaurants/organizations, branding | 1, 4–5, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Owner settings, currency lock, receipt snapshots, approved branding, organization locations/invitations/switching implemented; dynamic asset upload remains pending. |
 | Catalog/categories/search/photos | 2, required; R2 when images enabled | See DELIVERY_STATUS.md and corresponding M1–M9 section | Search, categories, bilingual product names, availability, menu editor; image assets not implemented. |
 | Modifiers, combos, open amount | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Required modifier groups and authoritative prices. Combo slots and open-amount UI pending. |
-| Promotions, scheduled offers, discounts/courtesies | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
+| Promotions, scheduled offers, discounts/courtesies | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | November 11, 2026: one versioned offer engine for POS/QR/kiosk with schedules, codes, usage limits, stacking, exact allocation, manual discounts and single-use manager approvals; unit, DB and browser evidence in MARKETING.md. Tax configuration and combo pricing remain pending. |
 | Tables, waiter attribution, service rounds | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Table selection, additional rounds, table moves and server reassignment with separate service version/audit. Verified creator/payment/round preservation and cross-tenant rejection. |
 | Parked carts/templates, call names, fulfillment | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | IndexedDB drafts and call names. Templates and richer line edits pending. |
 | Kitchen/bar, status, seen acknowledgement | 2–3, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Station queues, seen/ready/completed actions, persisted rounds and polling. Cancellation deltas pending. |
@@ -65,11 +65,12 @@ unverified unless a dated checkpoint explicitly records it.
 | Courier dispatch (Uber Direct) | Optional configured module | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
 | Loyalty/stamps/referrals | 5, configured module | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
 | Apple/Google wallet passes | Optional configured module | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
-| SMS/WhatsApp and voice operations | Optional configured module | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
+| SMS/WhatsApp and voice operations | Optional configured module | See DELIVERY_STATUS.md and corresponding M1–M9 section | Marketing sends only: Twilio SMS and WhatsApp Cloud API adapters behind explicit flags, consent and a restricted worker (MARKETING.md). Both disabled until sandbox verification; voice and operational messaging not implemented. |
 | AI receipt/menu parsing and recipe matching | 4–5, optional assist; manual flow required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
 | Kiosk suggestions, menu boards/displays | Optional follow-on | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
 | Incident monitoring / AI sentinel | 6 baseline; advanced optional module | See DELIVERY_STATUS.md and corresponding M1–M9 section | Safe error IDs, health/version endpoints, explicit capabilities. Metrics/alerts and incident workflow pending. |
-| Financing, settlement/disbursement, marketing/site fragments | Outside base scope | See DELIVERY_STATUS.md and corresponding M1–M9 section | Excluded from base POS per approved matrix. |
+| Guest marketing: guest list/consent, campaigns, automations, attribution, copy assistant | Pro configured module; each channel provider-gated | MARKETING.md; `tests/offers.test.ts`, `tests/marketing.test.ts`, `tests/promotions-db.ts`, `tests/marketing-db.ts`, `tests/browser/marketing.spec.ts` | Implemented and tested locally with fake providers. No real message sent: Resend, Twilio and WhatsApp need accounts and sandbox verification; bounce/STOP/delivery webhooks, loyalty-enrollment automation, Neon and staging runs pending. |
+| Financing, settlement/disbursement, marketing/site fragments | Outside base scope | See DELIVERY_STATUS.md and corresponding M1–M9 section | Financing/disbursement/site fragments excluded per approved matrix. Guest marketing was requested by the owner on November 11, 2026 and is tracked as its own row. |
 
 ## Acceptance inventory
 
@@ -93,14 +94,14 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 | UX-12 | partial | Keyboard search, modal dismissal/focus and one-state axe check; full screen-reader review pending. |
 | UX-13 | pending | Restaurant settings persist with English labels, timezone/cutoff/opening days. Organization switching and complete locale acceptance pending. |
 | UX-14 | partial | Catalog import and cash sale independently verified; complete onboarding flow pending. |
-| CORE-01 | partial | Canonical quote shared by POS/QR/kiosk/sync; promotions and tax configuration pending. |
+| CORE-01 | partial | Canonical quote shared by POS/QR/kiosk/sync now includes promotions (same engine, tampered totals impossible by schema); tax configuration pending. |
 | CORE-02 | verified | Eight parallel same-ID creates produce one order/stock effect; altered payload conflicts. |
 | CORE-03 | pending | Integrated provider events/reconciliation not implemented. |
 | CORE-04 | pending | Committed cash response loss and original-operation recovery tested; integrated provider crash/restart recovery not implemented. |
 | CORE-05 | partial | Concurrent cash/item collection and lost-response recovery tested; integrated cards pending. |
-| CORE-06 | partial | Money/remainder/unit arithmetic and partial item units tested; live taxes/promotions pending. |
+| CORE-06 | partial | Money/remainder/unit arithmetic, partial item units and full/partial discount allocation tested; live taxes pending. |
 | CORE-07 | partial | Recipe/price edits retain historical snapshots; new orders retain restaurant configuration. Tax/offline conflict acceptance pending. |
-| CORE-08 | partial | Device PIN, CSRF and cashier management denial tested; approval and membership lifecycle pending. |
+| CORE-08 | partial | Device PIN, CSRF and cashier management denial tested; action-bound single-use discount approval tested; membership lifecycle and other protected actions pending. |
 | CORE-09 | partial | Two-tenant RLS/FK and public QR tamper checks; invoice/webhook/print/upload/org routes pending. |
 | CORE-10 | partial | Missing context, rollback reuse and least-privileged role tested locally; Neon pooled/direct pending. |
 | CORE-11 | partial | Cash refund reason, original tender immutability and no automatic stock return; item void/approval/provider cases pending. |

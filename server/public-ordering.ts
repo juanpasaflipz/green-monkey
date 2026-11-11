@@ -5,6 +5,8 @@ import type postgres from "postgres";
 import { tenant } from "./db.js";
 import { verify, sign } from "./auth.js";
 import { catalog, createOrder, getOrder } from "./orders.js";
+import { priceOrder, publicQuote } from "./offers.js";
+import { recordFeedback } from "./guests.js";
 import { DomainError, orderInput, type Session } from "../shared/domain.js";
 function publicOrder(o: any) {
   return {
@@ -14,6 +16,12 @@ function publicOrder(o: any) {
     mode: o.mode,
     state: o.state,
     total: o.total,
+    discount: o.discount ?? 0,
+    discounts: (o.discounts ?? []).map((d: any) => ({
+      name: d.kind === "manual" ? "" : d.name,
+      code: d.code,
+      amount: d.amount,
+    })),
     paid: o.paid,
     refunded: o.refunded,
     createdAt: o.createdAt,
@@ -90,6 +98,25 @@ export function publicOrdering(sql: postgres.Sql) {
       next(e);
     }
   });
+  router.post("/:token/quote", async (req, res, next) => {
+    try {
+      res.json(
+        await context(req.params.token, async (tx, s, c) => {
+          await requirePro(tx);
+          const {
+            manualDiscount: _manual,
+            guest: _guest,
+            ...p
+          } = orderInput.parse(req.body);
+          return publicQuote(
+            await priceOrder(tx, s, { ...p, channel: c.channel }, true, false),
+          );
+        }),
+      );
+    } catch (e) {
+      next(e);
+    }
+  });
   router.post("/:token/orders", async (req, res, next) => {
     try {
       res.json(
@@ -124,6 +151,20 @@ export function publicOrdering(sql: postgres.Sql) {
       res.json(
         await tenant(sql, c.tenantId, async (tx) =>
           publicOrder(await getOrder(tx, c.orderId)),
+        ),
+      );
+    } catch (e) {
+      next(e);
+    }
+  });
+  router.post("/receipt/:token/feedback", async (req, res, next) => {
+    try {
+      const c = verify(req.params.token);
+      if (c.purpose !== "public_receipt" || c.expiresAt < Date.now())
+        throw new DomainError("unauthorized", 401);
+      res.json(
+        await tenant(sql, c.tenantId, (tx) =>
+          recordFeedback(tx, c.tenantId, c.orderId, req.body),
         ),
       );
     } catch (e) {

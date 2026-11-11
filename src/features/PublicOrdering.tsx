@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { strings, translateError, type Key } from "../i18n";
 import { Button, Field, Modal, Badge } from "../components/ui";
+import { mt } from "../i18n-marketing";
+import type { QuotePreview } from "./Offers";
+import { emptyGuest, Feedback, GuestFields, guestPayload } from "./GuestPages";
 import {
   quote,
   type Product,
@@ -29,6 +32,27 @@ export function PublicOrdering() {
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [code, setCode] = useState("");
+  const [guest, setGuest] = useState(emptyGuest);
+  const [preview, setPreview] = useState<{
+    key: string;
+    quote: QuotePreview;
+  } | null>(null);
+  const tm = mt(locale);
+  const previewKey = JSON.stringify([draft.lines, draft.code ?? null]);
+  useEffect(() => {
+    if (!draft.lines.length) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      void api<QuotePreview>("/public/" + token + "/quote", draft)
+        .then((q) => live && setPreview({ key: previewKey, quote: q }))
+        .catch(() => live && setPreview(null));
+    }, 200);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [previewKey, token]);
   useEffect(() => {
     void api("/public/" + token + "/catalog")
       .then(setData)
@@ -46,7 +70,10 @@ export function PublicOrdering() {
           lines: [],
           name: "",
           note: "",
+          code: undefined,
         }));
+        setCode("");
+        setGuest(emptyGuest());
         setResult(null);
         setProduct(null);
       }, 90000);
@@ -66,7 +93,10 @@ export function PublicOrdering() {
       currency: data?.restaurant.currency ?? "MXN",
     }).format(n / 10 ** currencyExponent(data?.restaurant.currency ?? "MXN"));
   const lines = data ? quote(draft.lines, data.catalog) : [];
-  const total = lines.reduce((a, l) => a + l.total, 0);
+  const offers =
+    draft.lines.length && preview?.key === previewKey ? preview.quote : null;
+  const total = offers ? offers.total : lines.reduce((a, l) => a + l.total, 0);
+  const codeStatus = offers?.code?.status;
   function add(p: Product, options: string[]) {
     setDraft((d) => ({
       ...d,
@@ -122,6 +152,7 @@ export function PublicOrdering() {
           <p>
             {t(result.order.paid >= result.order.total ? "paid" : "unpaid")}
           </p>
+          <Feedback locale={locale} receiptToken={result.receiptToken} />
         </section>
       ) : (
         <>
@@ -168,6 +199,79 @@ export function PublicOrdering() {
                 }
               />
             </Field>
+            {draft.code ? (
+              <div className="row between">
+                <span>
+                  {tm("promoCode")}: <strong>{draft.code}</strong>
+                </span>
+                <Button
+                  aria-label={`${tm("remove")} ${tm("promoCode")}`}
+                  onClick={() => setDraft((d) => ({ ...d, code: undefined }))}
+                >
+                  {tm("remove")}
+                </Button>
+              </div>
+            ) : (
+              <form
+                className="row"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const next = code.trim().toUpperCase();
+                  if (!/^[A-Z0-9]{3,24}$/.test(next)) return;
+                  setDraft((d) => ({ ...d, code: next }));
+                  setCode("");
+                  setError("");
+                }}
+              >
+                <Field label={tm("promoCode")}>
+                  <input
+                    value={code}
+                    maxLength={24}
+                    autoCapitalize="characters"
+                    onChange={(e) => setCode(e.target.value.toUpperCase())}
+                  />
+                </Field>
+                <Button type="submit" disabled={code.trim().length < 3}>
+                  {tm("apply")}
+                </Button>
+              </form>
+            )}
+            {codeStatus && (
+              <p
+                role="status"
+                className={codeStatus === "applied" ? "muted" : "error"}
+              >
+                {tm(
+                  codeStatus === "applied"
+                    ? "codeApplied"
+                    : codeStatus === "invalid"
+                      ? "codeInvalid"
+                      : codeStatus === "superseded"
+                        ? "codeSuperseded"
+                        : "codeNotEligible",
+                )}
+              </p>
+            )}
+            {offers && offers.discount > 0 && (
+              <>
+                <div className="row between">
+                  <span>{tm("subtotal")}</span>
+                  <span>{m(offers.subtotal)}</span>
+                </div>
+                {offers.applied.map((a, i) => (
+                  <div className="row between" key={i}>
+                    <span>{a.name}</span>
+                    <span>−{m(a.amount)}</span>
+                  </div>
+                ))}
+              </>
+            )}
+            <GuestFields
+              locale={locale}
+              value={guest}
+              onChange={setGuest}
+              selfService
+            />
             <div className="large-money">{m(total)}</div>
             <p>{t("payAtCounter")}</p>
             <Button
@@ -176,7 +280,17 @@ export function PublicOrdering() {
               onClick={async () => {
                 setBusy(true);
                 try {
-                  setResult(await api("/public/" + token + "/orders", draft));
+                  const contact = guestPayload(
+                    { ...guest, name: draft.name },
+                    locale,
+                  );
+                  setResult(
+                    await api("/public/" + token + "/orders", {
+                      ...draft,
+                      ...(contact ? { guest: contact } : {}),
+                    }),
+                  );
+                  setGuest(emptyGuest());
                 } catch (e) {
                   setError(translateError((e as Error).message, locale));
                 } finally {

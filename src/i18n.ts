@@ -1,6 +1,8 @@
 import type { Locale } from "../shared/domain";
 export const strings = {
   es: {
+    marketing: "Marketing",
+    discounts: "Descuentos y cortesías",
     thisPayment: "Este pago",
     assignService: "Mesa y mesero",
     waiter: "Mesero responsable",
@@ -236,6 +238,8 @@ export const strings = {
     notReady: "Esta función aún no está habilitada.",
   },
   en: {
+    marketing: "Marketing",
+    discounts: "Discounts and courtesies",
     thisPayment: "This payment",
     assignService: "Table and server",
     waiter: "Assigned server",
@@ -474,6 +478,78 @@ export const strings = {
 } as const;
 export type Key = keyof typeof strings.es;
 export const errorText: Record<string, [string, string]> = {
+  invalid_phone: [
+    "El teléfono no es válido. Incluye la lada o el código de país.",
+    "The phone number is not valid. Include the area or country code.",
+  ],
+  contact_required: [
+    "Falta el correo o teléfono del canal seleccionado.",
+    "The email or phone for the selected channel is missing.",
+  ],
+  guest_exists: [
+    "Ya existe otro cliente con ese correo o teléfono.",
+    "Another guest already has that email or phone.",
+  ],
+  consent_confirmation_required: [
+    "Confirma que el cliente pidió recibir mensajes antes de suscribirlo.",
+    "Confirm the guest asked to receive messages before subscribing them.",
+  ],
+  channel_not_configured: [
+    "Uno de los canales elegidos aún no está configurado para enviar.",
+    "One of the selected channels is not configured to send yet.",
+  ],
+  campaign_locked: [
+    "Esta campaña ya no se puede modificar en su estado actual.",
+    "This campaign can no longer be changed in its current state.",
+  ],
+  invalid_schedule: [
+    "Elige una fecha y hora futuras para programar el envío.",
+    "Choose a future date and time to schedule the send.",
+  ],
+  promotion_code_required: [
+    "La promoción adjunta debe estar activa y tener código.",
+    "The attached promotion must be active and have a code.",
+  ],
+  assistant_unavailable: [
+    "El asistente no respondió. Intenta de nuevo o escribe el mensaje manualmente.",
+    "The assistant did not respond. Try again or write the message manually.",
+  ],
+  promo_code_invalid: [
+    "Ese código de promoción no existe.",
+    "That promo code does not exist.",
+  ],
+  promo_code_not_eligible: [
+    "El código no aplica a esta orden (vigencia, horario, canal, mínimo o usos agotados).",
+    "The code does not apply to this order (dates, hours, channel, minimum or uses exhausted).",
+  ],
+  promo_code_taken: [
+    "Ya existe otra promoción con ese código.",
+    "Another promotion already uses that code.",
+  ],
+  approval_required: [
+    "Este descuento necesita una autorización vigente de gerente para esta orden exacta. Solicítala de nuevo.",
+    "This discount needs a current manager approval for this exact order. Request it again.",
+  ],
+  invalid_approval: [
+    "Usuario o PIN de gerente incorrecto.",
+    "Incorrect manager user or PIN.",
+  ],
+  offers_unavailable_offline: [
+    "Sin conexión no se aplican promociones ni descuentos.",
+    "Promotions and discounts are not applied offline.",
+  ],
+  invalid_discount: [
+    "El descuento no es válido para esta orden.",
+    "The discount is not valid for this order.",
+  ],
+  invalid_target: [
+    "La promoción incluye un producto que ya no existe.",
+    "The promotion includes a product that no longer exists.",
+  ],
+  price_changed: [
+    "El total cambió al enviar la orden. Revisa el importe actualizado antes de cobrar.",
+    "The total changed when the order was sent. Review the updated amount before charging.",
+  ],
   pro_required: [
     "Esta función necesita Pro vigente. Tus órdenes y recibos siguen disponibles.",
     "This feature requires current Pro access. Your orders and receipts remain available.",

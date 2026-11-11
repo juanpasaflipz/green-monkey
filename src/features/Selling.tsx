@@ -25,6 +25,9 @@ import { strings, translateError, type Key } from "../i18n";
 import { api, ApiError } from "../api";
 import { clearPaymentAttempt, db, scope, type Draft } from "../offline";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
+import { OfferSummary, type QuotePreview } from "./Offers";
+import { mt } from "../i18n-marketing";
+import { emptyGuest, GuestFields, guestPayload } from "./GuestPages";
 const fresh = (): OrderInput => ({
   operationId: crypto.randomUUID(),
   lines: [],
@@ -71,7 +74,13 @@ export function Selling({
   const [current, setCurrent] = useState<Order | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<{
+    key: string;
+    quote: QuotePreview;
+  } | null>(null);
   const [pendingPayment, setPendingPayment] = useState(false);
+  const [guest, setGuest] = useState(emptyGuest);
+  const [guestOpen, setGuestOpen] = useState(false);
   const [parked, setParked] = useState<Draft[] | null>(null);
   const [tables, setTables] = useState<any[]>([]);
   const [cashSession, setCashSession] = useState<any>(null);
@@ -209,7 +218,35 @@ export function Selling({
   } catch {
     /* Catalog conflicts are surfaced when sending. */
   }
-  const draftTotal = priced.reduce((a, l) => a + l.total, 0);
+  const listTotal = priced.reduce((a, l) => a + l.total, 0);
+  // Discounts are only ever calculated by the server. The preview is used when
+  // it matches the exact draft on screen; offline sales charge list price.
+  const previewKey = JSON.stringify([
+    current?.id ?? null,
+    draft.lines,
+    draft.code ?? null,
+    draft.manualDiscount ?? null,
+  ]);
+  const quotePreview = () =>
+    api<QuotePreview>("/quote", { ...draft, orderId: current?.id ?? null });
+  useEffect(() => {
+    if (!active || !online || !draft.lines.length) return;
+    let live = true;
+    const timer = setTimeout(() => {
+      void quotePreview()
+        .then((q) => live && setPreview({ key: previewKey, quote: q }))
+        .catch(() => live && setPreview(null));
+    }, 200);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [previewKey, online, active]);
+  const offers =
+    online && draft.lines.length && preview?.key === previewKey
+      ? preview.quote
+      : null;
+  const draftTotal = offers ? offers.total : listTotal;
   const due = (current ? current.total - current.paid : 0) + draftTotal;
   const categories = [...new Set(catalog.map((p) => p.category[locale]))];
   const filtered = catalog.filter(
@@ -234,6 +271,7 @@ export function Selling({
     setCurrent(null);
     setPayment(false);
     setReceipt(null);
+    setGuest(emptyGuest());
     setCartOpen(false);
     setError("");
   }
@@ -243,11 +281,24 @@ export function Selling({
     try {
       const o = await api<Order>(
         current ? `/orders/${current.id}/rounds` : "/orders",
-        current ? { ...draft, expectedVersion: current.version } : draft,
+        current
+          ? { ...draft, expectedVersion: current.version }
+          : (() => {
+              const contact = guestPayload(
+                { ...guest, name: draft.name },
+                locale,
+              );
+              return contact ? { ...draft, guest: contact } : draft;
+            })(),
       );
+      setGuest(emptyGuest());
       setCurrent(o);
       await db.cache.put({ id: contextId, value: o.id });
-      setDraft((d) => ({ ...d, operationId: crypto.randomUUID(), lines: [] }));
+      setDraft(({ code: _code, manualDiscount: _manual, ...d }) => ({
+        ...d,
+        operationId: crypto.randomUUID(),
+        lines: [],
+      }));
       return o;
     } catch (e) {
       setError(translateError((e as Error).message, locale));
@@ -256,11 +307,23 @@ export function Selling({
       setBusy(false);
     }
   }
-  function openPay() {
+  async function openPay() {
+    let payable = due;
+    if (online && draft.lines.length) {
+      // Never open the payment with a stale preview.
+      try {
+        const q = await quotePreview();
+        setPreview({ key: previewKey, quote: q });
+        payable = (current ? current.total - current.paid : 0) + q.total;
+      } catch (e) {
+        setError(translateError((e as Error).message, locale));
+        return;
+      }
+    } else if (!online) payable = listTotal;
     setSplitItems(false);
     setSelectedItems([]);
-    setAmount((due / scale).toFixed(exponent));
-    setReceived((due / scale).toFixed(exponent));
+    setAmount((payable / scale).toFixed(exponent));
+    setReceived((payable / scale).toFixed(exponent));
     setTip("0");
     paymentKey.current = crypto.randomUUID();
     setPayment(true);
@@ -304,11 +367,12 @@ export function Selling({
           method !== "cash" ||
           session.sellingAllowed === false ||
           new Date(session.offlineUntil) < new Date() ||
-          n !== draftTotal ||
+          n !== listTotal ||
           cash < n + tips
         )
           throw new Error("offline_conflict");
         const operationId = paymentKey.current;
+        const { code: _code, manualDiscount: _manual, ...offlineOrder } = draft;
         const receiptSnapshot = {
           lines: priced,
           restaurant: session.restaurant,
@@ -320,8 +384,8 @@ export function Selling({
           body: {
             formatVersion: 2,
             operationId,
-            order: draft,
-            expectedTotal: draftTotal,
+            order: offlineOrder,
+            expectedTotal: listTotal,
             received: cash,
             tip: tips,
             recordedAt: new Date().toISOString(),
@@ -346,7 +410,7 @@ export function Selling({
           number: 0,
           version: 1,
           lines: priced,
-          total: draftTotal,
+          total: listTotal,
           paid: 0,
           refunded: 0,
           state: "local",
@@ -365,6 +429,12 @@ export function Selling({
       let o = current;
       if (draft.lines.length) o = await send();
       if (!o) throw new Error("invalid_input");
+      if (n > o.total - o.paid) {
+        // The order was priced differently from what the dialog showed.
+        setAmount(((o.total - o.paid) / scale).toFixed(exponent));
+        setReceived(((o.total - o.paid) / scale).toFixed(exponent));
+        throw new Error("price_changed");
+      }
       const payload = {
         operationId: paymentKey.current,
         amount: n,
@@ -478,6 +548,9 @@ export function Selling({
             </p>
             <span>
               {money(current.total)} · {t("paid")}: {money(current.paid)}
+              {current.discount
+                ? ` · ${mt(locale)("discount")}: −${money(current.discount)}`
+                : ""}
             </span>
           </div>
         )}
@@ -538,6 +611,45 @@ export function Selling({
             onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))}
           />
         </Field>
+        {!current && draft.lines.length > 0 && online && (
+          <button className="text-button" onClick={() => setGuestOpen(true)}>
+            {guestPayload(guest, locale)
+              ? `${mt(locale)("customer")}: ${guest.email || guest.phone}`
+              : `+ ${mt(locale)("addCustomer")}`}
+          </button>
+        )}
+        {guestOpen && (
+          <Modal
+            title={mt(locale)("customer")}
+            close={() => setGuestOpen(false)}
+            closeLabel={t("close")}
+          >
+            <GuestFields
+              locale={locale}
+              value={guest}
+              onChange={setGuest}
+              selfService={false}
+            />
+            <Button
+              variant="primary"
+              className="full"
+              onClick={() => setGuestOpen(false)}
+            >
+              {mt(locale)("save")}
+            </Button>
+          </Modal>
+        )}
+        <OfferSummary
+          session={session}
+          locale={locale}
+          draft={draft}
+          setDraft={setDraft}
+          preview={offers}
+          online={online}
+          round={!!current}
+          money={money}
+          parseAmount={parseAmount}
+        />
         <div className="total">
           <span>{t("amountDue")}</span>
           <strong>{money(due)}</strong>
@@ -558,7 +670,7 @@ export function Selling({
           <Button
             variant="primary"
             disabled={due <= 0 || busy}
-            onClick={openPay}
+            onClick={() => void openPay()}
           >
             {t("pay")}
             <ArrowUpRight size={18} />
@@ -1008,10 +1120,18 @@ export function Selling({
                 <span>
                   {l.quantity} × {l.name[locale]}
                 </span>
-                <strong>{money(l.total)}</strong>
+                <strong>{money(l.gross ?? l.total)}</strong>
               </div>
             ))}
             <hr />
+            {(receipt.discounts ?? []).map((d, i) => (
+              <div className="row between" key={i}>
+                <span>
+                  {d.kind === "manual" ? mt(locale)("manualDiscount") : d.name}
+                </span>
+                <strong>−{money(d.amount)}</strong>
+              </div>
+            ))}
             <div className="row between">
               <span>{t("total")}</span>
               <strong>{money(receipt.total)}</strong>
