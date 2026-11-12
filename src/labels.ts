@@ -158,6 +158,13 @@ const operations: Record<string, Key> = {
   "payment.credentials_saved": "payOpCredentialsSaved",
   "payment.provider_disabled": "payOpProviderDisabled",
   "payment.device_mode_requested": "payOpDeviceModeRequested",
+  // marketing (047)
+  "marketing.settings": "marketingOpSettings",
+  "marketing.campaign.saved": "marketingOpCampaignSaved",
+  "marketing.campaign.launched": "marketingOpCampaignLaunched",
+  "marketing.campaign.scheduled": "marketingOpCampaignScheduled",
+  "marketing.campaign.cancelled": "marketingOpCampaignCancelled",
+  "marketing.automation.saved": "marketingOpAutomation",
   // loyalty (038)
   "loyalty.card.issued": "loyaltyOpCardIssued",
   "loyalty.card.revoked": "loyaltyOpCardRevoked",

@@ -85,6 +85,7 @@ import * as deliveryRoutes from "./routes/delivery.js";
 import { providerCapabilities } from "./payments/providers.js";
 import { configureWake } from "./payments/wake.js";
 import * as loyaltyRoutes from "./routes/loyalty.js";
+import * as marketingRoutes from "./routes/marketing.js";
 import * as kioskRoutes from "./routes/kiosk.js";
 import * as salesHistoryRoutes from "./routes/sales-history.js";
 import * as deliveryHistoryRoutes from "./routes/delivery-history.js";
@@ -174,6 +175,9 @@ accountRoutes.registerPreAuth({ app, sql });
 // payments (037): provider webhooks (P2) are pre-auth, before authentication (critic R31).
 paymentsRoutes.registerPreAuth({ app, sql });
 // loyalty (038, R31): the diner's /club page, after account's pre-auth routes and payments'.
+// marketing (047): the double opt-in link, mounted before the club router so its
+// catch-all 404 does not shadow it.
+marketingRoutes.registerPreAuth({ app, sql });
 loyaltyRoutes.registerPreAuth({ app, sql });
 app.use("/api", authentication(sql));
 // account (031): every /api/account-data/* path is owner-only with a recent step-up (C30).
@@ -512,6 +516,7 @@ publicOrderingRoutes.register({ app, sql, route });
 paymentsRoutes.register({ app, sql, route });
 deliveryRoutes.register({ app, sql, route });
 loyaltyRoutes.register({ app, sql, route });
+marketingRoutes.register({ app, sql, route });
 kioskRoutes.register({ app, sql, route });
 // Histórico POS Lite (040): report history imported from pos-lite, after the Wave 4 areas.
 salesHistoryRoutes.register({ app, sql, route });

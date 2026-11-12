@@ -13,6 +13,7 @@ import account from "./i18n/account";
 import publicOrdering from "./i18n/public-ordering";
 import payments from "./i18n/payments";
 import loyalty from "./i18n/loyalty";
+import marketing from "./i18n/marketing";
 import kiosk from "./i18n/kiosk";
 import history from "./i18n/history";
 import delivery from "./i18n/delivery";
@@ -35,6 +36,8 @@ export const areas = {
   payments,
   loyalty,
   kiosk,
+  // Guest marketing on the club (047).
+  marketing,
   // Histórico POS Lite (040), after the Wave 4 areas.
   history,
   // Histórico de plataformas (041), after 040.
@@ -571,6 +574,7 @@ export const strings = {
     ...publicOrdering.es,
     ...payments.es,
     ...loyalty.es,
+    ...marketing.es,
     ...kiosk.es,
     ...history.es,
     ...delivery.es,
@@ -591,6 +595,7 @@ export const strings = {
     ...publicOrdering.en,
     ...payments.en,
     ...loyalty.en,
+    ...marketing.en,
     ...kiosk.en,
     ...history.en,
     ...delivery.en,
@@ -735,6 +740,7 @@ export const errorText: Record<string, readonly [string, string]> = {
   ...publicOrdering.errors,
   ...payments.errors,
   ...loyalty.errors,
+  ...marketing.errors,
   ...kiosk.errors,
   ...history.errors,
   ...delivery.errors,

@@ -1,3 +1,4 @@
+import { MarketingPanel } from "../marketing/MarketingPanel";
 import { EngagementSettingsPanel } from "./Engagement";
 /**
  * Configuración › Club de lealtad (038 §2.10; critic R26: its own section after Privacidad y
@@ -46,7 +47,9 @@ export function LoyaltySettings({
           programName: s.programName,
           stampsRequired: String(s.stampsRequired),
           stampThreshold: pesos(s.stampThreshold),
-          maxStampsPerOrder: s.maxStampsPerOrder ? String(s.maxStampsPerOrder) : "",
+          maxStampsPerOrder: s.maxStampsPerOrder
+            ? String(s.maxStampsPerOrder)
+            : "",
           rewardKind: s.rewardKind,
           rewardDescription: s.rewardDescription,
           rewardAmount: pesos(s.rewardAmount),
@@ -80,7 +83,9 @@ export function LoyaltySettings({
         programName: form.programName.trim(),
         stampsRequired: Number(form.stampsRequired),
         stampThreshold: toMinor(form.stampThreshold) ?? 0,
-        maxStampsPerOrder: form.maxStampsPerOrder ? Number(form.maxStampsPerOrder) : null,
+        maxStampsPerOrder: form.maxStampsPerOrder
+          ? Number(form.maxStampsPerOrder)
+          : null,
         rewardKind: form.rewardKind,
         rewardDescription: form.rewardDescription.trim(),
         rewardAmount: amount ? toMinor(form.rewardAmount) : null,
@@ -103,7 +108,10 @@ export function LoyaltySettings({
   }
   const pro = view?.plan === "pro";
   return (
-    <section className="panel loyalty-settings" aria-labelledby="loyalty-settings-title">
+    <section
+      className="panel loyalty-settings"
+      aria-labelledby="loyalty-settings-title"
+    >
       <h2 id="loyalty-settings-title">{t("loyaltySettingsTitle")}</h2>
       {!online && <p className="muted">{t("loyaltyOfflineHint")}</p>}
       {view && !pro && <p className="muted">{t("loyaltyProOnly")}</p>}
@@ -122,7 +130,11 @@ export function LoyaltySettings({
           {view.privacyUrl ? (
             <p>
               {t("loyaltyPrivacyNotice")}{" "}
-              <a href={view.privacyUrl} target="_blank" rel="noopener noreferrer">
+              <a
+                href={view.privacyUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
                 {view.privacyUrl}
               </a>
             </p>
@@ -146,7 +158,11 @@ export function LoyaltySettings({
             <p className="muted">
               {fill(t("loyaltyPrivacyAttested"), {
                 name: view.privacyAttestedByName,
-                date: dateTime(view.privacyAttestedAt, session.restaurant.timezone, locale),
+                date: dateTime(
+                  view.privacyAttestedAt,
+                  session.restaurant.timezone,
+                  locale,
+                ),
               })}
             </p>
           )}
@@ -168,7 +184,9 @@ export function LoyaltySettings({
             />
           </Field>
           <p className="muted tiny">
-            {fill(t("loyaltyProgramNameHint"), { restaurant: session.restaurant.name })}
+            {fill(t("loyaltyProgramNameHint"), {
+              restaurant: session.restaurant.name,
+            })}
           </p>
           <div className="loyalty-grid">
             <Field label={t("loyaltyStampsRequired")}>
@@ -198,7 +216,11 @@ export function LoyaltySettings({
             </Field>
           </div>
           <p className="muted tiny">
-            {thresholdHint(form.stampThreshold, locale, session.restaurant.currency)}
+            {thresholdHint(
+              form.stampThreshold,
+              locale,
+              session.restaurant.currency,
+            )}
           </p>
           <fieldset className="loyalty-country">
             <legend>{t("loyaltyRewardKind")}</legend>
@@ -290,6 +312,9 @@ export function LoyaltySettings({
         </p>
       )}
       {pro && <EngagementSettingsPanel locale={locale} online={online} />}
+      {pro && view?.enabled && (
+        <MarketingPanel session={session} locale={locale} online={online} />
+      )}
       {view?.importAllowed && pro && (
         <LoyaltyImport
           session={session}
@@ -297,9 +322,12 @@ export function LoyaltySettings({
           online={online}
           stampsRequired={view.stampsRequired}
           onApplySettings={(s) => {
-            if (s.stampsRequired) set("stampsRequired", String(s.stampsRequired));
-            if (s.stampThreshold !== null) set("stampThreshold", pesos(s.stampThreshold));
-            if (s.rewardDescription) set("rewardDescription", s.rewardDescription);
+            if (s.stampsRequired)
+              set("stampsRequired", String(s.stampsRequired));
+            if (s.stampThreshold !== null)
+              set("stampThreshold", pesos(s.stampThreshold));
+            if (s.rewardDescription)
+              set("rewardDescription", s.rewardDescription);
           }}
           // The import may have created the settings row: take its version, keep the form.
           onImported={() =>

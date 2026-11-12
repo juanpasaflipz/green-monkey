@@ -82,6 +82,9 @@ export const forbiddenCredentials: Record<ProcessKind, readonly string[]> = {
     "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_MESSAGING_SERVICE_SID",
     "LOYALTY_SMS_SEND", "APPLE_PASS_KEY_BASE64", "APPLE_PASS_CERT_BASE64",
     "APPLE_PASS_KEY_PASSPHRASE", "GOOGLE_WALLET_SA_KEY_BASE64", "LOYALTY_WALLET_SIGNING_SECRET",
+    // marketing (047): the WhatsApp provider key is the worker's; the MARKETING_*_SEND
+    // switches are not secrets and are set on both processes.
+    "WHATSAPP_ACCESS_TOKEN",
   ],
   worker: [
     "DATABASE_URL",

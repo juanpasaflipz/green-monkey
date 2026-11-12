@@ -259,6 +259,9 @@ code directly.
   balances); the alert gives the count only: escalate to support with the restaurant and the day,
   and support finds the members by comparing `loyalty_members` with the sums of `loyalty_ledger`.
 
+Campaigns and daily automated messages for confirmed members are a separate area:
+[MARKETING.md](MARKETING.md) (047).
+
 ## Engagement extension (042)
 
 Migration `042_loyalty_engagement.sql` adds the remaining core POS Lite engagement

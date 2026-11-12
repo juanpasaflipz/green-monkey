@@ -51,6 +51,14 @@ export const EXPORT_TABLE_LABELS: Readonly<
   ],
   loyalty_referrals: ["Recomendaciones del club", "Club referrals"],
   loyalty_messages: ["Mensajes del club", "Club messages"],
+  marketing_settings: ["Opciones de marketing", "Marketing settings"],
+  marketing_confirmations: [
+    "Confirmaciones de marketing",
+    "Marketing confirmations",
+  ],
+  marketing_campaigns: ["Campañas de marketing", "Marketing campaigns"],
+  marketing_messages: ["Mensajes de marketing", "Marketing messages"],
+  marketing_runs: ["Ejecuciones de automatizaciones", "Automation runs"],
   delivery_day_attempts: [
     "Estado de reportes de delivery",
     "Delivery report status",

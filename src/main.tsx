@@ -10,6 +10,7 @@ const LegalPage = lazy(() => import("./legal/LegalPage"));
 const PublicOrdering = lazy(() => import("./features/PublicOrdering"));
 const CardPage = lazy(() => import("./features/loyalty/CardPage"));
 const JoinPage = lazy(() => import("./features/loyalty/JoinPage"));
+const ConfirmPage = lazy(() => import("./features/marketing/ConfirmPage"));
 import { PlatformGate } from "./features/offline/PlatformGate";
 import { registerServiceWorker } from "./service-worker";
 import "@fontsource-variable/inter/opsz.css";
@@ -25,6 +26,8 @@ createRoot(document.getElementById("root")!).render(
         <PublicOrdering />
       ) : /^\/club\/card\/?$/.test(location.pathname) ? (
         <CardPage />
+      ) : /^\/club\/confirm\/?$/.test(location.pathname) ? (
+        <ConfirmPage />
       ) : /^\/club\/?$/.test(location.pathname) ? (
         <JoinPage />
       ) : location.pathname === "/" &&
