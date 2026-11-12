@@ -281,13 +281,17 @@ async function daily(f: Fixture, env: NodeJS.ProcessEnv = SEND) {
     f.tenantId,
     (tx) => tx`delete from marketing_runs where tenant_id=${f.tenantId}`,
   );
-  // An Etc zone whose current hour is mid-afternoon keeps the test time-independent.
+  // An Etc zone whose current hour is between noon and 20:00 keeps the test independent
+  // of the clock. Etc/GMT-N is UTC+N (N up to 14); Etc/GMT+N is UTC-N (N up to 12).
   const utcHour = new Date().getUTCHours();
-  const offset = 15 - utcHour;
+  const ahead = [...Array(27).keys()]
+    .map((n) => n - 12)
+    .find((k) => {
+      const hour = (((utcHour + k) % 24) + 24) % 24;
+      return hour >= 12 && hour <= 20;
+    })!;
   const zone =
-    offset === 0
-      ? "UTC"
-      : `Etc/GMT${offset > 0 ? "-" : "+"}${Math.abs(offset)}`;
+    ahead === 0 ? "UTC" : `Etc/GMT${ahead > 0 ? "-" : "+"}${Math.abs(ahead)}`;
   await admin`update restaurants set timezone=${zone} where id=${f.tenantId}`;
   try {
     return await run(f.owner, (tx) =>
