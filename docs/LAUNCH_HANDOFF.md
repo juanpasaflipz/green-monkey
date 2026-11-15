@@ -567,7 +567,8 @@ outside the repository. **Yours:** take the offline copy of `CREDENTIAL_ENCRYPTI
 - **Why.** Live Pro subscriptions. **Not needed for the pilot launch:** production
   launches with billing disabled (`BILLING_SANDBOX_ENABLED` unset;
   [PROVISIONING.md §3](PROVISIONING.md#3-railway) step 4; [RUNBOOK.md, "Open follow-ups"](RUNBOOK.md#open-follow-ups)
-  DB-1), today's billing code cannot use live keys ([README](../README.md), "Billing
+  DB-1), live mode now exists behind `BILLING_LIVE_ENABLED` but is not yet run against
+  the live account ([BILLING_LIVE.md](BILLING_LIVE.md); [README](../README.md), "Billing
   implementation in progress"), and pilots get Pro through an audited support grant
   (1.12). Staging keeps its Stripe sandbox keys on the worker (cutover step 7).
 - **Where it goes.** In the Stripe Dashboard, complete account activation: business

@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { stripeBilling } from "../server/stripe-billing";
 import { verifyStripeEvent } from "../server/stripe-webhook";
 import {
+  provisionStripeCatalog,
+  provisionStripeTaxRate,
   proPriceKeys,
   stripeKeyMatches,
   validatePrice,
@@ -225,5 +227,59 @@ describe("live webhook verification", () => {
     expect(() =>
       verifyStripeEvent(l.body, l.signature, secret, "sandbox", now * 1000),
     ).toThrow("stripe_webhook_invalid");
+  });
+});
+
+describe("live catalog provisioning (owner-run)", () => {
+  it("refuses a test key before any network call", async () => {
+    const request = vi.fn<typeof fetch>();
+    await expect(
+      provisionStripeCatalog("sk_test_x", "acct_x", "live", request),
+    ).rejects.toThrow("stripe_live_key_required");
+    await expect(
+      provisionStripeTaxRate("sk_test_x", "acct_x", "live", request),
+    ).rejects.toThrow("stripe_live_key_required");
+    expect(request).not.toHaveBeenCalled();
+  });
+  it("reuses an existing live product and prices and refuses test-mode ones", async () => {
+    const answers = (livemode: boolean) =>
+      vi.fn<typeof fetch>(async (input) => {
+        const url = new URL(String(input));
+        if (url.pathname === "/v1/account")
+          return Response.json({ id: "acct_x" });
+        if (url.pathname === "/v1/products/green_monkey_pro_v1")
+          return Response.json({
+            id: "green_monkey_pro_v1",
+            active: true,
+            livemode,
+            name: "Green Monkey Pro",
+            metadata: {
+              application: "green_monkey",
+              purpose: "saas_subscription",
+            },
+          });
+        if (url.pathname === "/v1/prices") {
+          const key = url.searchParams.get("lookup_keys[]");
+          const interval = key === proPriceKeys.year ? "year" : "month";
+          return Response.json({
+            data: [price(interval, livemode)],
+            has_more: false,
+          });
+        }
+        throw Error("unexpected " + url.pathname);
+      });
+    const ok = answers(true);
+    await expect(
+      provisionStripeCatalog("sk_live_x", "acct_x", "live", ok),
+    ).resolves.toMatchObject({
+      monthlyPriceId: "price_month",
+      annualPriceId: "price_year",
+    });
+    expect(ok.mock.calls.some(([, init]) => init?.method === "POST")).toBe(
+      false,
+    );
+    await expect(
+      provisionStripeCatalog("sk_live_x", "acct_x", "live", answers(false)),
+    ).rejects.toThrow("stripe_catalog_product_mismatch");
   });
 });

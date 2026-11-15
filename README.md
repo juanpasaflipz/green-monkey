@@ -241,7 +241,8 @@ webhook reconciliation, saved signup trial preferences and owner controls. Real
 Stripe trial, hosted Checkout payment and cancellation checks pass. See
 [the current billing checkpoint](docs/BILLING_IMPLEMENTATION.md) for activation
 requirements, evidence and remaining staging qualification. It is disabled by
-default and cannot use live keys.
+default. Live billing (real charges) has its own production-only switch and
+is not yet run against a live account: see [live billing](docs/BILLING_LIVE.md).
 
 With `BILLING_SANDBOX_ENABLED=true`, the web server only records billing
 requests; the Stripe provider loop runs in the worker. Locally, run

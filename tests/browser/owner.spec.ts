@@ -132,6 +132,7 @@ test("verified-identity fixture: owner signup, responsive forms, entry and logou
       route.fulfill({
         json: {
           enabled: true,
+          mode: "sandbox",
           billing: null,
           operation: null,
           entitlement: null,
@@ -192,6 +193,7 @@ test("verified-identity fixture: owner signup, responsive forms, entry and logou
       route.fulfill({
         json: {
           enabled: true,
+          mode: "sandbox",
           hostedUrl: null,
           billing: { interval: "month" },
           operation: locationQuoteTenant
