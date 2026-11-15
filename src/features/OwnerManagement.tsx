@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Locale } from "../../shared/domain";
-import { PRO_OFFER } from "../../shared/plans";
+import { PRO_OFFER, type BillingMode } from "../../shared/plans";
 import { Button, Field } from "../components/ui";
 import { responseError } from "../api";
 import { strings, errorNotice, withSupportReference, type Key } from "../i18n";
@@ -48,7 +48,7 @@ export function OwnerManagement({
   restaurants,
   roles = {},
   config = null,
-  billingSandbox,
+  billing,
   refresh,
 }: {
   locale: Locale;
@@ -57,7 +57,7 @@ export function OwnerManagement({
   /** account (031): the account's role per organization. */
   roles?: Record<string, "primary" | "co_owner">;
   config?: AccountConfig | null;
-  billingSandbox: boolean;
+  billing: BillingMode;
   refresh: () => Promise<void>;
 }) {
   const es = locale === "es";
@@ -154,18 +154,18 @@ export function OwnerManagement({
         const invites = await request(
           `/api/auth/account/invitations?tenantId=${selected}`,
         );
-        const billing =
-          billingSandbox && restaurant?.activation_pending
+        const billingStatus =
+          billing !== "off" && restaurant?.activation_pending
             ? await request(`/api/billing/status?tenantId=${selected}`)
             : null;
         if (live) {
           setInvitations(invites);
-          setStatus(billing);
+          setStatus(billingStatus);
         }
         if (
           live &&
-          billing?.operation?.tenant_id === selected &&
-          billing.operation.result?.applied
+          billingStatus?.operation?.tenant_id === selected &&
+          billingStatus.operation.result?.applied
         )
           await refresh();
       } catch (e) {
@@ -189,7 +189,7 @@ export function OwnerManagement({
       live = false;
       clearInterval(timer);
     };
-  }, [selected, billingSandbox, restaurant?.activation_pending]);
+  }, [selected, billing, restaurant?.activation_pending]);
   const operation =
     status?.operation?.tenant_id === selected ? status.operation : null;
   const quote =
@@ -264,13 +264,15 @@ export function OwnerManagement({
               ? "La sucursal permanece inactiva hasta que Stripe confirme la actualización. Se conserva la fecha de renovación o fin de prueba de tu organización."
               : "The location stays inactive until Stripe confirms the update. Your organization’s renewal or trial end date stays the same."}
           </p>
-          {billingSandbox && (
+          {billing !== "off" && (
             <>
-              <p>
-                {es
-                  ? "Prueba de facturación en sandbox."
-                  : "Sandbox billing test."}
-              </p>
+              {billing === "sandbox" && (
+                <p>
+                  {es
+                    ? "Prueba de facturación en sandbox."
+                    : "Sandbox billing test."}
+                </p>
+              )}
               {quote && quoteValid && (
                 <>
                   <p>

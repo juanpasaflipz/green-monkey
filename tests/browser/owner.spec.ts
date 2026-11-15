@@ -132,6 +132,7 @@ test("verified-identity fixture: owner signup, responsive forms, entry and logou
       route.fulfill({
         json: {
           enabled: true,
+          mode: "sandbox",
           billing: null,
           operation: null,
           entitlement: null,
@@ -182,7 +183,7 @@ test("verified-identity fixture: owner signup, responsive forms, entry and logou
     expect(billingAxe.violations).toEqual([]);
     await admin`insert into restaurant_entitlements(tenant_id,status,access_until,source) values(${account.restaurants[0].id},'active',now()+interval '1 day','fixture')`;
     await page.route("**/api/auth/providers", (route) =>
-      route.fulfill({ json: { google: true, billingSandbox: true } }),
+      route.fulfill({ json: { google: true, billing: "sandbox" } }),
     );
     await page.unroute("**/api/billing/status?*");
     let locationQuoteTenant = "";
@@ -192,6 +193,7 @@ test("verified-identity fixture: owner signup, responsive forms, entry and logou
       route.fulfill({
         json: {
           enabled: true,
+          mode: "sandbox",
           hostedUrl: null,
           billing: { interval: "month" },
           operation: locationQuoteTenant

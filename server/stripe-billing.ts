@@ -1,8 +1,10 @@
 import { z } from "zod";
 import { PRO_OFFER, type Entitlement } from "../shared/plans.js";
 import {
-  validateSandboxPrice,
-  validateSandboxTaxRate,
+  stripeKeyMatches,
+  validatePrice,
+  validateTaxRate,
+  type StripeMode,
 } from "./stripe-catalog.js";
 import { checkoutTaxParams, trialTaxParams } from "./saas-tax.js";
 
@@ -35,7 +37,10 @@ export const locationQuoteSchema = z.object({
 export type LocationQuote = z.infer<typeof locationQuoteSchema>;
 const configSchema = z
   .object({
-    secretKey: z.string().regex(/^(sk|rk)_test_[A-Za-z0-9]+$/),
+    // "live" charges real cards. Its key, every object read back and every
+    // webhook must carry livemode true; "sandbox" the reverse.
+    mode: z.enum(["sandbox", "live"]).default("sandbox"),
+    secretKey: z.string(),
     accountId: providerId("acct"),
     monthlyPriceId: providerId("price"),
     annualPriceId: providerId("price"),
@@ -64,7 +69,10 @@ const configSchema = z
       .refine((t) => t.mode === "off" || t.taxRateId !== null)
       .default({ mode: "off", taxRateId: null, collectTaxId: false }),
   })
-  .refine((v) => v.monthlyPriceId !== v.annualPriceId);
+  .refine((v) => v.monthlyPriceId !== v.annualPriceId)
+  .refine((v) => stripeKeyMatches(v.secretKey, v.mode))
+  // Live billing never runs without IVA (account 031, GAP-6).
+  .refine((v) => v.mode === "sandbox" || v.tax.mode === "tax_rate");
 export type StripeBillingConfig = z.input<typeof configSchema>;
 
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
@@ -101,18 +109,27 @@ function hostedUrl(value: string, host: string) {
   return value;
 }
 
-/** Sandbox transport only. Callers must persist authorized organization/customer/
+/** Transport only. Callers must persist authorized organization/customer/
  * subscription bindings and immutable operation IDs BEFORE invoking mutations.
  * Do not mount this adapter directly as request handlers or hold a DB transaction
  * across its network calls. It deliberately cannot write local entitlements.
  */
-export function stripeSandboxBilling(
+export function stripeBilling(
   input: StripeBillingConfig,
   request: typeof fetch = fetch,
 ) {
   const validated = configSchema.safeParse(input);
-  if (!validated.success) throw Error("stripe_billing_sandbox_config_required");
+  if (!validated.success)
+    throw Error(
+      input.mode === "live"
+        ? "stripe_billing_live_config_required"
+        : "stripe_billing_sandbox_config_required",
+    );
   const config = validated.data;
+  const mode: StripeMode = config.mode;
+  const livemode = z.literal(mode === "live");
+  // Stripe prefixes Checkout session ids with the mode: cs_test_ or cs_live_.
+  const checkoutSessionId = providerId(mode === "live" ? "cs_live" : "cs_test");
   const priceId = (interval: "month" | "year") =>
     interval === "month" ? config.monthlyPriceId : config.annualPriceId;
   async function call(
@@ -158,7 +175,7 @@ export function stripeSandboxBilling(
     const value = parse(
       z.object({
         id: z.literal(scope.customerId),
-        livemode: z.literal(false),
+        livemode,
         deleted: z.literal(false).optional(),
         metadata: z.unknown(),
       }),
@@ -170,16 +187,18 @@ export function stripeSandboxBilling(
   /** The configured IVA 16 % rate, checked before any taxed trial or checkout. */
   async function taxRate() {
     if (config.tax.mode !== "tax_rate") return;
-    const value = validateSandboxTaxRate(
+    const value = validateTaxRate(
       await call(`/tax_rates/${config.tax.taxRateId}`),
+      mode,
     );
     if (value.id !== config.tax.taxRateId)
       throw Error("stripe_billing_response_mismatch");
   }
   async function price(interval: "month" | "year") {
-    const value = validateSandboxPrice(
+    const value = validatePrice(
       await call(`/prices/${priceId(interval)}`),
       interval,
+      mode,
     );
     if (value.id !== priceId(interval))
       throw Error("stripe_billing_response_mismatch");
@@ -204,7 +223,7 @@ export function stripeSandboxBilling(
         id: z.literal(binding.subscriptionId),
         object: z.literal("subscription"),
         customer: z.literal(binding.customerId),
-        livemode: z.literal(false),
+        livemode,
         currency: z.literal("mxn"),
         metadata: z.unknown(),
         status: z.enum([
@@ -237,9 +256,10 @@ export function stripeSandboxBilling(
       value,
     );
     checkMetadata(result.metadata, binding.organizationId);
-    const checked = validateSandboxPrice(
+    const checked = validatePrice(
       result.items.data[0].price,
       binding.interval,
+      mode,
     );
     if (checked.id !== priceId(binding.interval))
       throw Error("stripe_billing_response_mismatch");
@@ -298,7 +318,7 @@ export function stripeSandboxBilling(
       z.object({
         id: z.literal(invoiceId),
         customer: z.literal(scope.customerId),
-        livemode: z.literal(false),
+        livemode,
         hosted_invoice_url: z.url().nullable(),
         parent: z.object({
           type: z.literal("subscription_details"),
@@ -441,7 +461,7 @@ export function stripeSandboxBilling(
             z.object({
               id: z.literal(providerId("in").parse(invoiceId)),
               customer: z.literal(binding.customerId),
-              livemode: z.literal(false),
+              livemode,
               status: z.literal("void"),
               parent: z.object({
                 subscription_details: z.object({
@@ -482,7 +502,7 @@ export function stripeSandboxBilling(
       const result = parse(
         z.object({
           id: providerId("cus"),
-          livemode: z.literal(false),
+          livemode,
           metadata: z.unknown(),
         }),
         await call("/customers", form, key),
@@ -558,8 +578,8 @@ export function stripeSandboxBilling(
         form.set(`subscription_data[metadata][${name}]`, value);
       const result = parse(
         z.object({
-          id: providerId("cs_test"),
-          livemode: z.literal(false),
+          id: checkoutSessionId,
+          livemode,
           mode: z.literal("subscription"),
           customer: z.literal(scope.customerId),
           client_reference_id: z.literal(scope.organizationId),
@@ -573,13 +593,13 @@ export function stripeSandboxBilling(
       };
     },
     async readCheckout(scope: BillingScope, sessionId: string) {
-      providerId("cs_test").parse(sessionId);
+      checkoutSessionId.parse(sessionId);
       await checkScope(scope);
       return parse(
         z.object({
           id: z.literal(sessionId),
           object: z.literal("checkout.session"),
-          livemode: z.literal(false),
+          livemode,
           mode: z.literal("subscription"),
           customer: z.literal(scope.customerId),
           client_reference_id: z.literal(scope.organizationId),
@@ -596,7 +616,7 @@ export function stripeSandboxBilling(
       const result = parse(
         z.object({
           id: providerId("bps"),
-          livemode: z.literal(false),
+          livemode,
           customer: z.literal(scope.customerId),
           url: z.url(),
         }),
@@ -657,3 +677,9 @@ export function stripeSandboxBilling(
     },
   };
 }
+
+/** The sandbox adapter, for the sandbox scripts and tests. */
+export const stripeSandboxBilling = (
+  input: Omit<StripeBillingConfig, "mode">,
+  request: typeof fetch = fetch,
+) => stripeBilling({ ...input, mode: "sandbox" }, request);

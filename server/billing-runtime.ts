@@ -4,17 +4,18 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { z } from "zod";
 import { withOwner } from "./owner-accounts.js";
 import { billingStore, checkBillingRole } from "./billing-store.js";
-import { stripeSandboxBilling } from "./stripe-billing.js";
+import { stripeBilling } from "./stripe-billing.js";
 import { billingTick } from "./billing-worker.js";
 import {
-  verifyStripeSandboxEvent,
+  verifyStripeEvent,
   subscriptionEventReference,
 } from "./stripe-webhook.js";
+import { billingMode } from "./billing-mode.js";
 import { waitForDatabase } from "./db.js";
 import { poolOptions, withoutParams } from "./db-support.js";
 import { clientIp, log } from "./logging.js";
 import { legalConfig, requireCurrentLegal } from "./legal.js";
-import { saasTaxConfig } from "./saas-tax.js";
+import { assertSaasTaxReady, saasTaxConfig } from "./saas-tax.js";
 
 /** The billing capability login on the same database as the runtime role. */
 function billingPool(env: NodeJS.ProcessEnv, applicationName: string) {
@@ -48,10 +49,10 @@ export async function billingRuntime(
   env: NodeJS.ProcessEnv,
   _options: { runWorker?: boolean } = {},
 ) {
-  const enabled = env.BILLING_SANDBOX_ENABLED === "true";
+  const mode = billingMode(env);
   const routes = Router(),
     webhook = Router();
-  if (!enabled) {
+  if (mode === "off") {
     routes.get("/status", (_req, res) => res.json({ enabled: false }));
     return { routes, webhook, close: async () => {} };
   }
@@ -70,10 +71,11 @@ export async function billingRuntime(
     async (req, res, next) => {
       let subscription: string | null, eventId: string;
       try {
-        const event = verifyStripeSandboxEvent(
+        const event = verifyStripeEvent(
           req.body,
           req.get("stripe-signature") ?? "",
           env.STRIPE_WEBHOOK_SECRET!,
+          mode,
         );
         eventId = event.id;
         subscription = subscriptionEventReference(event);
@@ -113,7 +115,11 @@ export async function billingRuntime(
         undefined,
         async (_tx, a) => a.id,
       );
-      res.json({ enabled: true, ...(await store.status(account, tenantId)) });
+      res.json({
+        enabled: true,
+        mode,
+        ...(await store.status(account, tenantId)),
+      });
     } catch (error) {
       next(error);
     }
@@ -208,7 +214,12 @@ export async function billingWorker(
 ) {
   if (!env.STRIPE_PORTAL_CONFIG_ID)
     throw Error("billing_worker_and_webhook_configuration_required");
-  const provider = stripeSandboxBilling({
+  const mode = billingMode(env);
+  if (mode === "off") throw Error("billing_disabled");
+  // Checked again here, next to the live key, not only at config load.
+  if (mode === "live") assertSaasTaxReady(env, legalConfig(env));
+  const provider = stripeBilling({
+    mode,
     secretKey: env.STRIPE_SECRET_KEY!,
     accountId: env.STRIPE_EXPECTED_ACCOUNT_ID!,
     monthlyPriceId: env.STRIPE_PRICE_PRO_MONTHLY!,

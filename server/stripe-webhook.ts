@@ -4,10 +4,11 @@ import { z } from "zod";
 /** Verify raw bytes before JSON parsing. This authenticates delivery, not ownership
  * or entitlement. The future inbox must durably deduplicate the returned event ID.
  */
-export function verifyStripeSandboxEvent(
+export function verifyStripeEvent(
   body: Buffer,
   signature: string,
   secret: string,
+  mode: "sandbox" | "live",
   now = Date.now(),
 ) {
   const fail = () => {
@@ -47,7 +48,8 @@ export function verifyStripeSandboxEvent(
       .object({
         id: z.string().regex(/^evt_[A-Za-z0-9]+$/),
         object: z.literal("event"),
-        livemode: z.literal(false),
+        // A sandbox endpoint never accepts a live event, and the reverse.
+        livemode: z.literal(mode === "live"),
         // Platform billing only; connected-account events belong to another scope.
         account: z.null().optional(),
         type: z.string().min(1).max(200),
@@ -60,8 +62,15 @@ export function verifyStripeSandboxEvent(
   }
 }
 
+export const verifyStripeSandboxEvent = (
+  body: Buffer,
+  signature: string,
+  secret: string,
+  now = Date.now(),
+) => verifyStripeEvent(body, signature, secret, "sandbox", now);
+
 export function subscriptionEventReference(
-  event: ReturnType<typeof verifyStripeSandboxEvent>,
+  event: ReturnType<typeof verifyStripeEvent>,
 ): string | null {
   if (
     [

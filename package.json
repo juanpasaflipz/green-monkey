@@ -15,6 +15,7 @@
     "lint": "eslint .",
     "test": "vitest run tests/*.test.ts",
     "stripe:catalog:sandbox": "tsx scripts/stripe-sandbox-catalog.ts",
+    "stripe:live:setup": "tsx scripts/stripe-live-setup.ts",
     "test:db": "npm run test:db:core",
     "test:db:core": "tsx tests/database.ts",
     "test:db:identity": "tsx tests/google-attempts-db.ts && tsx tests/owner-accounts-db.ts",

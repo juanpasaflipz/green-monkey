@@ -11,7 +11,8 @@ webhook returned the restaurant to Free. Evidence: `evidence/staging/billing.jso
 and `evidence/staging/billing-restart.json`. The synthetic fixture is retained.
 
 This qualifies sandbox behavior, not live billing, tax configuration, production
-release, or additional billed locations. Live keys are rejected. In-app trial
+release, or additional billed locations. Sandbox mode rejects live keys; live
+mode has its own switch ([BILLING_LIVE.md](BILLING_LIVE.md)). In-app trial
 reminders work during the final three days; email requires a verified sender.
 Uncertain creation operations older than 23 hours stop in `review` so Stripe's
 finite idempotency retention cannot cause duplicate subscriptions. An operator
@@ -50,12 +51,11 @@ launches without billing; pilots get Pro from the support CLI's
 - **Live-billing tax guard:** `assertSaasTaxReady(env, legal)`
   (`server/saas-tax.ts`) refuses (`saas_tax_required_for_live_billing`) unless
   the worker runs `SAAS_TAX_MODE=tax_rate` and the published legal entity has an
-  RFC. Live keys are still rejected everywhere today; the post-launch live
-  adapter must call this guard before accepting one. The guard reads the legal
-  entity from the process that holds the live key, the worker: today
-  `.railway/railway.ts` declares `LEGAL_*` only on the web service (and Railway
-  plans an undeclared variable as a deletion), so the live-billing change must
-  declare them on the worker too, or the guard always refuses (OPS-4;
+  RFC. Live mode ([BILLING_LIVE.md](BILLING_LIVE.md)) calls it at startup and
+  again before the worker builds its provider. The guard reads the legal
+  entity from the process that holds the live key, the worker, so
+  `.railway/railway.ts` now declares the `LEGAL_*` values on the worker too,
+  with the same values as the web's (OPS-4;
   `tests/saas-tax.test.ts`). The accountant's confirmation of IVA treatment is
   on the launch hand-off list.
 - **Canceled subscriptions:** reconciliation uses the subscription's

@@ -29,6 +29,9 @@ export default defineRailway((ctx) => {
     ALERT_WEBHOOK_URL: preserve(),
     ALERT_WEBHOOK_KIND: preserve(),
     BILLING_SANDBOX_ENABLED: preserve(),
+    // Live Stripe billing: production only, never together with the sandbox
+    // switch (server/billing-mode.ts). Web and worker must agree.
+    BILLING_LIVE_ENABLED: preserve(),
     // Cross-tenant billing login: production web refuses it while billing is
     // disabled (open DB-1 follow-up, RUNBOOK.md "Open follow-ups").
     BILLING_DATABASE_URL: preserve(),
@@ -38,7 +41,7 @@ export default defineRailway((ctx) => {
   };
 
   // Internet-facing API: runtime role, signing keys, the billing login for owner billing
-  // commands (sandbox only) and the webhook secret. Never the migration owner, the worker
+  // commands (while billing is on) and the webhook secret. Never the migration owner, the worker
   // login, provider keys or the support login (server/config-rules.ts refuses them).
   const web = service("web", {
     // Source omitted: the deploy action uploads the stamped build (`railway up --ci`).
@@ -153,6 +156,14 @@ export default defineRailway((ctx) => {
       STRIPE_PORTAL_CONFIG_ID: preserve(),
       // account (031): SaaS tax rate for checkout (worker only).
       STRIPE_TAX_RATE_ID: preserve(),
+      // Live billing's guard (assertSaasTaxReady) reads the published legal
+      // entity where the live key is: the same values as on web (OPS-4).
+      LEGAL_ENTITY_NAME: preserve(),
+      LEGAL_ENTITY_ADDRESS: preserve(),
+      LEGAL_ENTITY_RFC: preserve(),
+      LEGAL_JURISDICTION: preserve(),
+      LEGAL_PRIVACY_CONTACT_NAME: preserve(),
+      LEGAL_PRIVACY_CONTACT_EMAIL: preserve(),
       // cfdi (030): provider keys and vault key live only here.
       FACTURAPI_API_KEY: preserve(),
       FACTURAPI_TEST_KEY: preserve(),

@@ -281,7 +281,7 @@ test("simplified privacy notice is shown next to Google sign-up (FOH-14)", async
 }) => {
   // UI contract fixture: the compiled CI server has no Google client.
   await page.route("**/api/auth/providers", (route) =>
-    route.fulfill({ json: { google: true, billingSandbox: false } }),
+    route.fulfill({ json: { google: true, billing: "off" } }),
   );
   await page.goto("/app?signup");
   const notice = page.locator("#signup-privacy-notice");
@@ -1777,7 +1777,7 @@ test("the Google button waits for the legal configuration, so no sign-in starts 
   page,
 }) => {
   await page.route("**/api/auth/providers", (route) =>
-    route.fulfill({ json: { google: true, billingSandbox: false } }),
+    route.fulfill({ json: { google: true, billing: "off" } }),
   );
   let fail = true;
   await page.route("**/api/account-config", (route) =>

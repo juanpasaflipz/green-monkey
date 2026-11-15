@@ -1,12 +1,12 @@
 import type { billingStore } from "./billing-store.js";
 import type {
-  stripeSandboxBilling,
+  stripeBilling,
   SubscriptionBinding,
 } from "./stripe-billing.js";
 
 export async function billingTick(
   store: ReturnType<typeof billingStore>,
-  provider: ReturnType<typeof stripeSandboxBilling>,
+  provider: ReturnType<typeof stripeBilling>,
 ) {
   await store.signupIntents();
   await store.schedule();
