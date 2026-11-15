@@ -1,3 +1,5 @@
+/** Stripe billing in a deployment: off, sandbox (test mode) or live (real charges). */
+export type BillingMode = "off" | "sandbox" | "live";
 export type BillingStatus =
   "free" | "trialing" | "active" | "past_due" | "canceled" | "paused";
 export interface Entitlement {

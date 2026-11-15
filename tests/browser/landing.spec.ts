@@ -100,7 +100,7 @@ test("signup CTA opens Google signup with simplified notice and without the staf
   // UI contract fixture: Google sign-in configured (the compiled CI server has
   // no Google client, so the provider flag is substituted).
   await page.route("**/api/auth/providers", (route) =>
-    route.fulfill({ json: { google: true, billingSandbox: false } }),
+    route.fulfill({ json: { google: true, billing: "off" } }),
   );
   await page.goto("/");
   // account (031): kitchen-note examples follow LANDING_CLAIMS.kitchenNotes

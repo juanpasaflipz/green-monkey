@@ -4,6 +4,7 @@ import { Button, Field } from "../components/ui";
 import { changeRestaurant, db } from "../offline";
 import { clearSessionScope, responseError } from "../api";
 import { OwnerManagement } from "./OwnerManagement";
+import type { BillingMode } from "../../shared/plans";
 import { strings, errorNotice, withSupportReference } from "../i18n";
 import { AccountCenter } from "./AccountCenter";
 import { LegalAcceptance, type LegalAccepted } from "./LegalAcceptance";
@@ -128,7 +129,8 @@ export function OwnerAccess({
   const [terminal, setTerminal] = useState(
     new URLSearchParams(location.search).get("auth_error") === "terminal",
   );
-  const [billingSandbox, setBillingSandbox] = useState(false);
+  // off | sandbox | live (/api/auth/providers).
+  const [billing, setBilling] = useState<BillingMode>("off");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -179,7 +181,11 @@ export function OwnerAccess({
       setConfig(await loadAccountConfig().catch(() => null));
       setGoogle(providers.google);
       if (providers.terminal) setTerminal(true);
-      setBillingSandbox(providers.billingSandbox === true);
+      setBilling(
+        providers.billing === "live" || providers.billing === "sandbox"
+          ? providers.billing
+          : "off",
+      );
       const value = accountResponse.ok ? await accountResponse.json() : null;
       setAccount(value);
       onAccount(Boolean(value));
@@ -292,7 +298,7 @@ export function OwnerAccess({
           try {
             const result = await command("signup", {
               trialRequested:
-                billingSandbox && f.get("trialRequested") === "on",
+                billing !== "off" && f.get("trialRequested") === "on",
               restaurantName: f.get("restaurantName"),
               currency: f.get("currency"),
               timezone: f.get("timezone"),
@@ -382,12 +388,12 @@ export function OwnerAccess({
             ))}
           </fieldset>
         </details>
-        {billingSandbox ? (
+        {billing !== "off" ? (
           <label className="opening-day">
             <input type="checkbox" name="trialRequested" defaultChecked />
             {locale === "es"
-              ? "Prueba Pro de 14 días sin tarjeta (sandbox). Desmarca para continuar en Free. Si la activación tarda, puedes seguir usando tu restaurante."
-              : "14-day Pro trial without a card (sandbox). Uncheck to continue on Free. You can keep using your restaurant while activation is pending."}
+              ? `Prueba Pro de 14 días sin tarjeta${billing === "sandbox" ? " (sandbox)" : ""}. Desmarca para continuar en Free. Si la activación tarda, puedes seguir usando tu restaurante.`
+              : `14-day Pro trial without a card${billing === "sandbox" ? " (sandbox)" : ""}. Uncheck to continue on Free. You can keep using your restaurant while activation is pending.`}
           </label>
         ) : (
           <p className="muted">{t.free}</p>
@@ -634,7 +640,7 @@ export function OwnerAccess({
                 account.organizations.map((o) => [o.id, o.role]),
               )}
               config={config}
-              billingSandbox={billingSandbox}
+              billing={billing}
               refresh={refresh}
             />
           )}

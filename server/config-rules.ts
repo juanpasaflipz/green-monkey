@@ -4,7 +4,7 @@
  *
  * Process model (Wave 2.0):
  *   web     serves the API with the runtime role (DATABASE_URL) and, while
- *           sandbox billing is on, the billing capability login for owner
+ *           billing is on (sandbox or live), the billing capability login for owner
  *           billing commands (BILLING_DATABASE_URL) plus the webhook secret.
  *           It holds the signing keys (SIGNING_KEYS, required when deployed,
  *           never a committed placeholder). It never holds the migration owner,
@@ -31,6 +31,9 @@ import { fiscalWebConfig } from "./fiscal-config.js";
 import { accountWebConfig, accountWorkerConfig } from "./account-config.js";
 import { kioskWebConfig } from "./kiosk-config.js";
 import { paymentsWorkerConfig } from "./payments/config.js";
+import { billingMode, type BillingMode } from "./billing-mode.js";
+import { assertSaasTaxReady, saasTaxConfig } from "./saas-tax.js";
+import { legalConfig } from "./legal.js";
 
 export { ConfigError };
 
@@ -57,6 +60,8 @@ export interface Config {
   /** web only: private URL of the worker's /healthz for /api/ops/status */
   workerUrl: string | null;
   billingEnabled: boolean;
+  /** off, sandbox (Stripe test mode) or live (real charges, production only) */
+  billingMode: BillingMode;
   /** worker: WORKER_DATABASE_URL (jobs login), required when deployed, null when unset in development/test; web: null */
   workerDatabaseUrl: string | null;
 }
@@ -79,9 +84,15 @@ export const forbiddenCredentials: Record<ProcessKind, readonly string[]> = {
     "FACTURAPI_TEST_KEY",
     "CREDENTIAL_ENCRYPTION_KEY",
     "CFDI_LIVE_ENABLED",
-    "TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_MESSAGING_SERVICE_SID",
-    "LOYALTY_SMS_SEND", "APPLE_PASS_KEY_BASE64", "APPLE_PASS_CERT_BASE64",
-    "APPLE_PASS_KEY_PASSPHRASE", "GOOGLE_WALLET_SA_KEY_BASE64", "LOYALTY_WALLET_SIGNING_SECRET",
+    "TWILIO_ACCOUNT_SID",
+    "TWILIO_AUTH_TOKEN",
+    "TWILIO_MESSAGING_SERVICE_SID",
+    "LOYALTY_SMS_SEND",
+    "APPLE_PASS_KEY_BASE64",
+    "APPLE_PASS_CERT_BASE64",
+    "APPLE_PASS_KEY_PASSPHRASE",
+    "GOOGLE_WALLET_SA_KEY_BASE64",
+    "LOYALTY_WALLET_SIGNING_SECRET",
   ],
   worker: [
     "DATABASE_URL",
@@ -201,11 +212,19 @@ export function loadConfig(
   // holds it otherwise; the billing_requests inbox that removes it from web
   // altogether belongs to the post-launch billing area that builds the live
   // Stripe adapter (LD-15 account Q7; RUNBOOK.md, Open follow-ups).
+  let mode: BillingMode;
+  try {
+    mode = billingMode(env);
+  } catch (error) {
+    throw new ConfigError((error as Error).message);
+  }
+  // Live billing keeps DB-1's accepted exception: web holds the billing login
+  // only while billing is on, and only for the owner billing commands.
   if (
     appEnv === "production" &&
     kind === "web" &&
     env.BILLING_DATABASE_URL &&
-    env.BILLING_SANDBOX_ENABLED !== "true"
+    mode === "off"
   )
     throw new ConfigError(
       "forbidden_credential_in_process: BILLING_DATABASE_URL",
@@ -226,7 +245,7 @@ export function loadConfig(
   if (deployed && env.NODE_ENV !== "production")
     throw new ConfigError("node_env_production_required");
 
-  const billingEnabled = env.BILLING_SANDBOX_ENABLED === "true";
+  const billingEnabled = mode !== "off";
   const billingDatabaseUrl = billingEnabled
     ? databaseUrl(env.BILLING_DATABASE_URL, "BILLING_DATABASE_URL")
     : null;
@@ -254,6 +273,7 @@ export function loadConfig(
     sentryDsn: env.SENTRY_DSN ?? null,
     alertWebhook,
     billingEnabled,
+    billingMode: mode,
   };
 
   if (kind === "web") {
@@ -285,6 +305,9 @@ export function loadConfig(
       throw new ConfigError("missing_signing_keys");
     if (billingEnabled && !env.STRIPE_WEBHOOK_SECRET)
       throw new ConfigError("missing_stripe_webhook_secret");
+    // The prices owners see carry IVA whenever real cards are charged.
+    if (mode === "live" && safeTaxMode(env, "web") !== "tax_rate")
+      throw new ConfigError("saas_tax_required_for_live_billing");
     // >>> area config checks: web (one pure call per area: fn(env, appEnv), throws ConfigError)
     fiscalWebConfig(env, appEnv);
     cfdiWebConfig(env, appEnv);
@@ -318,6 +341,20 @@ export function loadConfig(
     ])
       if (!env[name]) throw new ConfigError(`missing_${name.toLowerCase()}`);
   if (billingEnabled && !appUrl) throw new ConfigError("missing_app_url");
+  if (mode === "live") {
+    if (!/^(sk|rk)_live_[A-Za-z0-9]+$/.test(env.STRIPE_SECRET_KEY ?? ""))
+      throw new ConfigError("stripe_live_key_required");
+    // IVA on, and the published legal entity (the CFDI issuer) has an RFC.
+    try {
+      assertSaasTaxReady(env, legalConfig(env));
+    } catch {
+      throw new ConfigError("saas_tax_required_for_live_billing");
+    }
+  } else if (
+    mode === "sandbox" &&
+    /^(sk|rk)_live_/.test(env.STRIPE_SECRET_KEY ?? "")
+  )
+    throw new ConfigError("stripe_sandbox_key_required");
   // >>> area config checks: worker (one pure call per area: fn(env, appEnv), throws ConfigError)
   cfdiWorkerConfig(env, appEnv);
   accountWorkerConfig(env, appEnv);
@@ -382,4 +419,12 @@ export function isPlaceholderSigningKey(key: {
   if (/^(ci|local|test)-/.test(key.kid)) return true;
   const text = key.secret.toString("latin1");
   return isPlaceholderSecret(text) || /^[\x20-\x7e]+$/.test(text);
+}
+
+function safeTaxMode(env: NodeJS.ProcessEnv, kind: "web" | "worker") {
+  try {
+    return saasTaxConfig(env, kind).mode;
+  } catch {
+    throw new ConfigError("saas_tax_configuration_invalid");
+  }
 }

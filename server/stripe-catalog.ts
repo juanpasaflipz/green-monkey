@@ -2,29 +2,44 @@ import { z } from "zod";
 import { PRO_OFFER } from "../shared/plans.js";
 
 const productId = "green_monkey_pro_v1";
-const productSchema = z.object({
-  id: z.literal(productId),
-  active: z.literal(true),
-  livemode: z.literal(false),
-  name: z.literal("Green Monkey Pro"),
-  metadata: z.object({
-    application: z.literal("green_monkey"),
-    purpose: z.literal("saas_subscription"),
-  }),
-});
+/**
+ * "sandbox" is Stripe's test mode (sk_test_/rk_test_ keys, livemode false);
+ * "live" charges real cards (sk_live_/rk_live_ keys, livemode true). Every
+ * object Green Monkey reads must carry the livemode of the configured mode.
+ */
+export type StripeMode = "sandbox" | "live";
+export function stripeKeyMatches(secret: string, mode: StripeMode) {
+  return (
+    mode === "live"
+      ? /^(sk|rk)_live_[A-Za-z0-9]+$/
+      : /^(sk|rk)_test_[A-Za-z0-9]+$/
+  ).test(secret);
+}
+const productSchema = (mode: StripeMode) =>
+  z.object({
+    id: z.literal(productId),
+    active: z.literal(true),
+    livemode: z.literal(mode === "live"),
+    name: z.literal("Green Monkey Pro"),
+    metadata: z.object({
+      application: z.literal("green_monkey"),
+      purpose: z.literal("saas_subscription"),
+    }),
+  });
 export const proPriceKeys = {
   month: "green_monkey_pro_mxn_month_v1",
   year: "green_monkey_pro_mxn_year_v1",
 } as const;
-export function validateSandboxPrice(
+export function validatePrice(
   value: unknown,
   interval: "month" | "year",
+  mode: StripeMode,
 ) {
   const parsed = z
     .object({
       id: z.string().startsWith("price_"),
       active: z.literal(true),
-      livemode: z.literal(false),
+      livemode: z.literal(mode === "live"),
       product: z.literal(productId),
       currency: z.literal("mxn"),
       type: z.literal("recurring"),
@@ -44,18 +59,22 @@ export function validateSandboxPrice(
   if (!parsed.success) throw Error("stripe_catalog_price_mismatch");
   return parsed.data;
 }
+export const validateSandboxPrice = (
+  value: unknown,
+  interval: "month" | "year",
+) => validatePrice(value, interval, "sandbox");
 
 /**
  * The SaaS IVA rate (account 031, GAP-6): an active, exclusive 16 % Mexican
- * sandbox Tax Rate. Its percentage and country are immutable in Stripe.
+ * Tax Rate in the configured mode. Its percentage and country are immutable in Stripe.
  */
-export function validateSandboxTaxRate(value: unknown) {
+export function validateTaxRate(value: unknown, mode: StripeMode) {
   const parsed = z
     .object({
       id: z.string().regex(/^txr_[A-Za-z0-9]+$/),
       object: z.literal("tax_rate"),
       active: z.literal(true),
-      livemode: z.literal(false),
+      livemode: z.literal(mode === "live"),
       inclusive: z.literal(false),
       percentage: z.literal(16),
       country: z.literal("MX"),
@@ -65,15 +84,23 @@ export function validateSandboxTaxRate(value: unknown) {
   if (!parsed.success) throw Error("stripe_catalog_tax_rate_mismatch");
   return parsed.data;
 }
+export const validateSandboxTaxRate = (value: unknown) =>
+  validateTaxRate(value, "sandbox");
 
-/** Explicit sandbox provisioning command, not a web route or checkout service. */
-export async function provisionStripeSandboxCatalog(
+const keyRequired = (mode: StripeMode) =>
+  mode === "live" ? "stripe_live_key_required" : "stripe_sandbox_key_required";
+
+/**
+ * Explicit provisioning command, not a web route or checkout service. Live mode
+ * is only reached through scripts/stripe-live-catalog.ts, which the owner runs.
+ */
+export async function provisionStripeCatalog(
   secret: string,
   expectedAccountId: string,
+  mode: StripeMode,
   request: typeof fetch = fetch,
 ) {
-  if (!/^(sk|rk)_test_[A-Za-z0-9]+$/.test(secret))
-    throw Error("stripe_sandbox_key_required");
+  if (!stripeKeyMatches(secret, mode)) throw Error(keyRequired(mode));
   if (!/^acct_[A-Za-z0-9]+$/.test(expectedAccountId))
     throw Error("stripe_expected_account_required");
   async function call(
@@ -132,7 +159,7 @@ export async function provisionStripeSandboxCatalog(
       }),
       "green-monkey-product-v1",
     );
-  if (!productSchema.safeParse(product).success)
+  if (!productSchema(mode).safeParse(product).success)
     throw Error("stripe_catalog_product_mismatch");
   const result: { month?: string; year?: string } = {};
   for (const interval of ["month", "year"] as const) {
@@ -169,7 +196,7 @@ export async function provisionStripeSandboxCatalog(
         }),
         lookupKey,
       );
-    result[interval] = validateSandboxPrice(price, interval).id;
+    result[interval] = validatePrice(price, interval, mode).id;
   }
   return {
     accountId: account.id,
@@ -178,19 +205,24 @@ export async function provisionStripeSandboxCatalog(
     annualPriceId: result.year!,
   };
 }
-
-/**
- * Explicit sandbox provisioning of the SaaS IVA rate (account 031, GAP-6):
- * reuses the active rate tagged metadata[green_monkey_tax]=iva16, else creates
- * it once (fixed idempotency key), and returns it only after validation.
- */
-export async function provisionStripeSandboxTaxRate(
+export const provisionStripeSandboxCatalog = (
   secret: string,
   expectedAccountId: string,
   request: typeof fetch = fetch,
+) => provisionStripeCatalog(secret, expectedAccountId, "sandbox", request);
+
+/**
+ * Explicit provisioning of the SaaS IVA rate (account 031, GAP-6): reuses the
+ * active rate tagged metadata[green_monkey_tax]=iva16, else creates it once
+ * (fixed idempotency key), and returns it only after validation.
+ */
+export async function provisionStripeTaxRate(
+  secret: string,
+  expectedAccountId: string,
+  mode: StripeMode,
+  request: typeof fetch = fetch,
 ): Promise<{ accountId: string; taxRateId: string }> {
-  if (!/^(sk|rk)_test_[A-Za-z0-9]+$/.test(secret))
-    throw Error("stripe_sandbox_key_required");
+  if (!stripeKeyMatches(secret, mode)) throw Error(keyRequired(mode));
   if (!/^acct_[A-Za-z0-9]+$/.test(expectedAccountId))
     throw Error("stripe_expected_account_required");
   async function call(path: string, body?: URLSearchParams): Promise<unknown> {
@@ -249,5 +281,10 @@ export async function provisionStripeSandboxTaxRate(
         "metadata[green_monkey_tax]": "iva16",
       }),
     ));
-  return { accountId: account.id, taxRateId: validateSandboxTaxRate(rate).id };
+  return { accountId: account.id, taxRateId: validateTaxRate(rate, mode).id };
 }
+export const provisionStripeSandboxTaxRate = (
+  secret: string,
+  expectedAccountId: string,
+  request: typeof fetch = fetch,
+) => provisionStripeTaxRate(secret, expectedAccountId, "sandbox", request);

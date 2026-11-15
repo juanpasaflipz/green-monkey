@@ -8,6 +8,8 @@ import { loadAccountConfig, type AccountConfig } from "./accountConfig";
 import { dateTime } from "../datetime";
 type Status = {
   enabled: boolean;
+  /** sandbox: Stripe test mode; live: real charges. */
+  mode?: "sandbox" | "live";
   hostedUrl?: string | null;
   billing?: {
     trial_used: boolean;
@@ -36,6 +38,9 @@ export function BillingControls({
     [consent, setConsent] = useState(false),
     [coOwner, setCoOwner] = useState(false),
     [config, setConfig] = useState<AccountConfig | null>(null);
+  // Test-mode wording only when the server says sandbox: never tell an owner
+  // that no real payment is charged while live billing could charge one.
+  const sandbox = status?.mode === "sandbox";
   async function load() {
     const r = await fetch(
       "/api/billing/status?tenantId=" + encodeURIComponent(tenantId),
@@ -138,11 +143,13 @@ export function BillingControls({
     return <p className="muted">{strings[locale].accountCoOwnerBillingNote}</p>;
   return (
     <div>
-      <p>
-        {es
-          ? "Entorno de prueba de facturación. No se cobran pagos reales."
-          : "Billing test environment. No real payments are charged."}
-      </p>
+      {sandbox && (
+        <p>
+          {es
+            ? "Entorno de prueba de facturación. No se cobran pagos reales."
+            : "Billing test environment. No real payments are charged."}
+        </p>
+      )}
       {error && (
         <p role="alert">
           {es
@@ -164,8 +171,12 @@ export function BillingControls({
         <p role="status">
           {status?.operation?.kind === "checkout_watch"
             ? es
-              ? "Completa el pago de prueba en Stripe."
-              : "Complete test checkout in Stripe."
+              ? sandbox
+                ? "Completa el pago de prueba en Stripe."
+                : "Completa el pago en Stripe."
+              : sandbox
+                ? "Complete test checkout in Stripe."
+                : "Complete checkout in Stripe."
             : es
               ? "Activación pendiente. Tu restaurante sigue disponible."
               : "Activation pending. Your restaurant remains available."}
@@ -270,8 +281,12 @@ export function BillingControls({
                 ? "Gestionar en Stripe"
                 : "Manage in Stripe"
               : es
-                ? "Suscribirme en Stripe (prueba)"
-                : "Subscribe in Stripe (test)"}
+                ? sandbox
+                  ? "Suscribirme en Stripe (prueba)"
+                  : "Suscribirme en Stripe"
+                : sandbox
+                  ? "Subscribe in Stripe (test)"
+                  : "Subscribe in Stripe"}
           </Button>
         </>
       )}

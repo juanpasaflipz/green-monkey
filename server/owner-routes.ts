@@ -1,3 +1,4 @@
+import { billingMode } from "./billing-mode.js";
 import {
   Router,
   type Request,
@@ -112,7 +113,9 @@ export function ownerRoutes(sql: postgres.Sql) {
         google: Boolean(google) && !terminal,
         terminal,
         apple: false,
-        billingSandbox: process.env.BILLING_SANDBOX_ENABLED === "true",
+        // off | sandbox | live. Invalid switches never start the server
+        // (server/config-rules.ts), so this read cannot throw here.
+        billing: billingMode(process.env),
       });
     } catch (error) {
       next(error);
