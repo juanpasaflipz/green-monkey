@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto";
 import type { Tx } from "./db.js";
 import type { Logger } from "./logging.js";
 import type { Session } from "../shared/domain.js";
+import { wakeWorker } from "./payments/wake.js";
 
 /** Default retry limit per kind (claims before a failure goes dead). */
 export const MAX_ATTEMPTS = 8;
@@ -239,4 +240,8 @@ export async function enqueueJob(
            ${tx.json(job.payload as never)},${job.state ?? "available"},
            coalesce(${job.runAt ?? null}::timestamptz, now()))
     on conflict (tenant_id,kind,dedupe_key) do nothing`;
+  // The worker sleeps between discoveries while idle (server/ops/idle.ts): wake it. Debounced
+  // and fired after this transaction usually commits; a woken pass is followed by another one
+  // sweepMs later, which covers a slower commit. A no-op where WORKER_URL is unset (the worker).
+  wakeWorker();
 }

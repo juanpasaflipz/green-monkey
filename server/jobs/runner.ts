@@ -130,6 +130,14 @@ export function createJobRunner(
     /** Worker mode: polled once at start and then every sweepMs; each tenant it returns is
      *  noted (drained). When set, the sweep does not revisit recently active tenants. */
     discover?: () => Promise<string[]>;
+    /**
+     * Worker mode only: when set, discovery is scheduled after each pass instead of on a fixed
+     * sweepMs interval. A pass that found tenants, or that a poke started, is followed by another
+     * after sweepMs; otherwise this hook says how long to wait (e.g. until the next job is due,
+     * capped), so an idle worker stops querying and Neon can suspend the compute. A rejected
+     * hook falls back to sweepMs.
+     */
+    idleSweepMs?: () => Promise<number>;
   } = {},
 ): JobRunner {
   const limit = o.concurrency ?? 2;
@@ -482,17 +490,48 @@ export function createJobRunner(
   let discovering = false;
   let pokeTimer: NodeJS.Timeout | null = null;
   let pokeAgain = false;
-  function sweep() {
+  const adaptive = Boolean(o.discover && o.idleSweepMs);
+  let passes = 0;
+  /** Adaptive worker mode: the next discovery, replacing any one already planned. */
+  function planSweep(ms: number) {
+    if (stopping) return;
+    if (sweepTimer) clearTimeout(sweepTimer);
+    sweepTimer = setTimeout(
+      () => {
+        sweepTimer = null;
+        sweep();
+      },
+      Math.max(0, ms),
+    );
+    sweepTimer.unref();
+  }
+  function sweep(poked = false) {
     if (o.discover) {
       if (discovering || stopping) return;
       discovering = true;
+      const pass = ++passes;
+      let busy = poked;
       o.discover()
         .then((ids) => {
+          if (ids.length) busy = true;
           for (const id of ids) noteTenant(id);
         })
-        .catch((error) => log.warn("jobs_discover_failed", {}, error))
+        .catch((error) => {
+          busy = true;
+          log.warn("jobs_discover_failed", {}, error);
+        })
         .finally(() => {
           discovering = false;
+          if (adaptive && !stopping) {
+            if (busy) planSweep(sweepMs);
+            else
+              o.idleSweepMs!()
+                .catch(() => sweepMs)
+                .then((ms) => {
+                  // A later pass (a poke) started meanwhile and plans its own next sweep.
+                  if (pass === passes) planSweep(ms);
+                });
+          }
           if (pokeAgain) {
             pokeAgain = false;
             poke();
@@ -513,7 +552,7 @@ export function createJobRunner(
       () => {
         pokeTimer = null;
         if (discovering) pokeAgain = true;
-        else sweep();
+        else sweep(true);
       },
       Math.min(debounceMs, POKE_COALESCE_MS),
     );
@@ -524,7 +563,13 @@ export function createJobRunner(
     poke,
     start() {
       stopping = false;
-      sweepTimer = setInterval(sweep, sweepMs);
+      if (adaptive) {
+        // Discovery runs even with zero handlers, so the worker's jobs loop
+        // keeps ticking; each pass plans the next.
+        sweep();
+        return;
+      }
+      sweepTimer = setInterval(() => sweep(), sweepMs);
       sweepTimer.unref();
       // Discovery runs even with zero handlers, so the worker's jobs loop
       // keeps ticking.
@@ -534,7 +579,10 @@ export function createJobRunner(
     drainTenant,
     async stop(timeoutMs) {
       stopping = true;
-      if (sweepTimer) clearInterval(sweepTimer);
+      if (sweepTimer) {
+        clearInterval(sweepTimer);
+        clearTimeout(sweepTimer);
+      }
       if (pokeTimer) clearTimeout(pokeTimer);
       pokeTimer = null;
       for (const timer of scheduled.values()) clearTimeout(timer);

@@ -194,6 +194,12 @@ export function billingStore(sql: postgres.Sql) {
         }
       });
     },
+    /** Milliseconds until the next pending operation can be claimed (null: none; negative: due). */
+    async nextDueMs(): Promise<number | null> {
+      const [row] =
+        await sql`select extract(epoch from min(greatest(available_at,coalesce(lease_until,available_at)))-now())*1000 as ms from billing_operations where state in ('pending','running')`;
+      return row?.ms == null ? null : Number(row.ms);
+    },
     async claim() {
       return transaction(async (tx) => {
         const [op] =

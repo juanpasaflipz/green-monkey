@@ -15,6 +15,8 @@ import { poolOptions, withoutParams } from "./db-support.js";
 import { clientIp, log } from "./logging.js";
 import { legalConfig, requireCurrentLegal } from "./legal.js";
 import { saasTaxConfig } from "./saas-tax.js";
+import { nextDelay } from "./ops/idle.js";
+import { wakeWorker } from "./payments/wake.js";
 
 /** The billing capability login on the same database as the runtime role. */
 function billingPool(env: NodeJS.ProcessEnv, applicationName: string) {
@@ -83,6 +85,7 @@ export async function billingRuntime(
       try {
         if (subscription) await store.event(eventId, subscription);
         res.json({ received: true });
+        if (subscription) wakeWorker();
       } catch (error) {
         next(error);
       }
@@ -141,6 +144,7 @@ export async function billingRuntime(
       res
         .status(202)
         .json(await store.request(account, p.tenantId, p.kind, p.interval));
+      wakeWorker();
     } catch (error) {
       next(error);
     }
@@ -158,6 +162,7 @@ export async function billingRuntime(
         },
       );
       res.status(202).json(await store.quoteLocation(account, p.tenantId));
+      wakeWorker();
     } catch (error) {
       next(error);
     }
@@ -178,6 +183,7 @@ export async function billingRuntime(
         },
       );
       res.status(202).json(await store.confirmLocation(account, p.quoteId));
+      wakeWorker();
     } catch (error) {
       next(error);
     }
@@ -204,7 +210,7 @@ function providerTax(env: NodeJS.ProcessEnv) {
  */
 export async function billingWorker(
   env: NodeJS.ProcessEnv,
-  o: { intervalMs?: number; runLoop?: boolean } = {},
+  o: { intervalMs?: number; idleMs?: number; runLoop?: boolean } = {},
 ) {
   if (!env.STRIPE_PORTAL_CONFIG_ID)
     throw Error("billing_worker_and_webhook_configuration_required");
@@ -220,16 +226,42 @@ export async function billingWorker(
   const sql = billingPool(env, "gm-worker-billing");
   await waitForDatabase(sql, { check: checkBillingRole });
   const store = billingStore(sql);
+  // Every intervalMs while operations are pending. With idleMs (the worker passes
+  // WORKER_IDLE_MS) an idle pass instead waits until the next operation is due, at most
+  // idleMs, so Neon can suspend; the web wakes the worker after it writes billing work.
+  const busyMs = o.intervalMs ?? 2000;
+  const idleMs = Math.max(busyMs, o.idleMs ?? busyMs);
   let stopped = o.runLoop === false,
     running: Promise<void> | null = null,
+    rerun = false,
+    timer: NodeJS.Timeout | null = null,
     lastTickAt: number | null = null;
+  const plan = (ms: number) => {
+    if (stopped) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = null;
+      tick();
+    }, ms);
+    timer.unref();
+  };
   const tick = () => {
-    if (stopped || running) return;
+    if (stopped) return;
+    if (running) {
+      rerun = true;
+      return;
+    }
     running = (async () => {
+      let next = busyMs;
       try {
-        for (let n = 0; n < 10 && !stopped; n++)
+        let worked = false;
+        for (let n = 0; n < 10 && !stopped; n++) {
           if (!(await billingTick(store, provider))) break;
+          worked = true;
+        }
         lastTickAt = Date.now();
+        if (!worked && idleMs > busyMs)
+          next = nextDelay(await store.nextDueMs(), busyMs, idleMs);
       } catch (error) {
         // Provider error bodies and hosted URLs never reach the logs.
         log.warn("billing_worker_retry_pending", {
@@ -238,18 +270,23 @@ export async function billingWorker(
       } finally {
         running = null;
       }
+      if (rerun) {
+        rerun = false;
+        next = 0;
+      }
+      plan(next);
     })();
   };
-  const timer = setInterval(tick, o.intervalMs ?? 2000);
-  timer.unref();
   tick();
   return {
     sql,
+    /** Runs a pass now, or right after the running one (the worker's /wake). */
     tick,
     lastTickAt: () => lastTickAt,
     close: async () => {
       stopped = true;
-      clearInterval(timer);
+      if (timer) clearTimeout(timer);
+      timer = null;
       await running;
       await sql.end({ timeout: 5 });
     },

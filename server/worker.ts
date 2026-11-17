@@ -21,7 +21,12 @@ import { createWatchdog } from "./ops/watchdog.js";
 import { checkWorkerRole, connectWorker, waitForDatabase } from "./db.js";
 import type { JobRunner } from "./jobs/runner.js";
 import { createWorkerRunners } from "./jobs/worker-lanes.js";
-import { discoverTenants, workerHandlers } from "./jobs/worker-registry.js";
+import {
+  discoverTenants,
+  nextJobDueMs,
+  workerHandlers,
+} from "./jobs/worker-registry.js";
+import { nextDelay, staleAfterMs } from "./ops/idle.js";
 // >>> worker areas: imports (one line per area module; e.g. cfdi's register and boot modules)
 import "./cfdi/worker/register.js";
 import { cfdiWorkerBoot } from "./cfdi/worker/boot.js";
@@ -32,7 +37,10 @@ import "./delivery-worker/register.js";
 import { deliveryBoot } from "./delivery-worker/runtime.js";
 // <<< worker areas: imports
 
-const LOOP_STALE_MS = 120_000;
+const SWEEP_MS = 5000;
+// Idle loops wait up to WORKER_IDLE_MS between ticks (server/ops/idle.ts), so a loop is
+// stale only after a full idle period plus slack.
+const LOOP_STALE_MS = staleAfterMs(config.workerIdleMs);
 const info = buildInfo();
 const instanceId =
   process.env.RAILWAY_REPLICA_ID ??
@@ -47,7 +55,7 @@ let workerSql: postgres.Sql | null = null;
 
 configureAlerts(config.alertWebhook, config.appEnv);
 
-/** 200 when booted and every enabled loop ticked within 120 s, else 503. */
+/** 200 when booted and every enabled loop ticked within LOOP_STALE_MS, else 503. */
 function health() {
   const now = Date.now();
   const stale = [...loops].filter(([, at]) => now - at > LOOP_STALE_MS);
@@ -76,13 +84,15 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify(body));
     return;
   }
-  // Payments (spec §4.7): the web wakes the worker after a start, cancel, sync or webhook
-  // enqueue so a charge reaches the terminal without waiting for the 5 s sweep. No auth and no
-  // body: it carries no data and only advances discovery (runner.poke() coalesces bursts to one
-  // discovery per 250 ms); the port is reachable on the private network only.
+  // The web wakes the worker after it writes worker work: every job enqueue (server/jobs.ts;
+  // payments spec §4.7: a charge reaches the terminal without waiting for a sweep) and billing
+  // requests, webhooks and signups. Idle loops otherwise sleep up to WORKER_IDLE_MS. No auth and
+  // no body: it carries no data and only advances discovery and the billing pass (runner.poke()
+  // coalesces bursts to one discovery per 250 ms); the port is reachable on the private network only.
   if (req.method === "POST" && req.url === "/wake") {
     req.resume();
     jobs?.poke();
+    billing?.tick();
     res.writeHead(202, { "Cache-Control": "no-store" });
     res.end();
     return;
@@ -97,10 +107,12 @@ server.listen(config.port, () =>
 );
 
 const billing = config.billingEnabled
-  ? await billingWorker(process.env).catch((error) => {
-      log.error("worker_billing_failed", {}, error);
-      process.exit(1);
-    })
+  ? await billingWorker(process.env, { idleMs: config.workerIdleMs }).catch(
+      (error) => {
+        log.error("worker_billing_failed", {}, error);
+        process.exit(1);
+      },
+    )
   : null;
 if (billing) {
   tickNow("billing");
@@ -116,6 +128,9 @@ const watchdog = createWatchdog({
   appUrl: config.appUrl,
   billingSql: billing?.sql ?? null,
   alert: sendAlert,
+  // Neither the 60 s web probe nor the billing check may keep an idle Neon compute awake.
+  probePath: "/health",
+  billingEveryMs: config.workerIdleMs,
 });
 const runWatchdog = async () => {
   await watchdog.check();
@@ -135,7 +150,11 @@ if (config.workerDatabaseUrl) {
   // backlog never delays a charge reaching the terminal (P2-CONCURRENCY-3).
   jobs = createWorkerRunners(sql, {
     handlers: workerHandlers,
-    sweepMs: 5000,
+    sweepMs: SWEEP_MS,
+    // Fast while jobs are found or a wake arrives; otherwise sleep until the next job is due,
+    // at most WORKER_IDLE_MS. The web wakes the worker on every enqueue (server/jobs.ts).
+    idleSweepMs: async (kinds) =>
+      nextDelay(await nextJobDueMs(sql, kinds), SWEEP_MS, config.workerIdleMs),
     log: log.child({ loop: "worker-jobs" }),
     discover: async (kinds) => {
       // With no worker kind registered discovery sends no query, so prove the
