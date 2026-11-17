@@ -8,6 +8,7 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import type postgres from "postgres";
 import { cookieOptions, sign } from "./auth.js";
 import { clientIp } from "./logging.js";
+import { wakeWorker } from "./payments/wake.js";
 import { isTerminalRequest } from "./access.js";
 import { DomainError } from "../shared/domain.js";
 import { googleConfig, googleIdentityService } from "./google-identity.js";
@@ -204,6 +205,8 @@ export function ownerRoutes(sql: postgres.Sql) {
           (tx, account) => createOwnerRestaurant(tx, account, req.body),
         ),
       );
+      // The signup's billing intent is the worker's to process (billing-runtime.ts).
+      wakeWorker();
     } catch (error) {
       next(error);
     }

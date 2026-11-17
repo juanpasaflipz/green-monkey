@@ -12,6 +12,15 @@ export interface WatchdogOptions {
   probeTimeoutMs?: number;
   /** Consecutive failed probes (one per check, every 60 s) before web_down. */
   downAfter?: number;
+  /**
+   * Path probed on the web (default /api/health, which queries the database). The worker
+   * probes /health, the process liveness route, so a 60 s probe never keeps an idle Neon
+   * compute awake; database and schema readiness are checked hourly by the uptime workflow
+   * through /api/ops/status.
+   */
+  probePath?: string;
+  /** Minimum ms between billing checks (a billing database query); default 0: every check. */
+  billingEveryMs?: number;
 }
 
 export interface Watchdog {
@@ -32,14 +41,18 @@ export function createWatchdog(o: WatchdogOptions): Watchdog {
   let webFailures = 0;
   let webDown = false;
   let reviewCount: number | null = null;
+  let billingCheckedAt: number | null = null;
 
   async function probeWeb() {
     if (!o.appUrl) return;
     let ok: boolean;
     try {
-      const response = await doFetch(`${o.appUrl}/api/health`, {
-        signal: AbortSignal.timeout(o.probeTimeoutMs ?? 5000),
-      });
+      const response = await doFetch(
+        `${o.appUrl}${o.probePath ?? "/api/health"}`,
+        {
+          signal: AbortSignal.timeout(o.probeTimeoutMs ?? 5000),
+        },
+      );
       ok = response.ok;
     } catch {
       ok = false;
@@ -63,13 +76,20 @@ export function createWatchdog(o: WatchdogOptions): Watchdog {
         key: "web_down",
         severity: "critical",
         title: "web down",
-        body: `web_down: /api/health failed ${webFailures} consecutive checks`,
+        body: `web_down: ${o.probePath ?? "/api/health"} failed ${webFailures} consecutive checks`,
       });
     }
   }
 
   async function billing() {
     if (!o.billingSql) return;
+    const now = Date.now();
+    if (
+      billingCheckedAt !== null &&
+      now - billingCheckedAt < (o.billingEveryMs ?? 0)
+    )
+      return;
+    billingCheckedAt = now;
     const [r] = await o.billingSql`
       select
         (select count(*)::int from billing_operations where state='review') as review,
