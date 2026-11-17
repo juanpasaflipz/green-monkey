@@ -66,3 +66,21 @@ export async function discoverTenants(
     limit ${limit}`;
   return rows.map((r) => r.tenant_id);
 }
+
+/**
+ * Milliseconds until the next job of these kinds becomes claimable (a queued job's next_at,
+ * a running job's lease expiry), or null when none is waiting. Negative when one is already
+ * due. Same rows and login as discoverTenants.
+ */
+export async function nextJobDueMs(
+  sql: postgres.Sql,
+  kinds: readonly string[],
+): Promise<number | null> {
+  if (!kinds.length) return null;
+  const [row] = await sql<{ ms: string | null }[]>`
+    select extract(epoch from min(case when state = 'running' then lease_until else next_at end) - now()) * 1000 as ms
+    from jobs
+    where kind = any(${kinds as string[]}::text[])
+      and (state in ('queued','available') or (state = 'running' and lease_until is not null))`;
+  return row?.ms == null ? null : Number(row.ms);
+}

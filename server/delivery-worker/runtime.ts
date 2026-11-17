@@ -50,6 +50,11 @@ export async function deliveryBoot(
     if ((e as { code?: string }).code === "42P01" && !deliveryDriver) return;
     throw e;
   }
+  // The heartbeat keeps delivery_platform fresh (the web trusts it for 2 minutes) only while
+  // the browser driver is on. Off, the published list is empty and the web reports delivery
+  // unavailable whether the row is fresh or not, so a 30 s write would only keep an idle Neon
+  // compute awake.
+  if (!deliveryDriver) return;
   const timer = setInterval(() => {
     void publish().catch(() => {});
   }, 30000);

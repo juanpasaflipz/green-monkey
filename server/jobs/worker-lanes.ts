@@ -26,6 +26,8 @@ export function createWorkerRunners(
     onDead?: (job: ClaimedJob, code: string) => void;
     log?: Logger;
     sweepMs?: number;
+    /** Adaptive discovery (runner idleSweepMs): ms to wait after an idle pass, for these kinds. */
+    idleSweepMs?: (kinds: string[]) => Promise<number>;
     concurrency?: { general: number; payments: number };
   },
 ): JobRunner {
@@ -42,6 +44,9 @@ export function createWorkerRunners(
       log: o.log?.child({ lane: payments ? "payments" : "general" }),
       onDead: o.onDead,
       discover: () => o.discover([...handlers().keys()]),
+      idleSweepMs: o.idleSweepMs
+        ? () => o.idleSweepMs!([...handlers().keys()])
+        : undefined,
     });
   };
   const lanes = [lane(false), lane(true)];

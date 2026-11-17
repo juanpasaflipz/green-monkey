@@ -59,6 +59,12 @@ export interface Config {
   billingEnabled: boolean;
   /** worker: WORKER_DATABASE_URL (jobs login), required when deployed, null when unset in development/test; web: null */
   workerDatabaseUrl: string | null;
+  /**
+   * worker: WORKER_IDLE_MS, the longest an idle worker loop waits before it queries the
+   * database again (60000..21600000, default 30 min). Loops run sooner when work is due or the
+   * web wakes the worker; the gap lets Neon suspend an idle compute (5 idle minutes). web: 0.
+   */
+  workerIdleMs: number;
 }
 
 /**
@@ -131,6 +137,14 @@ export function isLoopbackHost(hostname: string) {
     hostname.startsWith("/") ||
     hostname.startsWith("%2F")
   );
+}
+
+/** WORKER_IDLE_MS: 1 min to 6 h, default 30 min. */
+function idleMs(value: string | undefined) {
+  const n = positiveInt(value, 1_800_000, "invalid_worker_idle_ms");
+  if (n < 60_000 || n > 21_600_000)
+    throw new ConfigError("invalid_worker_idle_ms");
+  return n;
 }
 
 function positiveInt(
@@ -305,6 +319,7 @@ export function loadConfig(
         ? httpUrl(env.WORKER_URL, "invalid_worker_url", false).origin
         : null,
       workerDatabaseUrl: null,
+      workerIdleMs: 0,
     });
   }
 
@@ -339,6 +354,7 @@ export function loadConfig(
       "invalid_draining_seconds",
     ),
     workerUrl: null,
+    workerIdleMs: idleMs(env.WORKER_IDLE_MS),
     // A deployed worker without its jobs login would run no worker kind while
     // every health signal stays green (PLATFORM-OPS-4): refuse to start.
     workerDatabaseUrl:

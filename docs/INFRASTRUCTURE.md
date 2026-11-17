@@ -133,6 +133,7 @@ context; the runtime role has no DELETE anywhere.
 | `APP_ENV`, `PROCESS_KIND`, `LOG_LEVEL` | New: environment (`staging`/`production` enable the deployed checks), process kind, log threshold |
 | `DB_POOL_MAX`, `DB_STATEMENT_TIMEOUT_MS`, `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`, `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS` | New: pool size, per-transaction timeout, graceful shutdown window and overlap (set in IaC) |
 | `WORKER_URL`, `WORKER_PORT` | New: worker `/healthz` over private networking for `/api/ops/status`; local worker port |
+| `WORKER_IDLE_MS` | Worker: longest an idle loop waits before querying again (60000..21600000, default 1800000 = 30 min). Job discovery and billing poll every 5 s / 2 s only while work is pending, then sleep until the next item is due, capped by this, so Neon can suspend an idle compute. The web wakes the worker (`WORKER_URL`) on every job enqueue and billing write |
 | `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_KIND`, `SENTRY_DSN` | New: alert webhook (ntfy by default) and optional error tracking |
 | `BILLING_DATABASE_URL` | Billing capability login; web (commands, webhook) and worker (provider loop) |
 | `BACKUP_DATABASE_URL`, `PROVISION_DATABASE_URL` | Backup workflow and operator scripts only; refused by deployed services |
