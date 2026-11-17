@@ -35,7 +35,7 @@ describe("idle pacing helpers", () => {
         {
           DATABASE_URL:
             "postgresql://gm_app:pw@127.0.0.1:5432/green_monkey_dev",
-          JWT_SECRET: "fictional-test-secret-0123456789abcdefghij",
+          JWT_SECRET: "x".repeat(40),
         },
         "web",
       ).workerIdleMs,
