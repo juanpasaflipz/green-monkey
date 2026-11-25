@@ -10,7 +10,7 @@
     "dev": "tsx watch server/index.ts",
     "dev:ui": "vite --host 127.0.0.1",
     "build": "NODE_ENV=production vite build && tsc -p tsconfig.server.json",
-    "start": "node build/server/index.js",
+    "start": "node --import ./build/server/instrument.js build/server/index.js",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "lint": "eslint .",
     "test": "vitest run tests/*.test.ts",
