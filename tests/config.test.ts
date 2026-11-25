@@ -9,6 +9,8 @@ import {
   detectKind,
   forbiddenCredentials,
   loadConfig,
+  type AppEnv,
+  type ProcessKind,
 } from "../server/config-rules.js";
 import { ConfigError as PureConfigError } from "../server/config-error.js";
 import { kioskCapabilities, mediaStoreConfig } from "../server/kiosk-config.js";
@@ -290,10 +292,13 @@ describe("process configuration", () => {
     expect(loadConfig({ ...web, APP_ENV: "test" }, "web").appEnv).toBe("test");
     // Railway's production environment counts too, in any case, as it does
     // for the keyring (server/production.ts), so the web never boots into a
-    // ring that refuses every signature (PLAT-R1), even with APP_ENV unset.
+    // ring that refuses every signature (PLAT-R1). Behaviour change (2.1): a
+    // Railway process (RAILWAY_ENVIRONMENT_NAME set) with APP_ENV unset now
+    // refuses to start on the earlier, more specific missing_app_env guard
+    // instead of ever reaching the signing-keys check.
     expect(() =>
       loadConfig({ ...web, RAILWAY_ENVIRONMENT_NAME: "Production" }, "web"),
-    ).toThrow("missing_signing_keys");
+    ).toThrow("missing_app_env");
     // JWT_SECRET stays required next to SIGNING_KEYS (legacy tokens, lookup digests).
     const { JWT_SECRET: _jwt, ...noJwt } = production;
     expect(() =>
@@ -435,7 +440,10 @@ describe("process configuration", () => {
             ),
           `${appEnv}: ${label}`,
         ).toThrow(code);
-      // Railway's production environment refuses them even without APP_ENV.
+      // Railway's production environment refuses to even start without
+      // APP_ENV at all now (2.1): the missing_app_env guard fires before the
+      // placeholder checks it used to trip, so this no longer depends on
+      // which placeholder `vars` supplies (see the dedicated 2.1 tests below).
       expect(
         () =>
           loadConfig(
@@ -443,7 +451,7 @@ describe("process configuration", () => {
             "web",
           ),
         `RAILWAY_ENVIRONMENT_NAME=production: ${label}`,
-      ).toThrow(code);
+      ).toThrow("missing_app_env");
       // Local and CI runs (APP_ENV unset) keep using them.
       expect(
         loadConfig({ ...web, ...vars }, "web").appEnv,
@@ -636,15 +644,113 @@ describe("process configuration", () => {
     expect(loadConfig({ ...web, APP_ENV: "" }, "web").appEnv).toBe(
       "development",
     );
-    expect(() => loadConfig({ ...web, APP_ENV: "prod" }, "web")).toThrow(
-      "invalid_app_env",
-    );
+    for (const bad of ["prod", "Production", "PRODUCTION", "dev", "live"])
+      for (const kind of ["web", "worker"] as const)
+        expect(
+          () => loadConfig({ ...web, APP_ENV: bad }, kind),
+          `${kind} ${bad}`,
+        ).toThrow("invalid_app_env");
     expect(() => loadConfig({ ...web, DATABASE_URL: "" }, "web")).toThrow(
       "missing_database_url",
     );
     expect(() => loadConfig({ ...web, DB_POOL_MAX: "0" }, "web")).toThrow(
       "invalid_db_pool_max",
     );
+  });
+
+  // 2.1: APP_ENV missing or invalid must refuse to start on a real Railway
+  // process; CI (qualification.yml) and local dev, which never set
+  // RAILWAY_ENVIRONMENT_NAME, keep defaulting a missing APP_ENV to
+  // "development" exactly as before.
+  describe("APP_ENV guard (2.1)", () => {
+    const worker = (extra: Record<string, string | undefined>) =>
+      loadConfig({ PROCESS_KIND: "worker", ...extra }, "worker");
+
+    it("missing APP_ENV on a Railway process (RAILWAY_ENVIRONMENT_NAME set) refuses to start, including ephemeral pr-* previews and any case", () => {
+      for (const railwayEnv of ["production", "staging", "pr-12", "Production"])
+        for (const kind of ["web", "worker"] as const)
+          expect(
+            () => loadConfig({ RAILWAY_ENVIRONMENT_NAME: railwayEnv }, kind),
+            `${kind} ${railwayEnv}`,
+          ).toThrow("missing_app_env");
+    });
+
+    it("missing APP_ENV with no RAILWAY_ENVIRONMENT_NAME (CI, local dev) still defaults to development, unguarded", () => {
+      expect(loadConfig(web, "web").appEnv).toBe("development");
+      expect(worker({}).appEnv).toBe("development");
+      // Empty string is the same as unset for both variables (matches
+      // tests/restaurant-day/global-setup.ts's RAILWAY_ENVIRONMENT_NAME: "").
+      expect(
+        loadConfig({ ...web, RAILWAY_ENVIRONMENT_NAME: "" }, "web").appEnv,
+      ).toBe("development");
+      expect(worker({ APP_ENV: "", RAILWAY_ENVIRONMENT_NAME: "" }).appEnv).toBe(
+        "development",
+      );
+    });
+
+    it("an invalid APP_ENV value throws invalid_app_env whether or not RAILWAY_ENVIRONMENT_NAME is set", () => {
+      for (const railwayEnv of [undefined, "production", "pr-7"])
+        for (const kind of ["web", "worker"] as const)
+          expect(
+            () =>
+              loadConfig(
+                {
+                  APP_ENV: "prod",
+                  ...(railwayEnv !== undefined
+                    ? { RAILWAY_ENVIRONMENT_NAME: railwayEnv }
+                    : {}),
+                },
+                kind,
+              ),
+            `${kind} railway=${railwayEnv}`,
+          ).toThrow("invalid_app_env");
+    });
+
+    it("accepts each known APP_ENV value, with and without RAILWAY_ENVIRONMENT_NAME set", () => {
+      const webFixture: Record<AppEnv, Record<string, string>> = {
+        // APP_ENV is explicit here (unlike the bare `web` fixture used
+        // elsewhere in this file), so each case below still passes once
+        // RAILWAY_ENVIRONMENT_NAME is added (2.1 requires it explicit there).
+        development: { ...web, APP_ENV: "development" },
+        test: { ...web, APP_ENV: "test" },
+        staging: { ...deployedWeb, APP_ENV: "staging" },
+        production: {
+          ...deployedWeb,
+          APP_ENV: "production",
+          APP_URL: "https://app.example.com",
+        },
+      };
+      const workerFixture: Record<AppEnv, Record<string, string>> = {
+        development: { PROCESS_KIND: "worker", APP_ENV: "development" },
+        test: { PROCESS_KIND: "worker", APP_ENV: "test" },
+        staging: { ...deployedWorker, APP_ENV: "staging" },
+        production: { ...deployedWorker, APP_ENV: "production" },
+      };
+      for (const appEnv of [
+        "development",
+        "test",
+        "staging",
+        "production",
+      ] as const)
+        for (const railwayEnv of [
+          undefined,
+          appEnv === "production" ? "production" : "staging",
+          "pr-9",
+        ])
+          for (const [kind, fixture] of [
+            ["web", webFixture[appEnv]],
+            ["worker", workerFixture[appEnv]],
+          ] as const) {
+            const env =
+              railwayEnv === undefined
+                ? fixture
+                : { ...fixture, RAILWAY_ENVIRONMENT_NAME: railwayEnv };
+            expect(
+              loadConfig(env, kind as ProcessKind).appEnv,
+              `${kind} ${appEnv} railway=${railwayEnv}`,
+            ).toBe(appEnv);
+          }
+    });
   });
 
   it("detects the worker by PROCESS_KIND or entry file and keeps worker ports apart", () => {
