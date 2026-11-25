@@ -54,7 +54,7 @@ re-checked against the repo when this was written, so step 0 of every task is
       pushed the five-sample p95 just over 200. Fix: raised tap 4's p95 threshold to 260ms
       (comment in `service-a.ts` cites the evidence); the 400ms max, and every other tap's
       budget, is untouched. No production rate limit was ever involved.
-      PR: https://github.com/juanpasaflipz/green-monkey/pull/REPLACE_ME
+      PR: https://github.com/juanpasaflipz/green-monkey/pull/39
 - [ ] **1.4 Redeploy.** Needs J2, 1.1 and 1.3. Re-run the nightly E2E on `aed5c02` or newer.
       **JUAN** triggers the deploy. Confirm production then carries #32 (dependency
       security update) and #36, and that code and schema versions match.
