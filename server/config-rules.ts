@@ -201,6 +201,19 @@ export function loadConfig(
   for (const [key, value] of Object.entries(rawEnv))
     env[key] = value === undefined || value.trim() === "" ? undefined : value;
 
+  // RAILWAY_ENVIRONMENT_NAME is injected by the platform itself for every
+  // Railway process (production, staging and ephemeral pr-* previews alike,
+  // tests/export-drain.test.ts), independently of whether .railway/railway.ts's
+  // own APP_ENV sync (literal or preserve()) reached this process. CI
+  // (qualification.yml's compiled-server and Docker-image steps) and local dev
+  // never set it, even when they set NODE_ENV=production to rehearse a
+  // production-shaped process, so this guard cannot fire there. On an actual
+  // Railway process, though, a missing APP_ENV must never silently become
+  // "development": that would skip every deployed-only check below (forbidden
+  // credentials, SIGNING_KEYS, APP_URL, ...) on a process that may be serving
+  // real staging or production traffic (2.1). Refuse to start instead.
+  if (env.APP_ENV === undefined && env.RAILWAY_ENVIRONMENT_NAME !== undefined)
+    throw new ConfigError("missing_app_env");
   const appEnv = (env.APP_ENV ?? "development") as AppEnv;
   if (!appEnvs.includes(appEnv)) throw new ConfigError("invalid_app_env");
   const deployed = appEnv === "staging" || appEnv === "production";
