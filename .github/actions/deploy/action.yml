@@ -54,6 +54,21 @@ runs:
         # No npm cache restored from less-privileged jobs: it would also hold
         # ~/.npm/_npx, where the Railway CLI below is installed (PLATFORM-CI-3).
         package-manager-cache: false
+    # Before anything else, including the build: the 2026-11-17 production
+    # deploy ran migrations and only then failed with `Invalid RAILWAY_TOKEN`,
+    # leaving the schema ahead of the deployed code. `railway status` is a
+    # read-only call that exercises the same project-token auth the later
+    # IaC sync and `railway up` steps use, so a blank, expired or wrong-scope
+    # token is caught here and nothing below it ever runs.
+    - name: Validate the Railway token (fail before any database change)
+      shell: bash
+      env:
+        RAILWAY_TOKEN: ${{ inputs.railway-token }}
+        RAILWAY_CLI_VERSION: ${{ inputs.railway-cli-version }}
+      run: |
+        [ -n "$RAILWAY_TOKEN" ] || { echo "::error::railway-token is empty"; exit 1; }
+        [[ "$RAILWAY_CLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "pin RAILWAY_CLI_VERSION"; exit 1; }
+        npx -y "@railway/cli@$RAILWAY_CLI_VERSION" status
     - name: Install and build
       shell: bash
       run: npm ci && npm run build

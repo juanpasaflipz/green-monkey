@@ -158,7 +158,7 @@ describe("deploy: a rollback never re-applies an older Railway IaC (OPS-R4 regre
 });
 
 describe("migrations, grants and retention run in GitHub Actions as gm_migrator (Wave 2.0 (l), DB-1)", () => {
-  it("the deploy action's migrate step comes before every step that runs a railway command", () => {
+  it("the deploy action's migrate step comes before every step that runs a railway command, except the token preflight (OPS-1.2)", () => {
     const all = steps(action);
     const migrate = all.findIndex((s) =>
       s.includes("node build/scripts/migrate.js --grants --retention"),
@@ -167,9 +167,21 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
     const build = all.findIndex((s) => s.includes("npm run build"));
     expect(build).toBeGreaterThan(-1);
     expect(build).toBeLessThan(migrate);
+    // The token preflight is the one Railway-CLI step allowed before migrate:
+    // it exists precisely to fail before migrations run on a bad token.
+    const preflight = all.findIndex((s) =>
+      s.includes("Validate the Railway token"),
+    );
+    expect(preflight).toBeGreaterThan(-1);
+    expect(preflight).toBeLessThan(build);
+    expect(preflight).toBeLessThan(migrate);
     const railway = all
       .map((s, i) => [s, i] as const)
-      .filter(([s]) => /railway(\/cli)?@|railway@|@railway\/cli/.test(s));
+      .filter(
+        ([s, i]) =>
+          /railway(\/cli)?@|railway@|@railway\/cli/.test(s) &&
+          i !== preflight,
+      );
     expect(railway.length).toBeGreaterThanOrEqual(3);
     for (const [, i] of railway) expect(i).toBeGreaterThan(migrate);
     // The migrate step is unconditional and fails before Railway without its inputs.
@@ -191,6 +203,53 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
       expect(action).toMatch(new RegExp(`\\n  ${input}:\\n`));
     // No step uploads before the migrate step, and nothing preDeploys.
     expect(action).not.toMatch(/preDeploy/i);
+  });
+
+  it("the token preflight is unconditional (runs even when sync-config is false) and refuses a blank token or unpinned CLI version before calling npx (OPS-1.2, 2026-11-17 incident)", () => {
+    const all = steps(action);
+    const preflight = all.find((s) => s.includes("Validate the Railway token"))!;
+    expect(preflight).toBeDefined();
+    // Unconditional: even a rollback (sync-config != 'true') still needs a
+    // valid token for the later "Deploy worker then web" step.
+    expect(preflight).not.toMatch(/\n\s*if:/);
+    expect(preflight).toContain(
+      "RAILWAY_TOKEN: ${{ inputs.railway-token }}",
+    );
+    expect(preflight).toContain(
+      "RAILWAY_CLI_VERSION: ${{ inputs.railway-cli-version }}",
+    );
+    const body = preflight
+      .split("run: |\n")[1]
+      .split("\n")
+      .map((l) => l.replace(/^ {8}/, ""))
+      .join("\n")
+      .replace(
+        'npx -y "@railway/cli@$RAILWAY_CLI_VERSION" status',
+        "echo AUTHENTICATED",
+      );
+    const run = (env: Record<string, string>) => {
+      try {
+        return execFileSync("bash", ["-c", `set -euo pipefail\n${body}`], {
+          env: { PATH: process.env.PATH ?? "", ...env },
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch (error) {
+        const e = error as { stdout: string; status: number };
+        return `exit ${e.status}: ${e.stdout}`;
+      }
+    };
+    const ok = { RAILWAY_TOKEN: "tok", RAILWAY_CLI_VERSION: "4.10.0" };
+    expect(run(ok).trim()).toBe("AUTHENTICATED");
+    expect(run({ ...ok, RAILWAY_TOKEN: "" })).toContain(
+      "railway-token is empty",
+    );
+    expect(run({ ...ok, RAILWAY_CLI_VERSION: "" })).toContain(
+      "pin RAILWAY_CLI_VERSION",
+    );
+    expect(run({ ...ok, RAILWAY_CLI_VERSION: "latest" })).toContain(
+      "pin RAILWAY_CLI_VERSION",
+    );
   });
 
   it("the migrate step's guard refuses a missing secret, PG_APP_USER or app-env before running migrate.js", () => {
