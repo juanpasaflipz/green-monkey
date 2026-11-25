@@ -62,7 +62,8 @@ re-checked against the repo when this was written, so step 0 of every task is
       `missing_app_env` error) only when `RAILWAY_ENVIRONMENT_NAME` is set (a
       platform-injected variable present on every Railway environment, including `pr-*`
       previews, and never set in CI or local dev), leaving the `undefined` →
-      `"development"` default untouched everywhere else. PR: TBD (see conversation).
+      `"development"` default untouched everywhere else. PR #37:
+      https://github.com/juanpasaflipz/green-monkey/pull/37
 - [ ] **2.2 Sentry.** `server/instrument.ts` loads `@sentry/node` only if installed, and it
       is not in `package.json` or the lockfile. Add it, confirm a test error reaches
       Sentry in staging, and fail startup in production if the DSN is absent.
