@@ -20,7 +20,7 @@ restore rehearsal have not. Nothing has run against production.
 | Neon plan and history window | Launch, 7 days (`NEON_PLAN=scale` for 30 days) |
 | Region | Neon `aws-us-east-1`, Railway `us-east4` (both N. Virginia), or match staging |
 | Alert channel | ntfy.sh topic with a long random name, phone app subscribed |
-| Error tracking | Off until `SENTRY_DSN` is set and `@sentry/node` is installed |
+| Error tracking | Off until `SENTRY_DSN` is set (`@sentry/node` ships as a declared dependency) |
 | Off-platform backups | Cloudflare R2 with `age` encryption, key kept offline |
 | Production domain | `<domain>` placeholder (for example `app.<your-domain>`) |
 | GitHub plan | Rulesets on a private repository need a paid plan; `github-protect.sh` reports 403 otherwise |

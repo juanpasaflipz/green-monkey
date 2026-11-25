@@ -6,12 +6,16 @@
 //      NODE_ENV (SEC-9) and refuses forbidden credentials (DB-1).
 //   2. A stamped build (scripts/ops/stamp-build.mjs) becomes the commit that
 //      /api/version reports, instead of a hand-set variable (OPS-1).
-//   3. Optional error tracking: when SENTRY_DSN is set and @sentry/node is
-//      installed, unexpected errors are forwarded with secrets scrubbed.
+//   3. Optional error tracking: when SENTRY_DSN is set, unexpected errors are
+//      forwarded to Sentry with secrets scrubbed. `@sentry/node` is a
+//      declared dependency, but reporting stays off until an owner sets
+//      SENTRY_DSN (docs/LAUNCH_HANDOFF.md 1.9: that approval is still
+//      pending, so this does not turn error tracking on by itself).
 //   4. The web logs its active signing kids (never key material), so a
 //      reverted SIGNING_KEYS after an emergency rotation is visible in the
 //      logs (PLATFORM-KEYS-1, docs/RUNBOOK.md "Signing keys").
 import "./config.js";
+import * as Sentry from "@sentry/node";
 import { config } from "./config.js";
 import { buildInfo } from "./build-info.js";
 import { keyringSummary } from "./keyring.js";
@@ -30,19 +34,36 @@ if (config.kind === "web")
   }
 
 if (process.env.SENTRY_DSN) {
-  // Not a declared dependency: install @sentry/node to enable. The specifier
-  // is a variable so the build does not require the package.
-  const specifier = "@sentry/node";
+  // @sentry/node is a declared dependency, so the import above always
+  // resolves; the try/catch here only guards against Sentry.init itself
+  // throwing (for example, a malformed DSN), so a bad value can never take
+  // startup down with it.
   try {
-    const Sentry = await import(specifier);
     Sentry.init({
       dsn: process.env.SENTRY_DSN,
       environment: process.env.APP_ENV || "development",
       release: info.commit,
-      sendDefaultPii: false,
-      beforeSend: (event: Record<string, unknown>) => {
+      // @sentry/node v11 removed `sendDefaultPii: false` in favor of
+      // `dataCollection`, whose own default is *more* permissive (it
+      // auto-collects cookies, headers, request/response bodies, user IP,
+      // database query data...). This block reproduces the old restrictive
+      // default by hand so upgrading the dependency never silently widens
+      // what leaves the process for a feature that is already gated on an
+      // explicit owner decision (docs/LAUNCH_HANDOFF.md 1.9).
+      dataCollection: {
+        userInfo: false,
+        cookies: false,
+        httpHeaders: false,
+        httpBodies: [],
+        urlQueryParams: false,
+        databaseQueryData: false,
+        queues: false,
+        genAI: { inputs: false, outputs: false },
+        graphQL: { document: false, variables: false },
+      },
+      beforeSend: (event: Sentry.ErrorEvent) => {
         delete (event as { request?: unknown }).request;
-        return redact(event);
+        return redact(event) as Sentry.ErrorEvent;
       },
     });
     setErrorReporter((error, attrs) =>
