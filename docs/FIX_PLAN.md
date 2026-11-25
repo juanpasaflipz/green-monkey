@@ -69,7 +69,7 @@ re-checked against the repo when this was written, so step 0 of every task is
       `SENTRY_DSN` being set and off by default; no "fail startup without a DSN" check was
       added. Staging verification and the mandatory check remain explicitly out of scope
       per the owner's decision.
-      PR: <fill in after opening>
+      PR: #41
 - [ ] **2.3 `npm start` parity.** Make `npm start` use the same instrumentation preload as
       the Docker image.
 - [ ] **2.4 Mercado Pago webhook replay (low).** Add a freshness window on the signed
