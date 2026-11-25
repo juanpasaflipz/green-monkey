@@ -336,13 +336,34 @@ export function p95(values: number[]) {
   return s[lo]! + (s[Math.min(lo + 1, s.length - 1)]! - s[lo]!) * (pos - lo);
 }
 
-/** §11.1/§11.2 budgets over the five canonical samples. */
+/**
+ * §11.1/§11.2 budgets over the five canonical samples.
+ *
+ * Tap 4's p95 threshold was 200ms from the test's introduction (a397915,
+ * 2026-10-07) through 2026-11-25. That was tight relative to its own typical
+ * value: across the nightly "restaurant-day acceptance" runs surveyed
+ * 2026-11-18 through 2026-11-24 (runs 44397965869, 44616254654, 44943555493,
+ * 45064805520, 45298412648 — all passing), tap 4's five-sample p95 ranged
+ * ~86-173ms, with individual samples never above ~173ms. Two nightly runs
+ * (44815673983 on 2026-11-20, 45400309759 on 2026-11-24) failed on this one
+ * assertion with p95 221 and 240 respectively — in both cases driven by a
+ * single sample (199-267ms) that also coincided with every other tap in that
+ * same canonical-order sample running hot (e.g. run 45400309759's second
+ * sample: taps 3/4/5/6/7 all elevated together), consistent with ordinary
+ * GitHub-hosted shared-runner jitter on one iteration, not a sustained
+ * regression in the "+" quantity control itself (which is a synchronous
+ * client-side state update with no network round trip). The raw outlier
+ * samples (199, 227, 267ms) stayed well under tap 4's 400ms max in both
+ * failures, so only the p95 threshold was too tight. Headroom raised to
+ * 260ms (above the worst observed p95 of 240, comfortably below the
+ * unchanged 400ms max) to absorb that noise without loosening the max.
+ */
 export function assertTimingBudgets() {
   const budget: Record<number, [number, number]> = {
     1: [300, 500],
     2: [150, 300],
     3: [300, 500],
-    4: [200, 400],
+    4: [260, 400],
     5: [300, 500],
     6: [700, 1200],
     7: [2000, 3000],
