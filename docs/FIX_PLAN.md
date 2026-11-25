@@ -57,7 +57,7 @@ re-checked against the repo when this was written, so step 0 of every task is
       Sentry in staging, and fail startup in production if the DSN is absent.
 - [x] **2.3 `npm start` parity.** Make `npm start` use the same instrumentation preload as
       the Docker image.
-      PR: <fill in after opening>
+      PR: https://github.com/juanpasaflipz/green-monkey/pull/40
 - [ ] **2.4 Mercado Pago webhook replay (low).** Add a freshness window on the signed
       timestamp plus idempotency on the event id.
 - [ ] **2.5 `GET /api/jobs` (low).** Return an explicit column list, not whole rows.
